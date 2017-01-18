@@ -18,7 +18,7 @@ libopx_nas_linux_la_CXXFLAGS=-std=c++11
 
 libopx_nas_linux_la_LDFLAGS=-shared -version-info 1:1:0
 
-libopx_nas_linux_la_LIBADD=-lopx_common -lopx_cps_api_common -lopx_logging
+libopx_nas_linux_la_LIBADD=-lopx_common -lopx_nas_common -lopx_cps_api_common -lopx_logging
 
 systemdconfdir=/lib/systemd/system
 systemdconf_DATA = scripts/init/*.service
