@@ -1,7 +1,6 @@
 [Unit]
 Description=IP address handler
 After=opx-create-interface.service
-Wants=opx-create-interface.service
 DefaultDependencies=no
 
 [Service]
