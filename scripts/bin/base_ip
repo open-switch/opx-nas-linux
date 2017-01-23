@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 export PYTHONPATH=/usr/lib/opx:/usr/lib/x86_64-linux-gnu/opx
 
