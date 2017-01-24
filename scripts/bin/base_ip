@@ -2,5 +2,5 @@
 
 export PYTHONPATH=/usr/lib/opx:/usr/lib/x86_64-linux-gnu/opx
 
-/usr/lib/opx/python/base_ip.py
+/usr/lib/x86_64-linux-gnu/opx/base_ip.py
 
