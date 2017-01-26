@@ -1,6 +1,6 @@
 #!/bin/sh
 
-export PYTHONPATH=/usr/lib/opx:/usr/lib/x86_64-linux-gnu/opx
+. /etc/opx/opx-environment.sh
 
 /usr/lib/x86_64-linux-gnu/opx/base_ip.py
 
