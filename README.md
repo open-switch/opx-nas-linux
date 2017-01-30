@@ -9,6 +9,6 @@ libopx-nas-linux-dev\_*version*\_*arch*.deb — Exported header file  
 
 opx-nas-linux\_*version*\_*arch*.deb — Service executables, configuration files, and tool scripts 
 
-See [Network-adaption-service](https://github.com/open-switch/opx-docs/wiki/Network-adaptation-service) for more information on the NAS Linux integration with native Linux APIs.
+See [Network adaption service](https://github.com/open-switch/opx-docs/wiki/Network-adaptation-service) for more information on the NAS Linux integration with native Linux APIs.
 
 (c) 2017 Dell
