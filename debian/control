@@ -1,7 +1,7 @@
 Source: libopx-nas-linux
 Section: net
 Priority: optional
-Maintainer: Dell <support@dell.com>
+Maintainer: OpenSwitch Developers <ops-dev@lists.openswitch.net>
 Build-Depends: debhelper (>= 9),dh-autoreconf,dh-systemd,autotools-dev,libopx-common-dev,libopx-nas-common-dev,libopx-cps-dev,libopx-logging-dev
 Standards-Version: 3.9.3
 Vcs-Browser: https://github.com/open-switch/opx-nas-linux
