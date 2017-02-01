@@ -1,4 +1,4 @@
-Source: libopx-nas-linux
+Source: opx-nas-linux
 Section: net
 Priority: optional
 Maintainer: Dell EMC <ops-dev@lists.openswitch.net>
