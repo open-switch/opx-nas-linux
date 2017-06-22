@@ -95,6 +95,14 @@ static bool is_reserved_interface (if_details &details)
 
 }
 
+static bool is_sub_interface(if_details &details)
+{
+    if(details.if_name.find_first_of(".") != std::string::npos)
+        return true;
+
+    return false;
+}
+
 bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj)
 {
     struct ifinfomsg *ifmsg = (struct ifinfomsg *)NLMSG_DATA(hdr);
@@ -125,6 +133,8 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
     } else {
         details._op = it->second;
     }
+
+    cps_api_operation_types_t _if_op = details._op;
 
     details._flags = ifmsg->ifi_flags;
 
@@ -206,6 +216,25 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
         track_change = OS_IF_CHANGE_ALL;
     else
         track_change = fill->if_info_update(ifmsg->ifi_index, ifinfo);
+
+    /*
+     * Delete the interface from cache if interface type is not vlan or lag
+     * If lag, check for lag member delete vs actual bond interface delete.
+     */
+    EV_LOGGING(NAS_OS,INFO,"NET-MAIN","ifidx %d, if-type %d track %d",
+                            ifmsg->ifi_index,details._type, track_change);
+
+    if(_if_op == cps_api_oper_DELETE) {
+        if((details._type != BASE_CMN_INTERFACE_TYPE_VLAN)&&
+           (details._type != BASE_CMN_INTERFACE_TYPE_LAG)) {
+            if(fill) fill->if_info_delete(ifmsg->ifi_index);
+            //Need not publish if sub-interface
+            if(is_sub_interface(details)) return false;
+        } else if(details._type == BASE_CMN_INTERFACE_TYPE_LAG &&
+                (!strncmp(details._info_kind, "bond", 4))) {
+            if(fill) fill->if_info_delete(ifmsg->ifi_index);
+        }
+    }
 
     if(details._type != BASE_CMN_INTERFACE_TYPE_L3_PORT && details._attrs[IFLA_MASTER]!=NULL) {
         /*
@@ -313,13 +342,18 @@ static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal
         EV_LOG(INFO,NAS_OS,3, "NET-MAIN", "Get ifinfo for %d", ifix);
 
         cps_api_object_t obj = cps_api_object_create();
-        if(!os_interface_info_to_object(ifix, ifinfo, obj)) return cps_api_ret_code_ERR;
+        if(obj == nullptr) return cps_api_ret_code_ERR;
+        if(!os_interface_info_to_object(ifix, ifinfo, obj)) {
+            cps_api_object_delete(obj);
+            return cps_api_ret_code_ERR;
+        }
 
         cps_api_object_set_type_operation(cps_api_object_key(obj),cps_api_oper_NULL);
         if (cps_api_object_list_append(*list,obj)) {
             return cps_api_ret_code_OK;
         }
         else {
+            cps_api_object_delete(obj);
             return cps_api_ret_code_ERR;
         }
     } else if (get_all) {
@@ -327,10 +361,19 @@ static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal
             EV_LOG(INFO,NAS_OS,3, "NET-MAIN", "Get all ifinfo for %d", idx);
 
             cps_api_object_t obj = cps_api_object_create();
-            if(!os_interface_info_to_object(idx, ifinfo, obj)) return;
+            if(obj == nullptr) return;
+            if(!os_interface_info_to_object(idx, ifinfo, obj)) {
+                cps_api_object_delete(obj);
+                return;
+            }
 
             cps_api_object_set_type_operation(cps_api_object_key(obj),cps_api_oper_NULL);
-            if (cps_api_object_list_append(*list,obj)) return;
+            if (cps_api_object_list_append(*list,obj)) {
+                return;
+            } else {
+                cps_api_object_delete(obj);
+                return;
+            }
         });
         return cps_api_ret_code_OK;
     }
@@ -426,6 +469,19 @@ extern "C" t_std_error os_intf_admin_state_get(hal_ifindex_t ifix, bool *p_admin
 
     if(fill->if_info_get_admin(ifix, admin)) {
         *p_admin_status = admin;
+        return STD_ERR_OK;
+    }
+    return STD_ERR(INTERFACE,FAIL,0);
+}
+
+extern "C" t_std_error os_intf_mac_addr_get(hal_ifindex_t ifix, hal_mac_addr_t mac) {
+    INTERFACE *fill = os_get_if_db_hdlr();
+    if_info_t if_info;
+
+    if (!fill) return STD_ERR(INTERFACE,FAIL,0);
+
+    if(fill->if_info_get(ifix, if_info)) {
+        memcpy(mac, if_info.phy_addr, HAL_MAC_ADDR_LEN);
         return STD_ERR_OK;
     }
     return STD_ERR(INTERFACE,FAIL,0);

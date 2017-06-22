@@ -50,6 +50,8 @@
 
 #include <limits.h>
 #include <unistd.h>
+#include <fstream>
+#include <sstream>
 
 #include <netinet/in.h>
 #include <ifaddrs.h>
@@ -562,8 +564,10 @@ void os_debug_nl_stats_reset () {
 
 void os_debug_nl_stats_print () {
 
-    printf("\r\n NETLINK STATS INFORMATION socket-rx-buf-size:%d scratch buf-size:%d\r\n",
-           NL_SOCKET_BUFFER_LEN, NL_SCRATCH_BUFFER_LEN);
+    printf("\r\n NETLINK STATS INFORMATION socket-rx-buf-size intf:%d "
+           "neigh:%d route:%d scratch buf-size:%d\r\n",
+           NL_INTF_SOCKET_BUFFER_LEN, NL_NEIGH_SOCKET_BUFFER_LEN, NL_ROUTE_SOCKET_BUFFER_LEN,
+           NL_SCRATCH_BUFFER_LEN);
     for ( auto &it : nlm_sockets) {
         printf("Socket type:%s sock-fd:%d\r\n",
                ((it.second == nas_nl_sock_T_ROUTE) ? "Route" :
@@ -707,4 +711,28 @@ t_std_error cps_api_net_notify_init(void) {
 
     return rc;
 }
+
+/*
+ * Enable NFLOG for AF_BRIDGE
+ * For bridging NFLOG is used to copy certain packet types (like ARP)
+ * user socket for injecting to ingress pipeline.
+ */
+bool os_nflog_enable ()
+{
+    std::stringstream str_stream;
+
+    str_stream << "/proc/sys/net/netfilter/nf_log/7";
+    std::string path = str_stream.str();
+    std::ofstream nflog_conf (path.c_str());
+    if(!nflog_conf.good()) {
+        EV_LOGGING(NAS_OS,ERR,"NAS-UPD-NFLOG", "NFLOG file :%s enable failed!!!", path.c_str());
+        return false;
+    }
+
+    nflog_conf << "nfnetlink_log";
+    EV_LOGGING(NAS_OS,INFO,"NAS-UPD-NFLOG", "NFLOG file :%s enabled", path.c_str());
+    nflog_conf.close();
+    return true;
+}
+
 }

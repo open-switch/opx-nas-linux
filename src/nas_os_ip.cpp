@@ -25,13 +25,34 @@
 #include "cps_api_operation.h"
 #include "cps_api_object_key.h"
 #include "cps_class_map.h"
+#include "ds_api_linux_interface.h"
 
 #include "nas_nlmsg_object_utils.h"
 
 #include <map>
+#include <sstream>
 
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
+#include <stdlib.h>
+
+/* @@TODO This is the work-around to flush the associated neighbors on IPv6 address del
+ * until kernel supports it internally */
+bool nas_os_flush_ip6_neigh(char *prefix, uint32_t prefix_len, char *dev) {
+    /* This function builds the following linux command for IP neigh flush
+     * ip neigh flush to <prefix> dev <intf> e.g ip neigh flush to 2222::1/64 dev br200 */
+    std::stringstream str_stream;
+
+    str_stream << "ip neigh flush to " << prefix << "/" << prefix_len << " dev " << dev;
+    std::string neigh_flush_cmd = str_stream.str();
+    if(system(neigh_flush_cmd.c_str()) != 0) {
+        EV_LOGGING(NAS_OS, ERR, "NEIGH-UPD", "cmd:%s failed", neigh_flush_cmd.c_str());
+        return false;
+    }
+    EV_LOGGING(NAS_OS, INFO, "NEIGH-UPD", "cmd:%s success", neigh_flush_cmd.c_str());
+    return true;
+}
 
 extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj) {
 
@@ -83,8 +104,10 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
     }
 
     if(attrs[IFA_ADDRESS]!=NULL) {
-       rta_add_ip((struct nlattr*)ifmsg, ifmsg->ifa_family,
-                   obj, _ipmap.at(ifmsg->ifa_family).at(ADDRESS));
+        size_t addr_len = (ifmsg->ifa_family == AF_INET)?HAL_INET4_LEN:HAL_INET6_LEN;
+        cps_api_attr_id_t ids[1] = {_ipmap.at(ifmsg->ifa_family).at(ADDRESS)};
+        cps_api_object_e_add(obj, ids, 1, cps_api_object_ATTR_T_BIN,
+                             (const void *)(nla_data(attrs[IFA_ADDRESS])),addr_len);
     }
 
     if(attrs[IFA_LABEL]!=NULL) {
@@ -100,6 +123,23 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
         cps_api_object_set_type_operation(cps_api_object_key(obj),cps_api_oper_SET);
     }
 
+    if ((ifmsg->ifa_family == AF_INET6) && (rt_msg_type == RTM_DELADDR)) {
+        /* @@TODO This is the work-around to flush the associated neighbors on IPv6 address del
+         * until kernel supports it internally */
+        char addr_str[INET6_ADDRSTRLEN];
+        if (inet_ntop(ifmsg->ifa_family, (const void *)(nla_data(attrs[IFA_ADDRESS])), addr_str,
+                      INET6_ADDRSTRLEN) == NULL) {
+            EV_LOGGING(NAS_OS,ERR,"NAS-IP","IP address get failed for intf:%d ",ifmsg->ifa_index);
+            return true;
+        }
+        char intf_name[HAL_IF_NAME_SZ+1];
+        if(cps_api_interface_if_index_to_name(ifmsg->ifa_index,intf_name,sizeof(intf_name))==NULL){
+            EV_LOGGING(NAS_OS,INFO,"NAS-LINUX-INTERFACE","Invalid Interface Index %d ",ifmsg->ifa_index);
+            return true;
+        }
+
+        nas_os_flush_ip6_neigh(addr_str, ifmsg->ifa_prefixlen, intf_name);
+    }
     return true;
 }
 

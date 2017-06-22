@@ -168,7 +168,7 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
                 req->ndm_ifindex,op);
         return STD_ERR(L2MAC,FAIL,0);
     }
-    EV_LOG(INFO,NAS_OS,0,"NAS-L2-MAC","%sd mac address entry %s for Interface %d with"
+    EV_LOGGING(NAS_OS,INFO,"NAS-L2-MAC","%sd mac address entry %s for Interface %d with"
             "cps operation %d in Kernel",s.c_str(),std_mac_to_string(mac_addr,mac_buff,sizeof(mac_buff)),
             req->ndm_ifindex,op);
     return STD_ERR_OK;
@@ -209,6 +209,17 @@ t_std_error nas_os_mac_change_learning(hal_ifindex_t ifindex,bool enable){
 
     return STD_ERR_OK;
 
+}
+
+bool nas_os_mac_get_learning(hal_ifindex_t ifindex) {
+
+    std::lock_guard<std::mutex> lock(_mac_ls_mutex);
+    auto it = _if_mac_learn_state.find(ifindex);
+    if(it == _if_mac_learn_state.end()){
+        return true;
+    }
+
+    return it->second;
 }
 
 }

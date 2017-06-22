@@ -65,6 +65,29 @@ bool nas_os_physical_to_vlan_ifindex(hal_ifindex_t intf_index, hal_vlan_id_t vla
     return true;
 }
 
+/* This utility converts the sub interface name to if_index i.e e101-001-0.202 to ifindex of e101-001-0 */
+bool nas_os_sub_intf_name_to_intf_ifindex(char *sub_intf_name, hal_ifindex_t * index){
+    char *converted_intf_name = NULL;
+    char *saveptr = NULL;
+
+    if (sub_intf_name == NULL)
+        return false;
+
+    converted_intf_name = strtok_r(sub_intf_name,".",&saveptr);
+    if(converted_intf_name == NULL)
+        return false;
+
+    if(((*index) = cps_api_interface_name_to_if_index(converted_intf_name)) == 0){
+        EV_LOG(ERR,NAS_OS,0,"NAS-LINUX-INTERFACE","Invalid Interface name %s ",converted_intf_name);
+        return false;
+    }
+
+    return true;
+}
+
+
+
+
 
 
 

@@ -24,6 +24,7 @@ import binascii
 import ifindex_utils
 
 import dn_base_ip_tool
+import systemd.daemon
 
 iplink_cmd = '/sbin/ip'
 
@@ -290,7 +291,18 @@ def trans_cb(methods, params):
 
     return False
 
+def sigterm_hdlr(signum, frame):
+    global shutdown
+    shutdown = True
+
 if __name__ == '__main__':
+    
+    shutdown = False
+    
+    # Install signal handlers.
+    import signal
+    signal.signal(signal.SIGTERM, sigterm_hdlr)
+
     if len(sys.argv) > 1:
         l = []
         _get_ip_objs(cps_object.CPSObject('base-ip/ipv4'), l)
@@ -308,5 +320,14 @@ if __name__ == '__main__':
             continue
         cps.obj_register(handle, _keys[i], d)
 
-    while True:
-        time.sleep(1)
+    # Notify systemd: Daemon is ready
+    systemd.daemon.notify("READY=1")
+
+    # wait until a signal is received
+    while False == shutdown:
+        signal.pause()
+        
+    systemd.daemon.notify("STOPPING=1")
+    # cleanup code here
+    # No need to specifically call sys.exit(0).
+    # That's the default behavior in Python.

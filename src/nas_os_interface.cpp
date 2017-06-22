@@ -83,6 +83,17 @@ extern "C" t_std_error nas_os_get_interface_obj_by_name(const char *ifname, cps_
     return nas_os_get_interface_obj(ifix,obj);
 }
 
+extern "C" t_std_error nas_os_get_interface_mtu(const char *ifname, cps_api_object_t obj) {
+
+     unsigned int mtu;
+         t_std_error ret;
+
+         ret = nas_os_util_int_mtu_get(ifname, &mtu);
+         cps_api_object_attr_add_u32(obj, DELL_IF_IF_INTERFACES_INTERFACE_MTU,
+                                                (mtu  + NAS_LINK_MTU_HDR_SIZE));
+         return (ret);
+ }
+
 extern "C" t_std_error nas_os_get_interface_obj(hal_ifindex_t ifix,cps_api_object_t obj) {
     cps_api_object_list_guard lg(cps_api_object_list_create());
     if (lg.get()==NULL) return STD_ERR(NAS_OS,FAIL,0);

@@ -46,8 +46,9 @@
 
 /* To support the IPv6 route with 256 NHs - 8K buffer is required */
 #define NL_RT_MSG_BUFFER_LEN  8192 /* Buffer len to update the route to kernel */
-
+#define NL_RT_RMSG_BUFFER_LEN 1024 /* Buffer len to receive reply for the route from kernel */
 #define NL_RT_NBR_MSG_BUFFER_LEN 1024 /* Buffer len to update the neighbor to kernel */
+#define MAX_NL_NH_ECMP_COUNT  256
 
 typedef enum msg_type {
     NAS_RT_ADD,
@@ -81,7 +82,7 @@ static inline uint16_t nas_os_get_nl_flags(msg_type m_type)
  * the current open issues related to interface "shutdown"
  */
 
-static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, bool is_rt_del_prefix)
+static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, bool is_rt_route_replace)
 {
     static char buff[MAX_CPS_MSG_SIZE];
 
@@ -95,7 +96,8 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
     cps_api_object_attr_t nh_count = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_NH_COUNT);
 
     if(rt_msg_type == RTM_NEWROUTE) {
-        cps_api_object_attr_add_u32(new_obj, cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_ADD);
+        cps_api_object_attr_add_u32(new_obj, cps_api_if_ROUTE_A_MSG_TYPE,
+                                    (is_rt_route_replace ? ROUTE_UPD : ROUTE_ADD));
     } else if(rt_msg_type == RTM_DELROUTE) {
         cps_api_object_attr_add_u32(new_obj, cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_DEL);
     } else {
@@ -123,49 +125,47 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
     cps_api_object_attr_add_u32(new_obj,cps_api_if_ROUTE_A_PREFIX_LEN,
             cps_api_object_attr_data_u32(pref_len));
 
-    /* If route del prefix flag is set, dont include any NHs in the object,
-     * this helps to flush the route completely without sending the route delete
-     * for each and every route incase of IPv6 ECMP */
     uint32_t nhc = 0;
-    if ((is_rt_del_prefix == false) && (nh_count != CPS_API_ATTR_NULL))
+    if (nh_count != CPS_API_ATTR_NULL) {
         nhc = cps_api_object_attr_data_u32(nh_count);
 
-    if (nhc == 1) {
         cps_api_object_attr_add_u32(new_obj,cps_api_if_ROUTE_A_HOP_COUNT,nhc);
+        size_t ix = 0;
+        for (ix = 0; ix < nhc ; ++ix) {
+            cps_api_attr_id_t ids[3] = { BASE_ROUTE_OBJ_ENTRY_NH_LIST,
+                ix, BASE_ROUTE_OBJ_ENTRY_NH_LIST_NH_ADDR};
+            const int ids_len = sizeof(ids)/sizeof(*ids);
 
-        cps_api_attr_id_t ids[3] = { BASE_ROUTE_OBJ_ENTRY_NH_LIST,
-                                 0, BASE_ROUTE_OBJ_ENTRY_NH_LIST_NH_ADDR};
-        const int ids_len = sizeof(ids)/sizeof(*ids);
+            cps_api_object_attr_t gw = cps_api_object_e_get(obj,ids,ids_len);
 
-        cps_api_object_attr_t gw = cps_api_object_e_get(obj,ids,ids_len);
+            ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_IFINDEX;
+            cps_api_object_attr_t gwix = cps_api_object_e_get(obj,ids,ids_len);
 
-        ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_IFINDEX;
-        cps_api_object_attr_t gwix = cps_api_object_e_get(obj,ids,ids_len);
+            cps_api_attr_id_t new_ids[3];
+            new_ids[0] = cps_api_if_ROUTE_A_NH;
+            new_ids[1] = ix;
 
-        cps_api_attr_id_t new_ids[3];
-        new_ids[0] = cps_api_if_ROUTE_A_NH;
-        new_ids[1] = 0;
+            if (gw != CPS_API_ATTR_NULL) {
+                new_ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_ADDR;
 
-        if (gw != CPS_API_ATTR_NULL) {
-            new_ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_ADDR;
-
-            hal_ip_addr_t ip;
-            if(addr_len == HAL_INET4_LEN) {
-                ip.af_index = AF_INET;
-                memcpy(&(ip.u.v4_addr), cps_api_object_attr_data_bin(gw),addr_len);
-            } else {
-                ip.af_index = AF_INET6;
-                memcpy(&(ip.u.v6_addr), cps_api_object_attr_data_bin(gw),addr_len);
+                hal_ip_addr_t ip;
+                if(addr_len == HAL_INET4_LEN) {
+                    ip.af_index = AF_INET;
+                    memcpy(&(ip.u.v4_addr), cps_api_object_attr_data_bin(gw),addr_len);
+                } else {
+                    ip.af_index = AF_INET6;
+                    memcpy(&(ip.u.v6_addr), cps_api_object_attr_data_bin(gw),addr_len);
+                }
+                cps_api_object_e_add(new_obj, new_ids, ids_len, cps_api_object_ATTR_T_BIN,
+                                     &ip,sizeof(ip));
             }
-            cps_api_object_e_add(new_obj, new_ids, ids_len, cps_api_object_ATTR_T_BIN,
-                    &ip,sizeof(ip));
-        }
 
-        if (gwix != CPS_API_ATTR_NULL) {
-            new_ids[2] = cps_api_if_ROUTE_A_NH_IFINDEX;
-            uint32_t gw_idx = cps_api_object_attr_data_u32(gwix);
-            cps_api_object_e_add(new_obj,new_ids,ids_len,cps_api_object_ATTR_T_U32,
-                     (void *)&gw_idx, sizeof(uint32_t));
+            if (gwix != CPS_API_ATTR_NULL) {
+                new_ids[2] = cps_api_if_ROUTE_A_NH_IFINDEX;
+                uint32_t gw_idx = cps_api_object_attr_data_u32(gwix);
+                cps_api_object_e_add(new_obj,new_ids,ids_len,cps_api_object_ATTR_T_U32,
+                                     (void *)&gw_idx, sizeof(uint32_t));
+            }
         }
     }
 
@@ -176,10 +176,119 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
     return STD_ERR_OK;
 }
 
+/*
+ * Publish route from here is mainly to handle route nexthop delete cases.
+ * When application try to delete a route,nexthop and if it is already deleted in kernel
+ * (e.g interface down scenario), then NAS-L3 need to get this delete message.
+ *
+ * @Todo, This has to be revisited for any generic solution. This approach is to handle
+ * the current open issues related to interface "shutdown"
+ */
+static t_std_error nas_os_publish_route_nexthop (int rt_msg_type, cps_api_object_t obj, bool is_rt_route_replace)
+{
+    static char buff[MAX_CPS_MSG_SIZE];
+
+    cps_api_object_t new_obj = cps_api_object_init(buff,sizeof(buff));
+    cps_api_key_init(cps_api_object_key(new_obj),cps_api_qualifier_TARGET,
+            cps_api_obj_cat_ROUTE,cps_api_route_obj_ROUTE,0 );
+
+    cps_api_object_attr_t prefix   = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_ROUTE_PREFIX);
+    cps_api_object_attr_t af       = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_AF);
+    cps_api_object_attr_t pref_len = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_PREFIX_LEN);
+    cps_api_object_attr_t nh_count = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_COUNT);
+
+    if(rt_msg_type == RTM_NEWROUTE) {
+        cps_api_object_attr_add_u32(new_obj, cps_api_if_ROUTE_A_MSG_TYPE,
+                                    (is_rt_route_replace ? ROUTE_UPD : ROUTE_ADD));
+    } else if(rt_msg_type == RTM_DELROUTE) {
+        cps_api_object_attr_add_u32(new_obj, cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_DEL);
+    } else {
+        return false;
+    }
+
+    cps_api_object_attr_add_u32(new_obj,cps_api_if_ROUTE_A_FAMILY,
+            cps_api_object_attr_data_u32(af));
+
+    uint32_t addr_len;
+    hal_ip_addr_t ip;
+    if(cps_api_object_attr_data_u32(af) == AF_INET) {
+        struct in_addr *inp = (struct in_addr *) cps_api_object_attr_data_bin(prefix);
+        std_ip_from_inet(&ip,inp);
+        addr_len = HAL_INET4_LEN;
+    } else {
+        struct in6_addr *inp6 = (struct in6_addr *) cps_api_object_attr_data_bin(prefix);
+        std_ip_from_inet6(&ip,inp6);
+        addr_len = HAL_INET6_LEN;
+    }
+
+    cps_api_attr_id_t attr = cps_api_if_ROUTE_A_PREFIX;
+    cps_api_object_e_add(new_obj, &attr, 1, cps_api_object_ATTR_T_BIN, &ip, sizeof(ip));
+
+    cps_api_object_attr_add_u32(new_obj,cps_api_if_ROUTE_A_PREFIX_LEN,
+            cps_api_object_attr_data_u32(pref_len));
+
+    uint32_t nhc = 0;
+    if (nh_count != CPS_API_ATTR_NULL) {
+        nhc = cps_api_object_attr_data_u32(nh_count);
+
+        cps_api_object_attr_add_u32(new_obj,cps_api_if_ROUTE_A_HOP_COUNT,nhc);
+        size_t ix = 0;
+        for (ix = 0; ix < nhc ; ++ix) {
+            cps_api_attr_id_t ids[3] = { BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST,
+                ix, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST_NH_ADDR};
+            const int ids_len = sizeof(ids)/sizeof(*ids);
+
+            cps_api_object_attr_t gw = cps_api_object_e_get(obj,ids,ids_len);
+
+            ids[2] = BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST_IFINDEX;
+            cps_api_object_attr_t gwix = cps_api_object_e_get(obj,ids,ids_len);
+
+            cps_api_attr_id_t new_ids[3];
+            new_ids[0] = cps_api_if_ROUTE_A_NH;
+            new_ids[1] = ix;
+
+            if (gw != CPS_API_ATTR_NULL) {
+                new_ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_ADDR;
+
+                hal_ip_addr_t ip;
+                if(addr_len == HAL_INET4_LEN) {
+                    ip.af_index = AF_INET;
+                    memcpy(&(ip.u.v4_addr), cps_api_object_attr_data_bin(gw),addr_len);
+                } else {
+                    ip.af_index = AF_INET6;
+                    memcpy(&(ip.u.v6_addr), cps_api_object_attr_data_bin(gw),addr_len);
+                }
+                cps_api_object_e_add(new_obj, new_ids, ids_len, cps_api_object_ATTR_T_BIN,
+                                     &ip,sizeof(ip));
+            }
+
+            if (gwix != CPS_API_ATTR_NULL) {
+                new_ids[2] = cps_api_if_ROUTE_A_NH_IFINDEX;
+                uint32_t gw_idx = cps_api_object_attr_data_u32(gwix);
+                cps_api_object_e_add(new_obj,new_ids,ids_len,cps_api_object_ATTR_T_U32,
+                                     (void *)&gw_idx, sizeof(uint32_t));
+            }
+        }
+    }
+
+    EV_LOGGING (NAS_OS, INFO, "ROUTE-NH-UPD","Publishing object");
+
+    net_publish_event(new_obj);
+
+    return STD_ERR_OK;
+}
+
+
+/* Ensure for any changes made to nas_os_update_route() related to netlink route
+ * processing, nas_os_update_route_nexthop() has to be updated accordingly.
+ */
 cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, msg_type m_type)
 {
-    static char buff[NL_RT_MSG_BUFFER_LEN]; // Allocate from DS
+    static char buff[NL_RT_MSG_BUFFER_LEN], buff1[NL_RT_RMSG_BUFFER_LEN]; // Allocate from DS
     char            addr_str[INET6_ADDRSTRLEN];
+    int         nhm_count = 0;
+    bool        repeat_delete = false;
+
     memset(buff,0,sizeof(struct nlmsghdr));
 
     cps_api_object_attr_t prefix   = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_ROUTE_PREFIX);
@@ -225,7 +334,7 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, msg_type m_type
     uint32_t nhc = 0;
     if (nh_count != CPS_API_ATTR_NULL) nhc = cps_api_object_attr_data_u32(nh_count);
 
-    EV_LOG(INFO, NAS_OS,2,"ROUTE-UPD","NH count:%d family:%s msg:%s for prefix:%s len:%d scope:%d", nhc,
+    EV_LOGGING (NAS_OS,INFO, "ROUTE-UPD","NH count:%d family:%s msg:%s for prefix:%s len:%d scope:%d", nhc,
            ((rm->rtm_family == AF_INET) ? "IPv4" : "IPv6"), ((m_type == NAS_RT_ADD) ? "Route-Add" : ((m_type == NAS_RT_DEL) ? "Route-Del" : "Route-Set")),
            ((rm->rtm_family == AF_INET) ?
             (inet_ntop(rm->rtm_family, cps_api_object_attr_data_bin(prefix), addr_str, INET_ADDRSTRLEN)) :
@@ -309,37 +418,248 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, msg_type m_type
             rtnh->rtnh_len = (char*)nlmsg_tail(nlh) - (char*)rtnh;
         }
         nlmsg_nested_end(nlh,attr_nh);
+    } else     if ((type == RTM_DELROUTE) && (rm->rtm_family == AF_INET6)){
+        /*
+         * For V6 route delete, we need to delete the route repeatedly
+         * the number of nexthops times to completely remove the route
+         * from the kernel
+         * @@TODO This is currently a workaround to clean multiple nexthops for
+         * v6 routes in kernel until the kernel is fixed for removing all
+         * nexthops with just one route delete
+         */
+        repeat_delete = true;
+        nhm_count = MAX_NL_NH_ECMP_COUNT;
     }
 
-    t_std_error rc = nl_do_set_request(nas_nl_sock_T_ROUTE,nlh,buff,sizeof(buff));
-    int err_code = STD_ERR_EXT_PRIV (rc);
-    EV_LOG(INFO, NAS_OS,2,"ROUTE-UPD","Netlink error_code %d", err_code);
+    t_std_error rc;
+    int err_code;
+
+    do  {
+
+        rc = nl_do_set_request(nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
+        nhm_count--;
+        err_code = STD_ERR_EXT_PRIV (rc);
+        EV_LOG(INFO,NAS_OS,2,"ROUE_UPD","Netlink error_code %d", err_code);
+        /*
+         * Return success if the error is exist, in case of addition, or
+         * no-exist, in case of deletion. This is because, kernel might have
+         * deleted the route entries (when interface goes down) but has not sent netlink
+         * events for those routes and RTM is trying to delete after that.
+         * Similarly, during ip address configuration, kernel may add the routes
+         * before RTM tries to configure kernel.
+         *
+         */
+        if(err_code == ESRCH || err_code == EEXIST ) {
+            EV_LOG(INFO, NAS_OS,2,"ROUTE-UPD","No such process or Entry already exists, error_code= %d",err_code);
+            /*
+             * Kernel may or may not have the routes but NAS routing needs to be informed
+             * as is from kernel netlink to program NPU for the route addition/deletion to
+             * ensure stale routes are cleaned
+             */
+            if(err_code == ESRCH)
+                nas_os_publish_route(RTM_DELROUTE, obj, false);
+            else
+                nas_os_publish_route(RTM_NEWROUTE, obj, false);
+            rc = STD_ERR_OK;
+            repeat_delete = false;
+        }
+
+    } while ((repeat_delete == true) && (nhm_count > 0));
+
+    return rc;
+
+}
+
+/* This function is used to process the config for route nexthop append/delete.
+ * Ensure any changes made to nas_os_update_route() related to netlink route
+ * processing, take care of updating nas_os_update_route_nexthop() accordingly.
+ */
+t_std_error nas_os_update_route_nexthop (cps_api_object_t obj)
+{
+    static char buff[NL_RT_MSG_BUFFER_LEN], buff1[NL_RT_RMSG_BUFFER_LEN]; // Allocate from DS
+    char        addr_str[INET6_ADDRSTRLEN];
+    uint32_t    nhc = 0;
+    int         op = 0;
+    msg_type    m_type;
+    t_std_error rc = STD_ERR_OK;
+
+    memset(buff,0,sizeof(struct nlmsghdr));
+
+    cps_api_object_attr_t prefix   = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_ROUTE_PREFIX);
+    cps_api_object_attr_t af       = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_AF);
+    cps_api_object_attr_t pref_len = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_PREFIX_LEN);
+    cps_api_object_attr_t nh_count = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_COUNT);
+    cps_api_object_attr_t op_attr  = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_OPERATION);
+
+    if (prefix == CPS_API_ATTR_NULL || af == CPS_API_ATTR_NULL ||  pref_len == CPS_API_ATTR_NULL
+        || nh_count == NULL || op_attr == NULL) {
+        EV_LOGGING (NAS_OS, ERR, "ROUTE-NH-UPD", "Missing route nh update params");
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+
+    op = cps_api_object_attr_data_u32(op_attr);
+    nhc = cps_api_object_attr_data_u32(nh_count);
+
+    struct nlmsghdr *nlh = (struct nlmsghdr *)
+                         nlmsg_reserve((struct nlmsghdr *)buff,sizeof(buff),sizeof(struct nlmsghdr));
+    struct rtmsg * rm = (struct rtmsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct rtmsg));
+    memset(rm, 0, sizeof(struct rtmsg));
+
+    m_type = (op == BASE_ROUTE_RT_OPERATION_TYPE_DELETE) ? NAS_RT_DEL:NAS_RT_SET;
+    uint16_t type = (m_type == NAS_RT_DEL) ? RTM_DELROUTE:RTM_NEWROUTE;
+
+    /* NH delete is sent as route delete with next hop to kernel */
+    uint16_t flags = nas_os_get_nl_flags(m_type);
+
+    /* if op is append then update the flags and reset replace flag */
+    if (op == BASE_ROUTE_RT_OPERATION_TYPE_APPEND) {
+        flags &= ~NLM_F_REPLACE;
+        flags |= NLM_F_APPEND;
+    }
+
+    nas_os_pack_nl_hdr(nlh, type, flags);
+
+    rm->rtm_table = RT_TABLE_MAIN;
+    rm->rtm_protocol = RTPROT_UNSPEC; // This could be assigned to correct owner in future
+
+    /* For route delete, initialize scope to no-where and
+     * this will get updated to link when Nh addr/ifx is provided.
+     */
+    if (type != RTM_DELROUTE)
+        rm->rtm_scope = RT_SCOPE_UNIVERSE;
+    else
+        rm->rtm_scope = RT_SCOPE_NOWHERE;
+
+    rm->rtm_type = RTN_UNICAST;
+
+    rm->rtm_dst_len = cps_api_object_attr_data_u32(pref_len);
+    rm->rtm_family = (unsigned char) cps_api_object_attr_data_u32(af);
+
+    uint32_t addr_len = (rm->rtm_family == AF_INET)?HAL_INET4_LEN:HAL_INET6_LEN;
+    nlmsg_add_attr(nlh,sizeof(buff),RTA_DST,cps_api_object_attr_data_bin(prefix),addr_len);
+
+
+    EV_LOGGING(NAS_OS, INFO, "ROUTE-NH-UPD","NH count:%d family:%s msg:%s for prefix:%s len:%d scope:%d", nhc,
+               ((rm->rtm_family == AF_INET) ? "IPv4" : "IPv6"),
+               ((m_type == NAS_RT_DEL) ? "Route-Delete-NH" : "Route-Append-NH"),
+               ((rm->rtm_family == AF_INET) ?
+                (inet_ntop(rm->rtm_family, cps_api_object_attr_data_bin(prefix), addr_str, INET_ADDRSTRLEN)) :
+                (inet_ntop(rm->rtm_family, cps_api_object_attr_data_bin(prefix), addr_str, INET6_ADDRSTRLEN))),
+               rm->rtm_dst_len, rm->rtm_scope);
+
+    if (nhc == 1) {
+        cps_api_attr_id_t ids[3] = { BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST,
+                                     0, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST_NH_ADDR};
+        const int ids_len = sizeof(ids)/sizeof(*ids);
+        cps_api_object_attr_t gw = cps_api_object_e_get(obj,ids,ids_len);
+        if (gw != CPS_API_ATTR_NULL) {
+            nlmsg_add_attr(nlh,sizeof(buff),RTA_GATEWAY,cps_api_object_attr_data_bin(gw),addr_len);
+            rm->rtm_scope = RT_SCOPE_UNIVERSE; // set scope to universe when gateway is specified
+            EV_LOGGING (NAS_OS, INFO, "ROUTE-NH-UPD","NH:%s scope:%d",
+                        ((rm->rtm_family == AF_INET) ?
+                         (inet_ntop(rm->rtm_family, cps_api_object_attr_data_bin(gw), addr_str, INET_ADDRSTRLEN)) :
+                         (inet_ntop(rm->rtm_family, cps_api_object_attr_data_bin(gw), addr_str, INET6_ADDRSTRLEN))),
+                        rm->rtm_scope);
+        } else {
+            EV_LOGGING (NAS_OS, INFO, "ROUTE-NH-UPD", "Missing Gateway, could be intf route");
+            /*
+             * This could be an interface route, do not return from here!
+             */
+        }
+
+        ids[2] = BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST_IFINDEX;
+        cps_api_object_attr_t gwix = cps_api_object_e_get(obj,ids,ids_len);
+        if (gwix != CPS_API_ATTR_NULL) {
+            if (gw == CPS_API_ATTR_NULL) {
+                rm->rtm_scope = RT_SCOPE_LINK;
+            }
+
+            EV_LOGGING (NAS_OS, INFO, "ROUTE-NH-UPD","out-intf: %d scope:%d",
+                        (int)cps_api_object_attr_data_u32(gwix), rm->rtm_scope);
+            nas_nl_add_attr_int(nlh,sizeof(buff),RTA_OIF,gwix);
+        }
+
+        ids[2] = BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST_WEIGHT;
+        cps_api_object_attr_t weight = cps_api_object_e_get(obj,ids,ids_len);
+        if (weight != CPS_API_ATTR_NULL) nas_nl_add_attr_int(nlh,sizeof(buff),RTA_PRIORITY,weight);
+
+    } else if (nhc > 1){
+        struct nlattr * attr_nh = nlmsg_nested_start(nlh, sizeof(buff));
+
+        attr_nh->nla_len = 0;
+        attr_nh->nla_type = RTA_MULTIPATH;
+        size_t ix = 0;
+        for (ix = 0; ix < nhc ; ++ix) {
+            struct rtnexthop * rtnh =
+                (struct rtnexthop * )nlmsg_reserve(nlh,sizeof(buff), sizeof(struct rtnexthop));
+            memset(rtnh,0,sizeof(*rtnh));
+
+            cps_api_attr_id_t ids[3] = { BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST,
+                                         ix, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST_NH_ADDR};
+            const int ids_len = sizeof(ids)/sizeof(*ids);
+            cps_api_object_attr_t attr = cps_api_object_e_get(obj,ids,ids_len);
+            if (attr != CPS_API_ATTR_NULL) {
+                nlmsg_add_attr(nlh,sizeof(buff),RTA_GATEWAY,
+                               cps_api_object_attr_data_bin(attr),addr_len);
+                rm->rtm_scope = RT_SCOPE_UNIVERSE; // set scope to universe when gateway is specified
+                EV_LOGGING (NAS_OS, INFO, "ROUTE-NH-UPD","MP-NH:%d %s scope:%d",ix,
+                            ((rm->rtm_family == AF_INET) ?
+                             (inet_ntop(rm->rtm_family, cps_api_object_attr_data_bin(attr), addr_str, INET_ADDRSTRLEN)) :
+                             (inet_ntop(rm->rtm_family, cps_api_object_attr_data_bin(attr), addr_str, INET6_ADDRSTRLEN))),
+                            rm->rtm_scope);
+            } else {
+                EV_LOGGING (NAS_OS, ERR, "ROUTE-NH-UPD", "Error - Missing Gateway");
+                return (STD_ERR(NAS_OS, FAIL, 0));
+            }
+
+            ids[2] = BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST_IFINDEX;
+            attr = cps_api_object_e_get(obj,ids,ids_len);
+            if (attr != CPS_API_ATTR_NULL)
+                rtnh->rtnh_ifindex = (int)cps_api_object_attr_data_u32(attr);
+
+            ids[2] = BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST_WEIGHT;
+            attr = cps_api_object_e_get(obj,ids,ids_len);
+            if (attr != CPS_API_ATTR_NULL) rtnh->rtnh_hops = (char)cps_api_object_attr_data_u32(attr);
+
+            rtnh->rtnh_len = (char*)nlmsg_tail(nlh) - (char*)rtnh;
+        }
+        nlmsg_nested_end(nlh,attr_nh);
+    }
+
+    int err_code;
+
+    rc = nl_do_set_request(nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
+
+    err_code = STD_ERR_EXT_PRIV (rc);
+    EV_LOGGING (NAS_OS, INFO, "ROUE-NH-UPD","Netlink error_code %d", err_code);
 
     /*
      * Return success if the error is exist, in case of addition, or
      * no-exist, in case of deletion. This is because, kernel might have
      * deleted the route entries (when interface goes down) but has not sent netlink
      * events for those routes and RTM is trying to delete after that.
-     * Similarly, during ip address configuration, kernel may add the routes
-     * before RTM tries to configure kernel.
-     *
      */
     if(err_code == ESRCH || err_code == EEXIST ) {
-        EV_LOG(INFO, NAS_OS,2,"ROUTE-UPD","No such process or Entry already exists");
+        EV_LOGGING (NAS_OS, INFO, "ROUTE-NH-UPD","No such process or Entry already exists, error_code= %d", err_code);
         /*
          * Kernel may or may not have the routes but NAS routing needs to be informed
-         * as is from kernel netlink to program NPU for the route addition/deletion to
-         * ensure stale routes are cleaned
+         * as is from kernel netlink to program NPU for the route nexthop addition/deletion to
+         * ensure stale route nexthops are cleaned
          */
         if(err_code == ESRCH)
-            nas_os_publish_route(RTM_DELROUTE, obj, false);
+            nas_os_publish_route_nexthop (RTM_DELROUTE, obj, false);
         else
-            nas_os_publish_route(RTM_NEWROUTE, obj, false);
+            nas_os_publish_route_nexthop (RTM_NEWROUTE, obj, false);
+
         rc = STD_ERR_OK;
     }
 
-    return rc;
+    if (rc != STD_ERR_OK) {
+        EV_LOGGING (NAS_OS, ERR, "ROUTE-NH-UPD", "Kernel write failed");
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
 
+    return rc;
 }
 
 t_std_error nas_os_add_route (cps_api_object_t obj)
@@ -355,16 +675,6 @@ t_std_error nas_os_add_route (cps_api_object_t obj)
 
 t_std_error nas_os_set_route (cps_api_object_t obj)
 {
-    /* If IPv6 route replace, publish IPv6 route del to NAS-L3
-     * @@TODO Linux is not notifying the NLM_F_REPLACE flag in the IPv6 route add (replace) event,
-     * so, the below publish is required to flush the NAS-L3 route before getting
-     * the updated IPv6 routes from kernel.
-     * Please remove the below publish code, if kernel provides the netlink replace/append
-     * flags in the route add event */
-    cps_api_object_attr_t af = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_AF);
-    if (af && ( cps_api_object_attr_data_u32(af) == AF_INET6))
-        nas_os_publish_route(RTM_DELROUTE, obj, true);
-
     if (nas_os_update_route(obj, NAS_RT_SET) != cps_api_ret_code_OK) {
         EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "ROUTE-SET", "Kernel write failed");
         return (STD_ERR(NAS_OS, FAIL, 0));

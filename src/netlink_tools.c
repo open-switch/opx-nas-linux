@@ -26,6 +26,7 @@
 #include "std_socket_tools.h"
 #include "event_log.h"
 #include "nas_nlmsg.h"
+#include "nas_os_interface.h"
 
 #include <string.h>
 #include <unistd.h>
@@ -34,6 +35,9 @@
 #include <sys/socket.h>
 #include <errno.h>
 #include <time.h>
+
+#include <linux/netfilter/nfnetlink.h>
+#include <linux/netfilter/nfnetlink_log.h>
 
 typedef struct {
     struct nlattr **tb;
@@ -59,7 +63,7 @@ int nla_parse(struct nlattr *tb[], int max_type, struct nlattr * head, int len) 
     return 0;
 }
 
-int nl_sock_create(int ln_groups, int type,bool include_bind) {
+int nl_sock_create(int ln_groups, int type,bool include_bind, int sock_buf_len) {
     struct sockaddr_nl sa;
     memset(&sa, 0, sizeof(sa));
 
@@ -70,7 +74,7 @@ int nl_sock_create(int ln_groups, int type,bool include_bind) {
         EV_LOG_ERRNO(ev_log_t_NETLINK,0,"NK-SOCKCR",errno);
         return -1;
     }
-    std_sock_set_rcvbuf(sock,NL_SOCKET_BUFFER_LEN);
+    std_sock_set_rcvbuf(sock, sock_buf_len);
 
     if (!include_bind) return sock;
 
@@ -401,15 +405,18 @@ t_std_error nl_do_set_request(nas_nl_sock_TYPES type,struct nlmsghdr *m, void *b
 
 
 static int create_intf_socket(bool include_bind) {
-    return nl_sock_create(RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR,NETLINK_ROUTE,include_bind);
+    return nl_sock_create(RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR,
+                          NETLINK_ROUTE,include_bind, NL_INTF_SOCKET_BUFFER_LEN);
 }
 
 static int create_route_socket(bool include_bind) {
-    return nl_sock_create(RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE,NETLINK_ROUTE,include_bind);
+    return nl_sock_create(RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE,
+                          NETLINK_ROUTE,include_bind, NL_ROUTE_SOCKET_BUFFER_LEN);
 }
 
 static int create_neigh_socket(bool include_bind) {
-    return nl_sock_create(RTMGRP_NEIGH,NETLINK_ROUTE,include_bind);
+    return nl_sock_create(RTMGRP_NEIGH,NETLINK_ROUTE,include_bind,
+                          NL_NEIGH_SOCKET_BUFFER_LEN);
 }
 
 typedef int (*create_soc_fn)(bool include_bind);
@@ -439,4 +446,216 @@ void nas_os_pack_if_hdr(struct ifinfomsg *ifmsg, unsigned char ifi_family,
     ifmsg->ifi_family = ifi_family;
     ifmsg->ifi_flags = flags;
     ifmsg->ifi_index = if_index;
+}
+
+
+void nas_nl_process_nflog_msg (struct nlmsghdr *nl_hdr,
+                               nas_nflog_params_t *p_nas_nflog_params)
+{
+    int    msg_len, rem_len;
+    char  *data;
+    struct nfattr                *attr;
+
+    msg_len = nl_hdr -> nlmsg_len;
+
+    attr = (struct nfattr *) ((char *) nl_hdr +
+                              NLMSG_SPACE(sizeof(struct nfgenmsg)));
+
+    rem_len = msg_len - ((char *) attr - (char *) nl_hdr);
+
+    while (NFA_OK(attr, rem_len)) {
+        data = (char *) NFA_DATA(attr);
+        if (attr->nfa_type & NFNL_NFA_NEST) {
+            EV_LOGGING(NETLINK, INFO,"NK-SOCK-NFLOG","Nested attribute received");
+        }
+        switch (NFA_TYPE(attr)) {
+            case NFULA_PACKET_HDR:
+                {
+                    struct nfulnl_msg_packet_hdr *pkt_hdr;
+                    pkt_hdr = (struct nfulnl_msg_packet_hdr *)data;
+                    p_nas_nflog_params->hw_protocol = pkt_hdr->hw_protocol;
+                }
+                break;
+
+            case NFULA_IFINDEX_OUTDEV:
+                p_nas_nflog_params->out_ifindex = ntohl(*(unsigned int *)data);
+                break;
+
+            case NFULA_PAYLOAD:
+                if (attr->nfa_len > NL_NFLOG_PAYLOAD_LEN)
+                {
+                    EV_LOGGING(NETLINK, ERR,"NK-SOCK-NFLOG",
+                               "ERROR: exceeding input payload buffer len. len = %d",
+                               attr->nfa_len);
+                    return;
+                }
+                memcpy (p_nas_nflog_params->payload, (char *) data, attr->nfa_len);
+                p_nas_nflog_params->payload_len = attr->nfa_len;
+                break;
+
+            default:
+                break;
+        }
+        attr = NFA_NEXT(attr, rem_len);
+    }
+
+    return;
+}
+
+
+int nas_os_nl_get_nflog_params (uint8_t *buf, int size,
+                                nas_nflog_params_t *p_nas_nflog_params)
+{
+    struct nlmsghdr *nl_hdr;
+    struct nlmsgerr *msg_err;
+    int msg_count, msg_len, rem_len;
+    int more = 0;
+
+    msg_count = 0;   // Number of NL messages in this buffer
+    msg_len = 0;     // Sum of all NL message len from the header
+    rem_len = size;   // Running track of how many more bytes to process
+    nl_hdr = (struct nlmsghdr *) buf;
+
+    while (NLMSG_OK(nl_hdr, rem_len)) {
+
+        msg_count ++;
+        msg_len += nl_hdr -> nlmsg_len;
+
+        if (nl_hdr -> nlmsg_type == NLMSG_ERROR) { // Either ACK or ERR
+            msg_err = (struct nlmsgerr *) NLMSG_DATA(nl_hdr);
+            if (msg_err -> error != 0) {
+                EV_LOGGING(NETLINK, ERR,"NK-SOCK-NFLOG",
+                           "Error in processing NFLOG params - %s",
+                           strerror(-msg_err -> error));
+            } else {
+                EV_LOGGING(NETLINK, DEBUG, "NK-SOCK-NFLOG",
+                           "Operation was successfully done");
+            }
+            more = 0;
+            break;
+        } else if (nl_hdr -> nlmsg_type == NLMSG_DONE) {
+            more = 0;
+            break;
+        }
+        nas_nl_process_nflog_msg (nl_hdr, p_nas_nflog_params);
+
+        if (nl_hdr -> nlmsg_flags & NLM_F_MULTI) {
+            nl_hdr = NLMSG_NEXT(nl_hdr, rem_len);  // More msg in the buffer.
+            more = 1;
+        } else {   // Single message and we are automatically done.
+            more = 0;
+            nl_hdr = NLMSG_NEXT(nl_hdr, rem_len);  // More msg in the buffer.
+            break;
+        }
+    }
+
+    if (size < msg_len) {
+        /* @@TODO buffer overflow case log it for now */
+        EV_LOGGING(NETLINK, ERR,"NK-SOCK-NFLOG","NFLOG message buffer overlength msg_len:%d", msg_len);
+    }
+    if (more == 1) {
+        /* @@TODO multi part msg case log it for now */
+        EV_LOGGING(NETLINK, INFO,"NK-SOCK-NFLOG","Multi part NFLOG msg truncated");
+    }
+
+    return 0;
+}
+
+int nlmsg_prep_nful_msg(char *buf, int family,
+                        int type, int queue_num, int seq_no)
+{
+    struct nlmsghdr *nl_hdr;
+    int len;
+    struct nfgenmsg *msg;
+
+    len = NLMSG_SPACE(sizeof (struct nfgenmsg));
+    nl_hdr = (struct nlmsghdr *) buf;
+    msg = (struct nfgenmsg *) NLMSG_DATA(buf);
+
+    nl_hdr -> nlmsg_type = (type << 8) | NFULNL_MSG_CONFIG;
+    nl_hdr -> nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    nl_hdr -> nlmsg_seq = seq_no;
+    nl_hdr -> nlmsg_pid = 0;
+
+    msg -> nfgen_family = family;
+    msg -> version = NFNETLINK_V0;
+    msg -> res_id = htons (queue_num);
+    return len;
+
+}
+
+// Binds to the specified netfilter subsystem
+int nas_os_bind_nf_sub(int fd, int family, int type, int queue_num)
+{
+    char buf[512];    // Should be sufficient for the type of operations we do
+    struct nlmsghdr *nl_hdr;
+    int len;
+    struct nfattr *nfa;
+    struct nfulnl_msg_config_cmd *cmd;
+    struct nfulnl_msg_config_mode *mode;
+    static int seq_no = 345;
+    int error = 0;
+
+    len = nlmsg_prep_nful_msg(buf, family, type, queue_num, seq_no);
+    nl_hdr = (struct nlmsghdr *) buf;
+
+    nfa = (struct nfattr *) ((char *)buf + len);
+    nfa->nfa_len = NFA_SPACE(sizeof(struct nfulnl_msg_config_cmd));
+    len += nfa->nfa_len;
+    nfa->nfa_type = NFULA_CFG_CMD;
+    cmd = (struct nfulnl_msg_config_cmd *)NFA_DATA(nfa);
+    cmd->command = NFULNL_CFG_CMD_BIND;
+    nl_hdr -> nlmsg_len = len;
+
+    nl_send_nlmsg (fd, nl_hdr);
+    /* read the response */
+    netlink_tools_process_socket(fd,_process_set_fun,NULL,buf,512,&seq_no, &error);
+
+    seq_no++;
+
+    len = nlmsg_prep_nful_msg(buf, family, type, queue_num, seq_no);
+    nl_hdr = (struct nlmsghdr *) buf;
+
+    nfa = (struct nfattr *) ( (char *) buf + len);
+    nfa -> nfa_len = NFA_SPACE(sizeof (struct nfulnl_msg_config_mode));
+    len += nfa -> nfa_len;
+    nfa -> nfa_type = NFULA_CFG_MODE;
+    mode = (struct nfulnl_msg_config_mode *) NFA_DATA(nfa);
+    mode -> copy_range = 0xff;
+    mode -> copy_mode = NFULNL_COPY_PACKET;
+    nl_hdr -> nlmsg_len = len;
+
+    nl_send_nlmsg (fd, nl_hdr);
+    /* read the response */
+    netlink_tools_process_socket(fd,_process_set_fun,NULL,buf,512,&seq_no, &error);
+
+    seq_no++;
+    return 0;
+}
+
+int nas_os_nl_nflog_init ()
+{
+/* NFLOG socket group used. This is the one used in ebtable rule */
+#define NL_NFLOG_GROUP        100
+/* Netfilter NFLOG protocol family */
+#define NL_NFLOG_FAMILY       AF_BRIDGE
+/* NFLOG socket buffer. customized this as required. */
+#define NL_NFLOG_SOCK_BUFFER  65000
+    int fd;
+    int netlink_type = NETLINK_NETFILTER;
+
+    fd = nl_sock_create(NL_NFLOG_GROUP, netlink_type,true, NL_NFLOG_SOCK_BUFFER);
+
+    if (fd < 0) {
+        EV_LOGGING(NETLINK, ERR, "NK-SOCKCR-NFLOG", "NFLOG initialization failed: %d", errno);
+        return -1;
+    }
+
+    // For now let us monitor only the ULOG subsystem
+    nas_os_bind_nf_sub(fd, NL_NFLOG_FAMILY, NFNL_SUBSYS_ULOG, NL_NFLOG_GROUP);
+
+    // enable NFLOG
+    os_nflog_enable ();
+    EV_LOGGING(NETLINK, DEBUG,"NK-SOCKCR-NFLOG","NFLOG initialization success");
+    return fd;
 }

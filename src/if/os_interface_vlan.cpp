@@ -29,11 +29,104 @@
 #include "nas_os_vlan_utils.h"
 
 #include "event_log.h"
+#include "ds_api_linux_interface.h"
+#include "std_utils.h"
 
 #include <linux/if_link.h>
 #include <linux/if.h>
+#include <string>
+#include <iostream>
+#include <fstream>
+#include <sstream>
 
-bool static os_interface_vlan_bridge_handler(hal_ifindex_t mas_idx, hal_ifindex_t mem_idx, bool tag)
+#include <unordered_map>
+
+/* A container to store the tagged/untagged member ports with VLANs mapping */
+static std::unordered_map<hal_ifindex_t,std::unordered_set<hal_ifindex_t>> mbr_intf_to_vlan_map;
+/* This function disable the IPv6 on VLAN member ports (Phy/LAG) i.e e101-001-0/bond1
+ * and tagged member ports i.e e101-001-0.100/bond1.100
+ * Also, IPv6 will be enabled on the member port upon removal of last VLAN association */
+static bool os_interface_update_ipv6_status(hal_ifindex_t mbr_ifindex, bool is_active) {
+    std::stringstream str_stream;
+
+    char mbr_name[HAL_IF_NAME_SZ+1];
+    if (cps_api_interface_if_index_to_name(mbr_ifindex, mbr_name, sizeof(mbr_name))==NULL) {
+        return false;
+    }
+
+    str_stream << "/proc/sys/net/ipv6/conf/" << mbr_name << "/disable_ipv6";
+    std::string path = str_stream.str();
+    std::ofstream ipv6_conf (path.c_str());
+    if(!ipv6_conf.good()) {
+        return false;
+    }
+
+    if (is_active) {
+        /* Enable the IPv6 on VLAN member port */
+        ipv6_conf << "0";
+    } else {
+        /* Disable the IPv6 on VLAN member port */
+        ipv6_conf << "1";
+    }
+    EV_LOGGING(NAS_OS,INFO,"NAS-UPD-IPV6", "IPv6 file string:%s active:%d",
+               path.c_str(), is_active);
+    ipv6_conf.close();
+    return true;
+}
+
+static bool os_interface_update_vlan_info(hal_ifindex_t mem_idx, hal_ifindex_t vlan_if_index,
+                                          std::string sub_mbr_name, bool is_tag, bool add) {
+
+    int mbr_ifindex = 0; /* VLAN member port */
+    if (is_tag) {
+        char mbr_name[HAL_IF_NAME_SZ+1];
+        safestrncpy(mbr_name, sub_mbr_name.c_str(), sizeof(mbr_name));
+        /* Convert vlan enslave port (tagged VLAN interface) to member port
+         * if-index (i.e e101-001-0.200 to if-index of e101-001-0 */
+        if (!nas_os_sub_intf_name_to_intf_ifindex(mbr_name, &mbr_ifindex)) {
+            EV_LOGGING(NAS_OS,ERR,"NAS-UPD-VLAN", "Add %s vlan-index:%d sub-mbr-index:%d to "
+                       "mbr-index mapping does not exist!", ((is_tag) ? "tag" : "untag"),
+                       vlan_if_index, sub_mbr_name.c_str(), mem_idx);
+            return false;
+        }
+    } else {
+        mbr_ifindex = mem_idx;
+    }
+    EV_LOGGING(NAS_OS,INFO,"NAS-UPD-VLAN", "%s %s mbr-index:%d vlan-index:%d sub-mbr name:%s(%d)",
+               (add ? "Add" : "Del"), ((is_tag) ? "tag" : "untag"), mbr_ifindex,
+               vlan_if_index, sub_mbr_name.c_str(), mem_idx);
+    /* Enable the IPv6 on Physical/LAG when it's not part of any VLAN, otherwise disable it */
+    /* Tagged/Untagged member interface with VLANs handling */
+    if(add){
+        auto intf_it = mbr_intf_to_vlan_map.find(mbr_ifindex);
+        if(intf_it == mbr_intf_to_vlan_map.end()) {
+            /* Tagged/Untagged member if index with VLAN association not present, create one */
+            std::unordered_set<hal_ifindex_t> tagged_intf_list;
+            tagged_intf_list.insert(vlan_if_index);
+            mbr_intf_to_vlan_map[mbr_ifindex] = std::move(tagged_intf_list);
+            os_interface_update_ipv6_status(mbr_ifindex, !add);
+        }else{
+            /* Update the VLAN if_index for the existing member if index*/
+            intf_it->second.insert(vlan_if_index);
+        }
+        os_interface_update_ipv6_status(mem_idx, !add);
+    } else {
+        auto intf_it = mbr_intf_to_vlan_map.find(mbr_ifindex);
+        if(intf_it != mbr_intf_to_vlan_map.end()){
+            intf_it->second.erase(vlan_if_index);
+            if(intf_it->second.size()==0){
+                mbr_intf_to_vlan_map.erase(mbr_ifindex);
+                EV_LOGGING(NAS_OS,INFO,"NAS-UPD-VLAN", "Enable IPv6 on mbr-index:%d vlan-index:%d sub-mbr-index:%d",
+                           mbr_ifindex, vlan_if_index, mem_idx);
+                os_interface_update_ipv6_status(mbr_ifindex, !add);
+            }
+        }
+    }
+    return true;
+}
+
+bool static os_interface_vlan_bridge_handler(hal_ifindex_t mas_idx, hal_ifindex_t mem_idx,
+                                             std::string mem_name, bool tag)
 {
     if_bridge *br_hdlr = os_get_bridge_db_hdlr();
 
@@ -46,11 +139,13 @@ bool static os_interface_vlan_bridge_handler(hal_ifindex_t mas_idx, hal_ifindex_
     }
 
     if(!tag) {
+        os_interface_update_vlan_info(mem_idx, mas_idx, mem_name, false, true);
         br_hdlr->bridge_untag_mbr_add(mas_idx, mem_idx);
         // If tagged member list is empty, defer the publishing of untagged ports
         if(br_hdlr->bridge_mbr_list_chk_empty(mas_idx))
             return false;
     } else {
+        os_interface_update_vlan_info(mem_idx, mas_idx, mem_name, true, true);
         br_hdlr->bridge_tag_mbr_add(mas_idx, mem_idx);
     }
 
@@ -88,9 +183,11 @@ bool INTERFACE::os_interface_vlan_attrs_handler(if_details *details, cps_api_obj
             if(details->_ifindex != phy_ifindex) {
                 cps_api_object_attr_add_u32(obj,DELL_IF_IF_INTERFACES_INTERFACE_TAGGED_PORTS, phy_ifindex);
                 if(br_hdlr) br_hdlr->bridge_tag_mbr_del(master_idx, details->_ifindex);
+                os_interface_update_vlan_info(details->_ifindex, master_idx, details->if_name, true, false);
             } else {
                 cps_api_object_attr_add_u32(obj,DELL_IF_IF_INTERFACES_INTERFACE_UNTAGGED_PORTS, phy_ifindex);
                 if(br_hdlr) br_hdlr->bridge_untag_mbr_del(master_idx, details->_ifindex);
+                os_interface_update_vlan_info(details->_ifindex, master_idx, details->if_name, false, false);
             }
 
             details->_type = BASE_CMN_INTERFACE_TYPE_VLAN;
@@ -103,7 +200,7 @@ bool INTERFACE::os_interface_vlan_attrs_handler(if_details *details, cps_api_obj
          if(details->_attrs[IFLA_MASTER]!=NULL  && ((details->_flags & IFF_SLAVE)==0)) {
              EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Received tun %d", details->_ifindex);
 
-             if(!os_interface_vlan_bridge_handler(master_idx, details->_ifindex, false))
+             if(!os_interface_vlan_bridge_handler(master_idx, details->_ifindex, details->if_name, false))
                  return true;
 
              details->_type = BASE_CMN_INTERFACE_TYPE_VLAN;
@@ -118,7 +215,7 @@ bool INTERFACE::os_interface_vlan_attrs_handler(if_details *details, cps_api_obj
         EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Received bond %d with master set %d",
                 details->_ifindex, *(int *)nla_data(details->_attrs[IFLA_MASTER]));
 
-        if(!os_interface_vlan_bridge_handler(master_idx, details->_ifindex, false))
+        if(!os_interface_vlan_bridge_handler(master_idx, details->_ifindex, details->if_name, false))
             return true;
 
         //Bond with master set, means configured in a bridge
@@ -132,8 +229,8 @@ bool INTERFACE::os_interface_vlan_attrs_handler(if_details *details, cps_api_obj
     if ((details->_attrs[IFLA_LINKINFO] != nullptr) &&
         (details->_linkinfo[IFLA_INFO_KIND]!=nullptr)) {
 
-        EV_LOG(INFO, NAS_OS, 3, "NET-MAIN", "In IFLA_INFO_KIND for %s index %d",
-                details->_info_kind, details->_ifindex);
+        EV_LOG(INFO, NAS_OS, 3, "NET-MAIN", "In IFLA_INFO_KIND for %s index %d name:%s",
+                details->_info_kind, details->_ifindex, details->if_name.c_str());
 
         struct nlattr *vlan[IFLA_VLAN_MAX];
         bool publish_untag = false;
@@ -158,7 +255,8 @@ bool INTERFACE::os_interface_vlan_attrs_handler(if_details *details, cps_api_obj
                         if(br_hdlr && br_hdlr->bridge_mbr_list_chk_empty(master_idx))
                             publish_untag = true;
 
-                        if(!os_interface_vlan_bridge_handler(master_idx, details->_ifindex, true))
+                        if(!os_interface_vlan_bridge_handler(master_idx, details->_ifindex,
+                                                             details->if_name, true))
                             return false;
 
                         if(publish_untag) os_interface_add_untag_ports(master_idx, obj);
@@ -174,7 +272,8 @@ bool INTERFACE::os_interface_vlan_attrs_handler(if_details *details, cps_api_obj
                     } //IFLA_VLAN_ID
                 }//IFLA_INFO_DATA
             } else { // IFLA_MASTER
-                return false; // Need not publish sub-interfaces (e.g e101-001-1.100)
+                if(details->_op != cps_api_oper_DELETE)
+                    return false; // Need not publish sub-interfaces (e.g e101-001-1.100)
             }
         }// vlan interface
 

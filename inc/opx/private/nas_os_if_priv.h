@@ -27,6 +27,7 @@
 #include "dell-base-common.h"
 #include "std_error_codes.h"
 #include "nas_os_int_utils.h"
+#include "std_rw_lock.h"
 
 #include <linux/if_link.h>
 #include <linux/netlink.h>
@@ -66,6 +67,8 @@ class INTERFACE {
 
     os_if_map_t if_map_;
 
+    std_rw_lock_t rw_lock;
+
     enum {
         PHY=0, LAG, VLAN, STG, IP, MAX
     };
@@ -85,6 +88,8 @@ public:
         fptr[VLAN] = &INTERFACE::os_interface_vlan_attrs_handler;
         fptr[STG] = &INTERFACE::os_interface_stg_attrs_handler;
         fptr[IP] = &INTERFACE::os_interface_ip_attrs_handler;
+
+        std_rw_lock_create_default(&rw_lock);
     }
 
     bool if_hdlr(if_details* if_d, cps_api_object_t obj) {
@@ -99,8 +104,8 @@ public:
     bool if_info_setmask(hal_ifindex_t ifx, if_change_t mask_val);
     std::string if_info_get_type(hal_ifindex_t ifx);
     if_change_t if_info_getmask(hal_ifindex_t ifx);
-    bool if_info_delete(hal_ifindex_t ifx);
-    bool if_info_get(hal_ifindex_t ifx, if_info_t& if_info) const;
+    void if_info_delete(hal_ifindex_t ifx);
+    bool if_info_get(hal_ifindex_t ifx, if_info_t& if_info);
     bool if_info_get_admin(hal_ifindex_t ifx, bool& admin);
     void for_each_mbr(std::function <void (int ix, if_info_t& if_info)> fn);
 };

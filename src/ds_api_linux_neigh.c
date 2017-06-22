@@ -26,7 +26,11 @@
 #include "std_error_codes.h"
 #include "nas_nlmsg_object_utils.h"
 #include "event_log.h"
+#include "nas_if_utils.h"
 #include "nas_os_int_utils.h"
+#include "nas_os_vlan_utils.h"
+#include "nas_linux_l2.h"
+#include "ds_api_linux_interface.h"
 
 #include <sys/socket.h>
 #include <stdbool.h>
@@ -37,6 +41,7 @@
 
 // @TODO - This file has to conform to new yang model
 
+extern bool nas_rt_is_reserved_intf(char *if_name);
 char *nl_neigh_mac_to_str (hal_mac_addr_t *mac_addr) {
     static char str[18];
     snprintf (str, sizeof(str), "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -84,14 +89,22 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     struct rtattr   *rtatp = NULL;
     unsigned int     attrlen;
     char             addr_str[INET6_ADDRSTRLEN];
-    bool             is_nbr_ip_present = false, admin_status = false;
+    bool             is_bridge = false, admin_status = false;
     t_std_error      rc = STD_ERR_OK;
 
     if(hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*ndmsg)))
         return false;
 
-    if ((ndmsg->ndm_family != AF_INET) && (ndmsg->ndm_family != AF_INET6))
+    if ((ndmsg->ndm_family != AF_INET) && (ndmsg->ndm_family != AF_INET6) &&
+        (ndmsg->ndm_family != AF_BRIDGE)) {
         return false;
+    }
+    char intf_name[HAL_IF_NAME_SZ+1];
+    if(cps_api_interface_if_index_to_name(ndmsg->ndm_ifindex, intf_name,
+                                          sizeof(intf_name))!=NULL) {
+        if (nas_rt_is_reserved_intf(intf_name))
+            return false;
+    }
 
     attrlen = hdr->nlmsg_len - NLMSG_LENGTH(sizeof(*ndmsg));
 
@@ -101,18 +114,19 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     if ((rt_msg_type == RTM_NEWNEIGH) || (rt_msg_type == RTM_GETNEIGH)) {
         cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_OPERATION,NBR_ADD);
     } else if(rt_msg_type == RTM_DELNEIGH) {
-        /* If the interface is admin down/not present, simply ignore message here,
-         * NAS-l3 will handle the admin down and cleanup all the Nbr entries internally */
-        rc = os_intf_admin_state_get(ndmsg->ndm_ifindex, &admin_status);
-        if ((rc != STD_ERR_OK) || (admin_status == false)) {
-            EV_LOGGING(NETLINK, INFO,"NH-EVENT", "Nbr del rc:%d admin:%d", rc, admin_status);
-            return false;
+        if ((ndmsg->ndm_family == AF_INET) || (ndmsg->ndm_family == AF_INET6)) {
+            /* If the interface is admin down/not present, simply ignore message here,
+             * NAS-l3 will handle the admin down and cleanup all the Nbr entries internally */
+            rc = os_intf_admin_state_get(ndmsg->ndm_ifindex, &admin_status);
+            if ((rc != STD_ERR_OK) || (admin_status == false)) {
+                EV_LOGGING(NETLINK, INFO,"NH-EVENT", "Nbr del rc:%d admin:%d", rc, admin_status);
+                return false;
+            }
         }
         cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_OPERATION,NBR_DEL);
     } else {
         return false;
     }
-    cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_IFINDEX,ndmsg->ndm_ifindex);
     cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_FLAGS,ndmsg->ndm_flags);
     cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_STATE,ndmsg->ndm_state);
     cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_FAMILY,ndmsg->ndm_family);
@@ -124,12 +138,16 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
            ndmsg->ndm_flags, nl_neigh_state_to_str(ndmsg->ndm_state), ndmsg->ndm_state,
            ndmsg->ndm_ifindex);
 
+    //Skip publishing probe messages
+    if(NUD_PROBE == ndmsg->ndm_state) return false;
+
     rtatp = ((struct rtattr*)(((char*)(ndmsg)) + NLMSG_ALIGN(sizeof(struct ndmsg))));
 
+    hal_mac_addr_t *mac_addr=NULL;
+    int ifix;
     for (; RTA_OK(rtatp, attrlen); rtatp = RTA_NEXT (rtatp, attrlen)) {
 
         if(rtatp->rta_type == NDA_DST) {
-            is_nbr_ip_present = true;
             rta_add_ip((struct nlattr*)rtatp,ndmsg->ndm_family, obj,cps_api_if_NEIGH_A_NBR_ADDR);
             EV_LOG(INFO, NETLINK,3,"NH-EVENT","NextHop IP:%s",
                    ((ndmsg->ndm_family == AF_INET) ?
@@ -139,15 +157,44 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         }
 
         if(rtatp->rta_type == NDA_LLADDR) {
+            mac_addr = (hal_mac_addr_t *) nla_data((struct nlattr*)rtatp);
             rta_add_mac((struct nlattr*)rtatp,obj,cps_api_if_NEIGH_A_NBR_MAC);
             EV_LOG(INFO, NETLINK,3,"NH-EVENT","NextHop MAC:%s", nl_neigh_mac_to_str(nla_data((struct nlattr*)rtatp)));
         }
+        if(rtatp->rta_type == NDA_MASTER) {
+            char if_name[HAL_IF_NAME_SZ+1];
+            ifix = *(int *)nla_data((struct nlattr*)rtatp);
+            cps_api_interface_if_index_to_name(ifix,if_name,  sizeof(if_name));
 
+            int mbr_ifindex = 0; /* VLAN member port */
+            nas_os_physical_to_vlan_ifindex(ndmsg->ndm_ifindex, 0, false, &mbr_ifindex);
+            char mbr_name[HAL_IF_NAME_SZ+1];
+            cps_api_interface_if_index_to_name(mbr_ifindex,mbr_name, sizeof(mbr_name));
+            cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_IFINDEX,ifix);
+
+            //Populate the physical index only if mac learning is enabled
+            if(nas_os_mac_get_learning(ndmsg->ndm_ifindex))
+                cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_PHY_IFINDEX,mbr_ifindex);
+            is_bridge = true;
+            EV_LOGGING(NETLINK, INFO,"NH-EVENT","VLAN:%s(%d) mbr:%s(%d)", if_name, ifix, mbr_name, mbr_ifindex);
+        }
     }
-    /* @@TODO NH-Add with no NH-Addr is received for IPv6 family while resolving the for IPv4 address,
-     * for now this IPv6 invalid NH-Add is ignored, need to investigate further if required in the future. */
-    if (is_nbr_ip_present == false)
-        return false;
+    /* Incase of the bridge FDB(L2 FDB Nbr), the VLAN and port information have been added into
+     * the CPS object above and for non-bridge case(IP nbr), add the L3 out intf below. */
+    if (is_bridge == false)
+        cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_IFINDEX,ndmsg->ndm_ifindex);
+    else {
+        // Ignore self-mac address during FDB learning.
+        if(ndmsg->ndm_family == AF_BRIDGE) {
+            hal_mac_addr_t self_mac;
+            if(mac_addr && os_intf_mac_addr_get(ifix, self_mac) == STD_ERR_OK) {
+                  if(!memcmp(mac_addr,self_mac, HAL_MAC_ADDR_LEN)) {
+                    EV_LOGGING(NETLINK, INFO,"NH-EVENT","Self mac learn on %d, ignore", ifix);
+                    return false;
+                }
+            }
+        }
+    }
 
     return true;
 }

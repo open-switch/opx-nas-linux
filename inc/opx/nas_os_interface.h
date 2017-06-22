@@ -48,6 +48,15 @@ extern "C" {
 #define NAS_OS_IF_FLAGS_ID (NAS_OS_IF_OBJ_ID_RES_START) //reserve 4 inside the object for flags
 #define NAS_OS_IF_ALIAS (NAS_OS_IF_OBJ_ID_RES_START+1)
 
+typedef struct _nas_nflog_params {
+    uint16_t     hw_protocol;
+    unsigned int out_ifindex;
+#define NL_NFLOG_PAYLOAD_LEN 200
+    uint8_t      payload[NL_NFLOG_PAYLOAD_LEN];
+    int          payload_len;
+} nas_nflog_params_t;
+
+
 /**
  * @brief : API to delete interface from kernel
  * @param if_index : Kernel interface index
@@ -83,6 +92,14 @@ t_std_error nas_os_get_interface_obj(hal_ifindex_t ifix, cps_api_object_t obj);
 t_std_error nas_os_get_interface_obj_by_name(const char *ifname, cps_api_object_t obj);
 
 /**
+ * Get the NAS OS object with MTU attribute set from os interface, based on the name provided
+ * @param ifname - the name of the interface
+ * @param obj the object to return
+ * @return STD_ERR_OK if successcul otherwise an error
+ */
+t_std_error nas_os_get_interface_mtu(const char *ifname, cps_api_object_t obj);
+
+/**
  * Look through the interface and set the retrieved attribute into the kernel
  *
  * @param obj the object hold the attributes to look at
@@ -91,6 +108,16 @@ t_std_error nas_os_get_interface_obj_by_name(const char *ifname, cps_api_object_
  */
 t_std_error nas_os_interface_set_attribute(cps_api_object_t obj,cps_api_attr_id_t id);
 
+/**
+ * Initializes socket for NFLOG where packets for certain types like ARP are handled.
+ *
+ * @param none
+ * @return fd of the socket that is initialized when successful otherwise -1
+ */
+int nas_os_nl_nflog_init ();
+
+int nas_os_nl_get_nflog_params  (uint8_t *buf, int size,
+                                 nas_nflog_params_t *p_nas_nflog_params);
 
 /**
  *  \}

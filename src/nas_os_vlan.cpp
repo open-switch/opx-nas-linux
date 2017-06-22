@@ -144,7 +144,6 @@ bool get_tagged_intf_index_from_name(const char * intf_name,hal_ifindex_t & intf
     return false;
 }
 
-
 #define NL_MSG_BUFFER_LEN 4096
 
 t_std_error nas_os_add_vlan(cps_api_object_t obj, hal_ifindex_t *br_index)
@@ -456,7 +455,7 @@ t_std_error nas_os_add_port_to_vlan(cps_api_object_t obj, hal_ifindex_t *vlan_in
     cps_api_object_attr_t vlan_id_attr = cps_api_object_attr_get(obj, BASE_IF_VLAN_IF_INTERFACES_INTERFACE_ID);
     cps_api_object_attr_t vlan_t_port_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_TAGGED_PORTS);
     cps_api_object_attr_t vlan_ut_port_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_UNTAGGED_PORTS);
-
+    cps_api_object_attr_t mtu_attr = cps_api_object_attr_get(obj,DELL_IF_IF_INTERFACES_INTERFACE_MTU);
     if((vlan_index_attr == NULL) ||
        (vlan_id_attr == NULL) ||
        ((vlan_t_port_attr == NULL) &&
@@ -465,6 +464,10 @@ t_std_error nas_os_add_port_to_vlan(cps_api_object_t obj, hal_ifindex_t *vlan_in
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
 
+    uint32_t mtu = 0;
+    if(mtu_attr != nullptr){
+        mtu = cps_api_object_attr_data_u32(mtu_attr);
+    }
     int vlan_id = (int)cps_api_object_attr_data_u32(vlan_id_attr);
     hal_ifindex_t br_index = (int)cps_api_object_attr_data_u32(vlan_index_attr);
     hal_ifindex_t if_index = 0;
@@ -493,8 +496,26 @@ t_std_error nas_os_add_port_to_vlan(cps_api_object_t obj, hal_ifindex_t *vlan_in
     // @TODO check for admin status and bring it up after adding port to vlan.
 
     if(vlan_t_port_attr) {
-        return nas_os_t_port_to_vlan(vlan_id, vlan_name, if_index, br_index, vlan_index);
+        t_std_error rc;
+        rc = nas_os_t_port_to_vlan(vlan_id, vlan_name, if_index, br_index, vlan_index);
+        /*
+         * When adding a tagged member port to a bridge need to set its mtu to be the same
+         * as bridge mtu otherwise kernel will reset the bridge mtu to be lowest of all
+         * member ports
+         */
+        if(mtu && (rc == STD_ERR_OK) ){
+
+            /*
+             * Use the same object, delete the physical port ifindex and add the
+             * tagged member port ifindex to object
+             */
+            cps_api_object_attr_delete(obj,DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
+            cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,*vlan_index);
+            return nas_os_interface_set_attribute(obj,DELL_IF_IF_INTERFACES_INTERFACE_MTU);
+        }
+        return rc;
     }
+
     //if not tagged then add untagged port
     return nas_os_ut_port_to_vlan(if_index, br_index);
 }
@@ -614,4 +635,67 @@ t_std_error nas_os_del_vlan_interface(cps_api_object_t obj)
     return nas_os_del_interface(vlan_if_index);
 }
 
+bool nas_os_tag_port_exist(cps_api_object_t obj){
+
+    char if_name[HAL_IF_NAME_SZ+1];
+    char vlan_name[HAL_IF_NAME_SZ+1];
+
+    cps_api_object_attr_t vlan_id_attr = cps_api_object_attr_get(obj, BASE_IF_VLAN_IF_INTERFACES_INTERFACE_ID);
+    cps_api_object_attr_t vlan_t_port_attr = cps_api_object_attr_get(obj,
+                            DELL_IF_IF_INTERFACES_INTERFACE_TAGGED_PORTS);
+
+    if((vlan_id_attr == NULL) ||
+      (vlan_t_port_attr == NULL)) {
+        EV_LOGGING(NAS_OS,ERR,"NAS-LINUX-INTERFACE","Parameter missing for port exist ");
+        return false;
+    }
+
+    int vlan_id = (int)cps_api_object_attr_data_u32(vlan_id_attr);
+    hal_ifindex_t port_index = 0;
+
+    port_index = (int)cps_api_object_attr_data_u32(vlan_t_port_attr);
+
+    if(cps_api_interface_if_index_to_name(port_index,if_name,sizeof(if_name))==NULL){
+        EV_LOG(ERR,NAS_OS,0,"NAS-LINUX-INTERFACE","Invalid Interface Index %d ",port_index);
+        return false;
+    }
+    nas_os_get_vlan_if_name(if_name, sizeof(if_name), vlan_id, vlan_name);
+
+    if(cps_api_interface_name_to_if_index(vlan_name) == 0){
+        EV_LOG(ERR,NAS_OS,0,"NAS-LINUX-INTERFACE","Invalid Interface name %s ",vlan_name);
+        return false;
+    }
+    return true;
+}
+
+
+t_std_error nas_os_vlan_set_member_port_mtu(cps_api_object_t obj){
+
+    cps_api_object_attr_t ifindex_attr = cps_api_object_attr_get(obj,DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
+    cps_api_object_attr_t vlan_id_attr = cps_api_object_attr_get(obj,BASE_IF_VLAN_IF_INTERFACES_INTERFACE_ID);
+
+    if(ifindex_attr == nullptr || vlan_id_attr == nullptr){
+        EV_LOGGING(NAS_OS,DEBUG,"NAS-LINUX-INTERFACE","Missing neccessary params for updating member port mtu");
+        return STD_ERR(NAS_OS,PARAM,0);
+    }
+    hal_ifindex_t ifindex = cps_api_object_attr_data_u32(ifindex_attr);
+    hal_vlan_id_t vlan_id = cps_api_object_attr_data_u16(vlan_id_attr);
+    hal_ifindex_t vlan_ifindex = 0;
+    /*
+     * Object would contain physical port index and vlan id. It needs to be converted
+     * into tagged member port ifindex
+     */
+    if(nas_os_physical_to_vlan_ifindex(ifindex,vlan_id,true,&vlan_ifindex)){
+
+        /*
+         * Use the same object, delete the physical port ifindex and add the
+         * tagged member port ifindex to object
+         */
+        cps_api_object_attr_delete(obj,DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
+        cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,vlan_ifindex);
+        return nas_os_interface_set_attribute(obj,DELL_IF_IF_INTERFACES_INTERFACE_MTU);
+    }
+
+    return STD_ERR(NAS_OS,PARAM,0);
+}
 

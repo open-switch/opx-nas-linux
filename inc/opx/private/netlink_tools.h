@@ -37,12 +37,20 @@ extern "C" {
 #endif
 
 /**
- * This define was selected to give about 70mb buffer space on each netlink socket
+ * This define was selected to give about the buffer space on each netlink socket
  * created for kernel communication.  If the socket buffer is low for any reason
  * the kernel will discard events.  Missing discarded events is something
  * that we don't expect and would have undesirable consequences
  */
-#define NL_SOCKET_BUFFER_LEN (70*1024*1024) /* Netlink socket buffer size - 70MB */
+
+/* Netlink socket buffer size for interface events - 30MB */
+#define NL_INTF_SOCKET_BUFFER_LEN (30*1024*1024)
+
+/* Netlink socket buffer size for neighbor events - 40MB */
+#define NL_NEIGH_SOCKET_BUFFER_LEN (40*1024*1024)
+
+/* Netlink socket buffer size for route events - 250MB */
+#define NL_ROUTE_SOCKET_BUFFER_LEN (250*1024*1024)
 
 #define NL_SCRATCH_BUFFER_LEN (1*1024*1024) /* Scratch buffer size - 1MB */
 
@@ -84,6 +92,9 @@ void nas_os_pack_nl_hdr(struct nlmsghdr *nlh, __u16 msg_type, __u16 nl_flags);
 
 void nas_os_pack_if_hdr(struct ifinfomsg *ifmsg, unsigned char ifi_family,
                         unsigned int flags, int if_index);
+
+int nas_os_bind_nf_sub(int fd, int family, int type, int queue_num);
+bool os_nflog_enable ();
 
 #ifdef __cplusplus
 }

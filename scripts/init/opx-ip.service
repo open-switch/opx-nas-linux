@@ -1,14 +1,13 @@
 [Unit]
 Description=IP address handler
-After=opx-create-interface.service
-DefaultDependencies=no
+After=opx-cps.service
+Wants=opx-cps.service
+OnFailure=service_onfailure@%n.service
 
 [Service]
+Type=notify
 EnvironmentFile=/etc/opx/opx-environment
-ExecStart=/usr/bin/base_ip
-
-# Resource Limitations
-LimitNOFILE=16384
+ExecStart=/usr/bin/python -u /usr/bin/base_ip.py
 
 [Install]
 WantedBy=multi-user.target

@@ -60,6 +60,8 @@ bool os_interface_mask_event(hal_ifindex_t ifix, if_change_t mask_val);
 
 t_std_error os_intf_admin_state_get(hal_ifindex_t ifix, bool *p_admin_status);
 
+t_std_error os_intf_mac_addr_get(hal_ifindex_t ifix, hal_mac_addr_t mac);
+
 #ifdef __cplusplus
 }
 #endif

@@ -34,6 +34,7 @@ void nas_os_get_vlan_if_name(char *if_name, int len, hal_vlan_id_t vlan_id, char
 
 bool nas_os_physical_to_vlan_ifindex(hal_ifindex_t intf_index, hal_vlan_id_t vlan_id,
                                             bool to_vlan,hal_ifindex_t * index);
+bool nas_os_sub_intf_name_to_intf_ifindex(char *sub_intf_name, hal_ifindex_t * index);
 
 #ifdef __cplusplus
 }

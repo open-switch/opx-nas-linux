@@ -63,6 +63,16 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj);
 t_std_error nas_os_mac_change_learning(hal_ifindex_t ifindex,bool enable);
 
 /*
+ * @brief Get the MAC learning state in the kernel for a given interface
+ *
+ * @ifindex - interface index to identify the interface
+ *
+ * @return true if learning is enabled, false otherwise (Default is true)
+ */
+
+bool nas_os_mac_get_learning(hal_ifindex_t ifindex);
+
+/*
  * @brief - Get the stp state for an interface
  *
  * @index - ifindex of the interface

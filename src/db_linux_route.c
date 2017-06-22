@@ -29,6 +29,9 @@
 #include "std_ip_utils.h"
 #include "nas_nlmsg_object_utils.h"
 #include "ds_common_types.h"
+#include "ds_api_linux_interface.h"
+#include "hal_if_mapping.h"
+#include "std_utils.h"
 
 #include <arpa/inet.h>
 #include <linux/netlink.h>
@@ -40,6 +43,36 @@
 typedef struct {
     int family;
 } route_filter_t;
+
+bool nas_rt_is_reserved_intf(char *intf_name) {
+
+    if (intf_name == NULL)
+        return false;
+
+    /* Skip eth0 and lo interfaces */
+    if ((strncmp(intf_name, "eth", strlen("eth")) == 0) ||
+        ((strncmp(intf_name, "lo", strlen("lo")) == 0) &&
+         (strlen(intf_name) == strlen("lo")))) {
+        return true;
+    }
+
+    interface_ctrl_t intf_ctrl;
+    memset(&intf_ctrl, 0, sizeof(intf_ctrl));
+    intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF_NAME;
+    safestrncpy(intf_ctrl.if_name, intf_name, HAL_IF_NAME_SZ);
+
+    if (dn_hal_get_interface_info(&intf_ctrl) != STD_ERR_OK) {
+        EV_LOGGING(NETLINK,DEBUG,"NAS-LINUX-INTERFACE", "Interface (%s) not found", intf_name);
+        return false;
+    }
+    if ((intf_ctrl.int_type == nas_int_type_VLAN)
+        && (intf_ctrl.int_sub_type == BASE_IF_VLAN_TYPE_MANAGEMENT)) {
+        return true;
+    }
+
+    return false;
+}
+
 
 // @TODO - This file has to conform to new yang model
 
@@ -81,14 +114,12 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
 
     cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_FAMILY,rtmsg->rtm_family);
     if(rt_msg_type == RTM_NEWROUTE) {
-        /* @@TODO NETLINK Header flags is not received with NLM_F_REPLACE, need to explore further
-           if ((rtmsg->rtm_family == AF_INET6) && (hdr->nlmsg_flags & NLM_F_REPLACE)) {
+        /* NETLINK Header flags if received with NLM_F_REPLACE, send it as ROUTE_UPD instead of ROUTE_ADD */
+        if (hdr->nlmsg_flags & NLM_F_REPLACE) {
            cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_UPD);
            } else {
            cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_ADD);
            }
-         */
-        cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_ADD);
     } else if(rt_msg_type == RTM_DELROUTE) {
         cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_DEL);
     } else {
@@ -122,7 +153,7 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
      * RTN_UNICAST - 1, RTN_LOCAL - 2
      * @@TODO see if some other route types to be supported */
     if ((rtmsg->rtm_type != RTN_UNICAST) && (rtmsg->rtm_type != RTN_LOCAL)) {
-        EV_LOGGING(NETLINK,INFO,"NL-ROUTE-PARSE","Invalid route type:%d ", rtmsg->rtm_type);
+        EV_LOGGING(NETLINK,DEBUG,"NL-ROUTE-PARSE","Invalid route type:%d ", rtmsg->rtm_type);
         return false;
     }
 
@@ -134,7 +165,7 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     if((rtmsg->rtm_flags & RTM_F_CLONED) && (rtmsg->rtm_family == AF_INET6)) {
         // Skip cloned route updates
         char addr_str[INET6_ADDRSTRLEN];
-        EV_LOGGING(NETLINK,INFO,"ROUTE-EVENT","Cache entry %s",
+        EV_LOGGING(NETLINK,DEBUG,"ROUTE-EVENT","Cache entry %s",
                 (attrs[RTA_DST]!=NULL)?(inet_ntop(rtmsg->rtm_family,
                 ((struct in6_addr *) nla_data((struct nlattr*)attrs[RTA_DST])),
                 addr_str, INET6_ADDRSTRLEN)):"");
@@ -162,6 +193,20 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     if (attrs[RTA_OIF]!=NULL) {
         ids[2] = cps_api_if_ROUTE_A_NH_IFINDEX;
         unsigned int *x = (unsigned int *) nla_data(attrs[RTA_OIF]);
+
+        char intf_name[HAL_IF_NAME_SZ+1];
+        if(cps_api_interface_if_index_to_name(*x, intf_name,
+                                              sizeof(intf_name))!=NULL) {
+            /* Skip linux sub interfaces */
+            if (strstr(intf_name,".")) {
+                EV_LOGGING(NETLINK,DEBUG,"NAS-LINUX-INTERFACE", "Linux sub-intf:%s ignored!",
+                           intf_name);
+                return false;
+            }
+
+            if (nas_rt_is_reserved_intf(intf_name))
+                return false;
+        }
 
         cps_api_object_e_add(obj,ids,ids_len,cps_api_object_ATTR_T_U32,
                 nla_data(attrs[RTA_OIF]),sizeof(uint32_t));

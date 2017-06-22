@@ -58,6 +58,15 @@ t_std_error nas_os_del_route (cps_api_object_t obj);
 t_std_error nas_os_set_route (cps_api_object_t obj);
 
 /**
+ * @brief : Update Route Nexthop(s): This is used to apped/delete nexthop(s) of an existing IPv4/v6 unicast route in kernel
+ *
+ * @obj : CPS API object which contains route params
+ *
+ * @return : STD_ERR_OK if successful, otherwise different error code
+ */
+t_std_error nas_os_update_route_nexthop (cps_api_object_t obj);
+
+/**
  * @brief : Add Neighbor : This adds a neighbor entry in kernel
  *
  * @obj : CPS API object which contains arp/nd params

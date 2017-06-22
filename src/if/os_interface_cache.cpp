@@ -19,10 +19,14 @@
  */
 
 #include "os_if_utils.h"
+#include "event_log.h"
 
 int INTERFACE::if_info_update(hal_ifindex_t ifx, if_info_t& if_info)
 {
     int track_ = OS_IF_CHANGE_NONE;
+    std_rw_lock_write_guard lg(&rw_lock);
+
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS-CACHE", "Update for ifindex %d", ifx);
 
     auto it = if_map_.find(ifx);
     if(it == if_map_.end()) {
@@ -55,6 +59,8 @@ int INTERFACE::if_info_update(hal_ifindex_t ifx, if_info_t& if_info)
 
 bool INTERFACE::if_info_setmask(hal_ifindex_t ifx, if_change_t mask_val)
 {
+    std_rw_lock_write_guard lg(&rw_lock);
+
     auto it = if_map_.find(ifx);
 
     if(it == if_map_.end()) {
@@ -68,6 +74,8 @@ bool INTERFACE::if_info_setmask(hal_ifindex_t ifx, if_change_t mask_val)
 
 if_change_t INTERFACE::if_info_getmask(hal_ifindex_t ifx)
 {
+    std_rw_lock_read_guard lg(&rw_lock);
+
     auto it = if_map_.find(ifx);
 
     if(it == if_map_.end()) {
@@ -79,6 +87,8 @@ if_change_t INTERFACE::if_info_getmask(hal_ifindex_t ifx)
 
 std::string INTERFACE::if_info_get_type(hal_ifindex_t ifx)
 {
+    std_rw_lock_read_guard lg(&rw_lock);
+
     auto it = if_map_.find(ifx);
     std::string str = "None";
 
@@ -91,6 +101,8 @@ std::string INTERFACE::if_info_get_type(hal_ifindex_t ifx)
 
 bool INTERFACE::if_info_get_admin(hal_ifindex_t ifx, bool& admin)
 {
+    std_rw_lock_read_guard lg(&rw_lock);
+
     auto it = if_map_.find(ifx);
 
     if(it == if_map_.end()) {
@@ -100,8 +112,12 @@ bool INTERFACE::if_info_get_admin(hal_ifindex_t ifx, bool& admin)
     return true;;
 }
 
-bool INTERFACE::if_info_get(hal_ifindex_t ifx, if_info_t& if_info) const
+bool INTERFACE::if_info_get(hal_ifindex_t ifx, if_info_t& if_info)
 {
+    std_rw_lock_read_guard lg(&rw_lock);
+
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS-CACHE", "Get for ifindex %d", ifx);
+
     auto it = if_map_.find(ifx);
 
     if(it == if_map_.end()) {
@@ -115,8 +131,21 @@ bool INTERFACE::if_info_get(hal_ifindex_t ifx, if_info_t& if_info) const
     return true;
 }
 
+void INTERFACE::if_info_delete(hal_ifindex_t ifx) {
+
+    std_rw_lock_write_guard lg(&rw_lock);
+
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS-CACHE", "Deleting ifix %d", ifx);
+
+    if_map_.erase(ifx);
+
+    return;
+}
+
 void INTERFACE::for_each_mbr(std::function <void (int ix, if_info_t& if_info)> fn)
 {
+    std_rw_lock_read_guard lg(&rw_lock);
+
     for (auto it = if_map_.begin(); it != if_map_.end(); ++it)
         fn(it->first, it->second);
 }

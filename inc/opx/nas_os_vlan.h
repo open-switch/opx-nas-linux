@@ -84,6 +84,22 @@ t_std_error nas_os_del_vlan_interface(cps_api_object_t obj);
 
 bool nas_os_set_bridge_default_mac_ageing(hal_ifindex_t br_index);
 
+/**
+ * @brief : Check to see if  tagged interface exist
+ *
+ * @obj : CPS API object which contains vlan_id, portindex for the port
+ */
+bool nas_os_tag_port_exist(cps_api_object_t obj);
+
+/**
+ * @brief : Set the vlan member port mtu
+ *
+ * @br_index : CPS Object which contains mtu, vlan id and ifindex of the member port
+ *
+ * @return : STD_ERR_OK if successful otherwise error code
+ */
+
+t_std_error nas_os_vlan_set_member_port_mtu(cps_api_object_t obj);
 
 #ifdef __cplusplus
 }
