@@ -9,4 +9,4 @@ manipulate IP, interfaces, VLAN, route, bridge, and so on via common Linux APIs.
 
 See [Network adaption service](https://github.com/open-switch/opx-docs/wiki/Network-adaptation-service) for more information on the NAS Linux integration with native Linux APIs.
 
-(c) 2017 Dell EMC
+© 2017 Dell EMC
