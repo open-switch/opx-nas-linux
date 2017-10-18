@@ -32,6 +32,7 @@
 #include "ds_api_linux_interface.h"
 #include "hal_if_mapping.h"
 #include "std_utils.h"
+#include "ds_api_linux_route.h"
 
 #include <arpa/inet.h>
 #include <linux/netlink.h>
@@ -83,21 +84,35 @@ static inline void nas_os_log_route_info(struct nlmsghdr *hdr, int rt_msg_type, 
 
     EV_LOGGING(NETLINK, INFO,"ROUTE-EVENT","NLM type:0x%x flags:0x%x Op:%s af:%s(%d) Prefix:%s/%d tbl:%d "
                "proto:%d scope:%d type:%d flags:%d multiPath:%s gateway:%s ifx:%d",
-               hdr->nlmsg_type, hdr->nlmsg_flags, ((rt_msg_type == RTM_NEWROUTE) ? "Add" : "Del"),
-               ((rtmsg->rtm_family == AF_INET) ? "IPv4" : "IPv6"), rtmsg->rtm_family,
+               hdr->nlmsg_type,
+               hdr->nlmsg_flags,
+               ((rt_msg_type == RTM_NEWROUTE) ? "Add" : "Del"),
+               ((rtmsg->rtm_family == AF_INET) ? "IPv4" : "IPv6"),
+               rtmsg->rtm_family,
                ((attrs[RTA_DST] != NULL) ?
-                ((rtmsg->rtm_family == AF_INET) ? (inet_ntop(rtmsg->rtm_family, ((struct in_addr *) nla_data((struct nlattr*)attrs[RTA_DST])),
-                                                             addr_str, INET_ADDRSTRLEN)) :
-                 (inet_ntop(rtmsg->rtm_family, ((struct in6_addr *) nla_data((struct nlattr*)attrs[RTA_DST])),
+                ((rtmsg->rtm_family == AF_INET) ?
+                 (inet_ntop(rtmsg->rtm_family,
+                            ((struct in_addr *) nla_data((struct nlattr*)attrs[RTA_DST])),
+                            addr_str, INET_ADDRSTRLEN)) :
+                 (inet_ntop(rtmsg->rtm_family,
+                            ((struct in6_addr *) nla_data((struct nlattr*)attrs[RTA_DST])),
                             addr_str, INET6_ADDRSTRLEN))) : "NA"),
-               rtmsg->rtm_dst_len, rtmsg->rtm_table, rtmsg->rtm_protocol, rtmsg->rtm_scope, rtmsg->rtm_type, rtmsg->rtm_flags,
+               rtmsg->rtm_dst_len,
+               rtmsg->rtm_table,
+               rtmsg->rtm_protocol,
+               rtmsg->rtm_scope,
+               rtmsg->rtm_type,
+               rtmsg->rtm_flags,
                ((attrs[RTA_MULTIPATH]) ? "Yes" : "No"),
                ((attrs[RTA_GATEWAY]!=NULL) ?
                 ((rtmsg->rtm_family == AF_INET) ?
-                 (inet_ntop(rtmsg->rtm_family, ((struct in_addr *) nla_data((struct nlattr*)attrs[RTA_GATEWAY])), addr_str1, INET_ADDRSTRLEN)) :
-                 (inet_ntop(rtmsg->rtm_family, ((struct in6_addr *) nla_data((struct nlattr*)attrs[RTA_GATEWAY])),
+                 (inet_ntop(rtmsg->rtm_family,
+                            ((struct in_addr *) nla_data((struct nlattr*)attrs[RTA_GATEWAY])),
+                            addr_str1, INET_ADDRSTRLEN)) :
+                 (inet_ntop(rtmsg->rtm_family,
+                            ((struct in6_addr *) nla_data((struct nlattr*)attrs[RTA_GATEWAY])),
                             addr_str1, INET6_ADDRSTRLEN))) : "NA"),
-               ((attrs[RTA_OIF]!=NULL) ? *((unsigned int *)nla_data(attrs[RTA_OIF])): 0));
+               ((attrs[RTA_OIF]!=NULL) ? *((unsigned int *)nla_data(attrs[RTA_OIF])): -1));
 }
 
 //db_route_t
@@ -145,14 +160,27 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
             cps_api_obj_cat_ROUTE,cps_api_route_obj_ROUTE,0 );
 
     if(attrs[RTA_DST]!=NULL) {
-        rta_add_ip((struct nlattr*)attrs[RTA_DST],rtmsg->rtm_family,
-                obj,cps_api_if_ROUTE_A_PREFIX);
+        /* Ignore the link local route here, we program the link local self IPv6
+         * into the NPU thru IPv6 address publish flow */
+        if (rtmsg->rtm_family == AF_INET6) {
+            hal_ip_addr_t ip;
+            struct in6_addr *inp6 = (struct in6_addr *) nla_data((struct nlattr*)attrs[RTA_DST]);
+            std_ip_from_inet6(&ip,inp6);
+            if (STD_IP_IS_ADDR_LINK_LOCAL(&ip)) {
+                EV_LOGGING(NETLINK,DEBUG,"NL-ROUTE-PARSE","LLA skipped!");
+                return false;
+            }
+        }
+        rta_add_ip((struct nlattr*)attrs[RTA_DST],
+                   obj,cps_api_if_ROUTE_A_PREFIX);
     }
     nas_os_log_route_info(hdr,rt_msg_type, rtmsg, attrs);
     /* If the route is not local/unicast, dont handle it.
      * RTN_UNICAST - 1, RTN_LOCAL - 2
      * @@TODO see if some other route types to be supported */
-    if ((rtmsg->rtm_type != RTN_UNICAST) && (rtmsg->rtm_type != RTN_LOCAL)) {
+    if ((rtmsg->rtm_type != RTN_UNICAST) && (rtmsg->rtm_type != RTN_LOCAL) &&
+        (rtmsg->rtm_type != RTN_BLACKHOLE) && (rtmsg->rtm_type != RTN_UNREACHABLE) &&
+        (rtmsg->rtm_type != RTN_PROHIBIT)) {
         EV_LOGGING(NETLINK,DEBUG,"NL-ROUTE-PARSE","Invalid route type:%d ", rtmsg->rtm_type);
         return false;
     }
@@ -173,6 +201,8 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     }
 
     cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_PREFIX_LEN,rtmsg->rtm_dst_len);
+    cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_RT_TYPE, rtmsg->rtm_type);
+
     size_t hop_count = 0;
 
     cps_api_attr_id_t ids[3];
@@ -183,14 +213,20 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
 
     if (attrs[RTA_GATEWAY]!=NULL) {
         ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_ADDR;
-        rta_add_e_ip((struct nlattr*)attrs[RTA_GATEWAY],
-                rtmsg->rtm_family,obj, ids,ids_len);
+        rta_add_e_ip((struct nlattr*)attrs[RTA_GATEWAY],obj, ids,ids_len);
 
-        rta_add_ip((struct nlattr*)attrs[RTA_GATEWAY],rtmsg->rtm_family,obj,
+        rta_add_ip((struct nlattr*)attrs[RTA_GATEWAY],obj,
                 cps_api_if_ROUTE_A_NEXT_HOP_ADDR);
     }
 
-    if (attrs[RTA_OIF]!=NULL) {
+    /* netlink notifications for IPv6 blackhole/unreachable/prohibit routes
+     * are sent with OIF as 'lo' ifindex. Those route notifications
+     * should be sent to NAS for processing.
+     */
+    if ((rtmsg->rtm_type != RTN_BLACKHOLE) &&
+        (rtmsg->rtm_type != RTN_UNREACHABLE) &&
+        (rtmsg->rtm_type != RTN_PROHIBIT) &&
+        (attrs[RTA_OIF]!=NULL)) {
         ids[2] = cps_api_if_ROUTE_A_NH_IFINDEX;
         unsigned int *x = (unsigned int *) nla_data(attrs[RTA_OIF]);
 
@@ -240,8 +276,8 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
             if (nhattr[RTA_GATEWAY]) {
                 ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_ADDR;
                 rta_add_e_ip((struct nlattr*)nhattr[RTA_GATEWAY],
-                             rtmsg->rtm_family,obj, ids,ids_len);
-                EV_LOG(INFO, NETLINK,3,"ROUTE-EVENT","MultiPath nh-cnt:%d gateway:%s ifIndex:%d nh-flags:0x%x weight:%d",
+                             obj, ids,ids_len);
+                EV_LOGGING(NETLINK, INFO,"ROUTE-EVENT","MultiPath nh-cnt:%d gateway:%s ifIndex:%d nh-flags:0x%x weight:%d",
                        hop_count,
                        ((rtmsg->rtm_family == AF_INET) ?
                         (inet_ntop(rtmsg->rtm_family, ((struct in_addr *) nla_data((struct nlattr*)nhattr[RTA_GATEWAY])), addr_str,
@@ -250,7 +286,7 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
                                    addr_str, INET6_ADDRSTRLEN))),
                         rtnh->rtnh_ifindex, rtnh->rtnh_flags, rtnh->rtnh_hops);
             } else {
-                EV_LOG(INFO, NETLINK,3,"ROUTE-EVENT","MultiPath nh-cnt:%d ifIndex:%d nh-flags:0x%x weight:%d",
+                EV_LOGGING(NETLINK, INFO,"ROUTE-EVENT","MultiPath nh-cnt:%d ifIndex:%d nh-flags:0x%x weight:%d",
                        hop_count, rtnh->rtnh_ifindex, rtnh->rtnh_flags, rtnh->rtnh_hops);
             }
             rtnh = rtnh_next(rtnh,&remaining);
@@ -258,14 +294,16 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         }
 
     } else {
-        ++hop_count;
+        if (attrs[RTA_OIF] || attrs[RTA_GATEWAY]) {
+            ++hop_count;
+        }
     }
     cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_HOP_COUNT,hop_count);
 
     return true;
 }
 
-static bool process_route_and_add_to_list(int rt_msg_type, struct nlmsghdr *nh,
+static bool process_route_and_add_to_list(int sock, int rt_msg_type, struct nlmsghdr *nh,
         void *context) {
     cps_api_object_list_t *list = (cps_api_object_list_t*) context;
     cps_api_object_t obj=cps_api_object_create();
@@ -358,25 +396,25 @@ static cps_api_return_code_t _op(cps_api_operation_types_t op,void * context, cp
 
     rm->rtm_family = (unsigned char) cps_api_object_attr_data_u32(list[cps_api_if_ROUTE_A_FAMILY]);
 
-    EV_LOG(INFO,NETLINK,3,"ROUTEADD","Family is %d",rm->rtm_family);
+    EV_LOGGING(NETLINK,INFO,"ROUTEADD","Family is %d",rm->rtm_family);
 
     if (list[cps_api_if_ROUTE_A_PREFIX]!=NULL) nas_nl_add_attr_ip(nlh,sizeof(buff),RTA_DST,list[cps_api_if_ROUTE_A_PREFIX]);
 
     if (list[cps_api_if_ROUTE_A_HOP_COUNT]==NULL) return cps_api_ret_code_ERR;
     uint32_t hc =  cps_api_object_attr_data_u32(list[cps_api_if_ROUTE_A_HOP_COUNT]);
-    EV_LOG(INFO,NETLINK,3,"ROUTEADD","hopcount is %d",hc);
+    EV_LOGGING(NETLINK,INFO,"ROUTEADD","hopcount is %d",hc);
 
     if (hc==1) {
         cps_api_attr_id_t ids[3] = { cps_api_if_ROUTE_A_NH, 0, cps_api_if_ROUTE_A_NEXT_HOP_ADDR};
         const int ids_len = sizeof(ids)/sizeof(*ids);
         cps_api_object_attr_t gw = cps_api_object_e_get(obj,ids,ids_len);
 
-        EV_LOG(INFO,NETLINK,3,"ROUTEADD","nh addr is %d",(int)(size_t)gw);
+        EV_LOGGING(NETLINK,INFO,"ROUTEADD","nh addr is %d",(int)(size_t)gw);
         if (gw!=NULL) nas_nl_add_attr_ip(nlh,sizeof(buff),RTA_GATEWAY,gw);
 
         ids[2] = cps_api_if_ROUTE_A_NH_IFINDEX;
         cps_api_object_attr_t gwix = cps_api_object_e_get(obj,ids,ids_len);
-        EV_LOG(INFO,NETLINK,3,"ROUTEADD","nh index is %d",(int)(size_t)gwix);
+        EV_LOGGING(NETLINK,INFO,"ROUTEADD","nh index is %d",(int)(size_t)gwix);
         if (gwix!=NULL) nas_nl_add_attr_int(nlh,sizeof(buff),RTA_OIF,gwix);
 
         ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_WEIGHT;

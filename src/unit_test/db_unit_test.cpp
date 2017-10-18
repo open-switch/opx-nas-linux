@@ -34,7 +34,7 @@
 #include <stdio.h>
 #include <string.h>
 
-bool get_netlink_data(int rt_msg_type, struct nlmsghdr *hdr, void *data) {
+bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data) {
 
     cps_api_object_t obj=cps_api_object_create();
     if (!nl_get_if_info(rt_msg_type,hdr,obj)) return false;

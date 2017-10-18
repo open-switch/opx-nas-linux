@@ -39,7 +39,9 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t da
 
 bool nl_request_existing_routes(int sock, int family, int req_id);
 
+bool nas_rt_is_reserved_intf(char *intf_name);
 
+bool nl_netconf_get_all_request(int sock, int family,int req_id);
 #ifdef __cplusplus
 }
 #endif

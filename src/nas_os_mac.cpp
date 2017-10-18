@@ -42,7 +42,7 @@
 #define MAC_STRING_LEN 20
 
 static std::mutex _mac_ls_mutex;
-static std::unordered_map<hal_ifindex_t, bool> _if_mac_learn_state;
+static auto _if_mac_learn_state = new std::unordered_map<hal_ifindex_t, bool> ;
 
 static bool nas_os_update_mac_learning(hal_ifindex_t ifindex, bool enable){
     char buff[NL_MSG_BUFF_LEN];
@@ -77,8 +77,8 @@ static bool nas_os_update_mac_learning(hal_ifindex_t ifindex, bool enable){
 
 bool nas_os_update_tagged_intf_mac_learning(hal_ifindex_t ifindex, hal_ifindex_t vlan_index){
     std::lock_guard<std::mutex> lock(_mac_ls_mutex);
-    auto mac_learn_it = _if_mac_learn_state.find(ifindex);
-    if(mac_learn_it != _if_mac_learn_state.end()){
+    auto mac_learn_it = _if_mac_learn_state->find(ifindex);
+    if(mac_learn_it != _if_mac_learn_state->end()){
         if(!mac_learn_it->second){
             nas_os_update_mac_learning(vlan_index,mac_learn_it->second);
         }
@@ -96,9 +96,10 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
     cps_api_object_attr_t mac_attr = cps_api_object_attr_get(obj,BASE_MAC_TABLE_MAC_ADDRESS);
     cps_api_object_attr_t static_attr = cps_api_object_attr_get(obj,BASE_MAC_TABLE_STATIC);
     cps_api_object_attr_t vlan_attr = cps_api_object_attr_get(obj,BASE_MAC_TABLE_VLAN);
+    cps_api_object_attr_t ifname_attr = cps_api_object_attr_get(obj,BASE_MAC_TABLE_IFNAME);
     cps_api_operation_types_t op = cps_api_object_type_operation(cps_api_object_key(obj));
 
-    if(ifindex_attr == NULL ||  mac_attr == NULL || vlan_attr == NULL){
+    if(ifindex_attr == NULL ||  mac_attr == NULL || vlan_attr == NULL || ifname_attr == NULL){
         EV_LOG(ERR,NAS_OS,0,"NAS-OS-MAC","Ifindex/MAC/VLAN Missing for creating/updating MAC"
             "Entry in the kernel bridge");
         return STD_ERR(L2MAC,PARAM,0);
@@ -145,18 +146,14 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
     hal_vlan_id_t vid = cps_api_object_attr_data_u16(vlan_attr);
     hal_ifindex_t ifindex = cps_api_object_attr_data_u32(ifindex_attr);
 
-    char if_name[HAL_IF_NAME_SZ+1], vlan_name[HAL_IF_NAME_SZ+1];
-    if(cps_api_interface_if_index_to_name(ifindex, if_name, sizeof(if_name)) == NULL) {
-        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failure getting interface name for %d", ifindex);
-            return (STD_ERR(NAS_OS,FAIL, 0));
+    if(ifname_attr){
+        char * intf_name = (char *)cps_api_object_attr_data_bin(ifname_attr);
+        char vlan_intf_name[HAL_IF_NAME_SZ+1];
+        nas_os_get_vlan_if_name(intf_name,cps_api_object_attr_len(ifname_attr),vid,vlan_intf_name);
+        get_tagged_intf_index_from_name(vlan_intf_name,ifindex);
     }
 
-    nas_os_get_vlan_if_name(if_name, sizeof(if_name), vid, vlan_name);
-
-    if((req->ndm_ifindex = cps_api_interface_name_to_if_index(vlan_name)) == 0) {
-        EV_LOGGING(NAS_OS, INFO, "NAS-OS", "Error finding the ifindex of vlan interface");
-        req->ndm_ifindex = cps_api_object_attr_data_u32(ifindex_attr);
-    }
+    req->ndm_ifindex = ifindex;
 
     nlmsg_add_attr(nlh,sizeof(buff),NDA_LLADDR,(void *)cps_api_object_attr_data_bin(mac_attr),sizeof(hal_mac_addr_t));
     hal_mac_addr_t *mac_addr = (hal_mac_addr_t*)cps_api_object_attr_data_bin(mac_attr);
@@ -184,15 +181,15 @@ t_std_error nas_os_mac_change_learning(hal_ifindex_t ifindex,bool enable){
     nas_os_update_mac_learning(ifindex,enable);
 
     std::lock_guard<std::mutex> lock(_mac_ls_mutex);
-    auto it = _if_mac_learn_state.find(ifindex);
-    if(it == _if_mac_learn_state.end()){
+    auto it = _if_mac_learn_state->find(ifindex);
+    if(it == _if_mac_learn_state->end()){
         if(!enable){
-        _if_mac_learn_state[ifindex] = enable;
+        _if_mac_learn_state->insert({ifindex,enable});
         }else{
             return STD_ERR_OK;
         }
     }else{
-        _if_mac_learn_state[ifindex] = enable;
+        it->second = enable;
     }
 
 
@@ -204,7 +201,7 @@ t_std_error nas_os_mac_change_learning(hal_ifindex_t ifindex,bool enable){
     }
 
     if(enable){
-        _if_mac_learn_state.erase(ifindex);
+        _if_mac_learn_state->erase(ifindex);
     }
 
     return STD_ERR_OK;
@@ -214,8 +211,8 @@ t_std_error nas_os_mac_change_learning(hal_ifindex_t ifindex,bool enable){
 bool nas_os_mac_get_learning(hal_ifindex_t ifindex) {
 
     std::lock_guard<std::mutex> lock(_mac_ls_mutex);
-    auto it = _if_mac_learn_state.find(ifindex);
-    if(it == _if_mac_learn_state.end()){
+    auto it = _if_mac_learn_state->find(ifindex);
+    if(it == _if_mac_learn_state->end()){
         return true;
     }
 

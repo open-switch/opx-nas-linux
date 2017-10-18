@@ -54,10 +54,18 @@ extern "C" {
 
 #define NL_SCRATCH_BUFFER_LEN (1*1024*1024) /* Scratch buffer size - 1MB */
 
+/* Netlink socket buffer size for netconf events - 1MB */
+#define NL_NETCONF_SOCKET_BUFFER_LEN (1*1024*1024)
+/* @@TODO looks like the macro SOL_NETLINK is not present in linux/socket.h,
+ * revisit when the kernel version is upgarded.
+ * and hence defined the below macro */
+#define NL_SOL_NETLINK 270
+
 typedef enum  {
     nas_nl_sock_T_ROUTE=0,
     nas_nl_sock_T_INT=1,
     nas_nl_sock_T_NEI=2,
+    nas_nl_sock_T_NETCONF=3,
     nas_nl_sock_T_MAX
 }nas_nl_sock_TYPES;
 
@@ -67,7 +75,7 @@ int nas_nl_sock_create(nas_nl_sock_TYPES type, bool include_bind) ;
 
 void os_send_refresh(nas_nl_sock_TYPES type);
 
-typedef bool (*fun_process_nl_message) (int rt_msg_type, struct nlmsghdr *hdr, void * context);
+typedef bool (*fun_process_nl_message) (int sock, int rt_msg_type, struct nlmsghdr *hdr, void * context);
 
 /**
  * Handle get and set using netlink messages. This function is called to receive resposes after a get, set is issued

@@ -42,7 +42,8 @@
 #include <unordered_map>
 
 /* A container to store the tagged/untagged member ports with VLANs mapping */
-static std::unordered_map<hal_ifindex_t,std::unordered_set<hal_ifindex_t>> mbr_intf_to_vlan_map;
+static auto mbr_intf_to_vlan_map = new std::unordered_map<hal_ifindex_t,std::unordered_set<hal_ifindex_t>>;
+
 /* This function disable the IPv6 on VLAN member ports (Phy/LAG) i.e e101-001-0/bond1
  * and tagged member ports i.e e101-001-0.100/bond1.100
  * Also, IPv6 will be enabled on the member port upon removal of last VLAN association */
@@ -98,12 +99,12 @@ static bool os_interface_update_vlan_info(hal_ifindex_t mem_idx, hal_ifindex_t v
     /* Enable the IPv6 on Physical/LAG when it's not part of any VLAN, otherwise disable it */
     /* Tagged/Untagged member interface with VLANs handling */
     if(add){
-        auto intf_it = mbr_intf_to_vlan_map.find(mbr_ifindex);
-        if(intf_it == mbr_intf_to_vlan_map.end()) {
+        auto intf_it = mbr_intf_to_vlan_map->find(mbr_ifindex);
+        if(intf_it == mbr_intf_to_vlan_map->end()) {
             /* Tagged/Untagged member if index with VLAN association not present, create one */
             std::unordered_set<hal_ifindex_t> tagged_intf_list;
             tagged_intf_list.insert(vlan_if_index);
-            mbr_intf_to_vlan_map[mbr_ifindex] = std::move(tagged_intf_list);
+            mbr_intf_to_vlan_map->insert({mbr_ifindex,std::move(tagged_intf_list)});
             os_interface_update_ipv6_status(mbr_ifindex, !add);
         }else{
             /* Update the VLAN if_index for the existing member if index*/
@@ -111,11 +112,11 @@ static bool os_interface_update_vlan_info(hal_ifindex_t mem_idx, hal_ifindex_t v
         }
         os_interface_update_ipv6_status(mem_idx, !add);
     } else {
-        auto intf_it = mbr_intf_to_vlan_map.find(mbr_ifindex);
-        if(intf_it != mbr_intf_to_vlan_map.end()){
+        auto intf_it = mbr_intf_to_vlan_map->find(mbr_ifindex);
+        if(intf_it != mbr_intf_to_vlan_map->end()){
             intf_it->second.erase(vlan_if_index);
             if(intf_it->second.size()==0){
-                mbr_intf_to_vlan_map.erase(mbr_ifindex);
+                mbr_intf_to_vlan_map->erase(mbr_ifindex);
                 EV_LOGGING(NAS_OS,INFO,"NAS-UPD-VLAN", "Enable IPv6 on mbr-index:%d vlan-index:%d sub-mbr-index:%d",
                            mbr_ifindex, vlan_if_index, mem_idx);
                 os_interface_update_ipv6_status(mbr_ifindex, !add);

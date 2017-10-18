@@ -47,6 +47,7 @@
 #include "dell-base-l2-mac.h"
 #include "cps_api_route.h"
 #include "nas_nlmsg_object_utils.h"
+#include "netlink_stats.h"
 
 #include <limits.h>
 #include <unistd.h>
@@ -70,9 +71,9 @@
  * Global variables
  */
 
-typedef bool (*fn_nl_msg_handle)(int type, struct nlmsghdr * nh, void *context);
+typedef bool (*fn_nl_msg_handle)(int sock, int type, struct nlmsghdr * nh, void *context);
 
-static std::map<int,nas_nl_sock_TYPES> nlm_sockets;
+static auto nlm_sockets = new std::map<int,nas_nl_sock_TYPES>;
 
 static INTERFACE *g_if_db;
 INTERFACE *os_get_if_db_hdlr() {
@@ -99,43 +100,6 @@ static std_thread_create_param_t      _net_main_thr;
 static cps_api_event_service_handle_t         _handle;
 
 const static int MAX_CPS_MSG_SIZE=10000;
-
-/* Netlink message counters */
-struct nl_stats_desc {
-    uint32_t num_events_rcvd;
-    uint32_t num_bulk_events_rcvd;
-    uint32_t max_events_rcvd_in_bulk;
-    uint32_t min_events_rcvd_in_bulk;
-    uint32_t num_add_events;
-    uint32_t num_del_events;
-    uint32_t num_get_events;
-    uint32_t num_invalid_add_events;
-    uint32_t num_invalid_del_events;
-    uint32_t num_invalid_get_events;
-    uint32_t num_add_events_pub;
-    uint32_t num_del_events_pub;
-    uint32_t num_get_events_pub;
-    uint32_t num_add_events_pub_failed;
-    uint32_t num_del_events_pub_failed;
-    uint32_t num_get_events_pub_failed;
-    void (*reset)(nas_nl_sock_TYPES type);
-    void (*print)(nas_nl_sock_TYPES type);
-    void (*print_msg_detail)(nas_nl_sock_TYPES type);
-    void (*print_pub_detail)(nas_nl_sock_TYPES type);
-};
-
-static void nl_stats_reset(nas_nl_sock_TYPES type);
-static void nl_stats_print(nas_nl_sock_TYPES type);
-static void nl_stats_print_msg_detail (nas_nl_sock_TYPES type);
-static void nl_stats_print_pub_detail (nas_nl_sock_TYPES type);
-static std::map<nas_nl_sock_TYPES,nl_stats_desc > nlm_counters = {
-    { nas_nl_sock_T_ROUTE , { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, &nl_stats_reset, &nl_stats_print,
-                                &nl_stats_print_msg_detail, &nl_stats_print_pub_detail} } ,
-    { nas_nl_sock_T_INT ,{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, &nl_stats_reset, &nl_stats_print,
-                             &nl_stats_print_msg_detail, &nl_stats_print_pub_detail} },
-    { nas_nl_sock_T_NEI ,{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, &nl_stats_reset, &nl_stats_print,
-                             &nl_stats_print_msg_detail, &nl_stats_print_pub_detail} },
-};
 
 /*
  * Functions
@@ -169,16 +133,19 @@ void rta_add_mask(int family, uint_t prefix_len, cps_api_object_t obj, uint32_t 
     cps_api_object_attr_add(obj,attr,&mask,sizeof(mask));
 }
 
-void rta_add_e_ip( struct nlattr* rtatp,int family, cps_api_object_t obj,
+void rta_add_e_ip( struct nlattr* rtatp, cps_api_object_t obj,
         cps_api_attr_id_t *attr, size_t attr_id_len) {
     hal_ip_addr_t ip;
-
-    if(family == AF_INET) {
+    size_t len = nla_len(rtatp);
+    if(len == HAL_INET4_LEN) {
         struct in_addr *inp = (struct in_addr *) nla_data(rtatp);
         std_ip_from_inet(&ip,inp);
-    } else {
+    } else if (len == HAL_INET6_LEN) {
         struct in6_addr *inp6 = (struct in6_addr *) nla_data(rtatp);
         std_ip_from_inet6(&ip,inp6);
+    }else{
+        EV_LOGGING(NETLINK,ERR,"ADD-IP","Invalied IP length %d",len);
+        return;
     }
     cps_api_object_e_add(obj,attr,attr_id_len, cps_api_object_ATTR_T_BIN,
             &ip,sizeof(ip));
@@ -194,59 +161,7 @@ unsigned int rta_add_name( struct nlattr* rtatp,cps_api_object_t obj, uint32_t a
     return len;
 }
 
-static inline void netlink_tot_msg_stat_update(nas_nl_sock_TYPES sock_type, int rt_msg_type) {
-    if ((rt_msg_type == RTM_NEWLINK) ||  (rt_msg_type == RTM_NEWADDR) ||
-        (rt_msg_type == RTM_NEWROUTE) || (rt_msg_type == RTM_NEWNEIGH)) {
-        nlm_counters[sock_type].num_add_events++;
-    } else if ((rt_msg_type == RTM_DELLINK) ||  (rt_msg_type == RTM_DELADDR) ||
-               (rt_msg_type == RTM_DELROUTE) || (rt_msg_type == RTM_DELNEIGH)) {
-        nlm_counters[sock_type].num_del_events++;
-    } else if ((rt_msg_type == RTM_GETLINK) ||  (rt_msg_type == RTM_GETADDR) ||
-               (rt_msg_type == RTM_GETROUTE) || (rt_msg_type == RTM_GETNEIGH)) {
-        nlm_counters[sock_type].num_get_events++;
-    }
-}
-
-static inline void netlink_invalid_msg_stat_update(nas_nl_sock_TYPES sock_type, int rt_msg_type) {
-    if ((rt_msg_type == RTM_NEWLINK) ||  (rt_msg_type == RTM_NEWADDR) ||
-        (rt_msg_type == RTM_NEWROUTE) || (rt_msg_type == RTM_NEWNEIGH)) {
-        nlm_counters[sock_type].num_invalid_add_events++;
-    } else if ((rt_msg_type == RTM_DELLINK) ||  (rt_msg_type == RTM_DELADDR) ||
-               (rt_msg_type == RTM_DELROUTE) || (rt_msg_type == RTM_DELNEIGH)) {
-        nlm_counters[sock_type].num_invalid_del_events++;
-    } else if ((rt_msg_type == RTM_GETLINK) ||  (rt_msg_type == RTM_GETADDR) ||
-               (rt_msg_type == RTM_GETROUTE) || (rt_msg_type == RTM_GETNEIGH)) {
-        nlm_counters[sock_type].num_invalid_get_events++;
-    }
-}
-
-static inline void netlink_pub_msg_stat_update(nas_nl_sock_TYPES sock_type, int rt_msg_type) {
-    if ((rt_msg_type == RTM_NEWLINK) ||  (rt_msg_type == RTM_NEWADDR) ||
-        (rt_msg_type == RTM_NEWROUTE) || (rt_msg_type == RTM_NEWNEIGH)) {
-        nlm_counters[sock_type].num_add_events_pub++;
-    } else if ((rt_msg_type == RTM_DELLINK) ||  (rt_msg_type == RTM_DELADDR) ||
-               (rt_msg_type == RTM_DELROUTE) || (rt_msg_type == RTM_DELNEIGH)) {
-        nlm_counters[sock_type].num_del_events_pub++;
-    } else if ((rt_msg_type == RTM_GETLINK) ||  (rt_msg_type == RTM_GETADDR) ||
-               (rt_msg_type == RTM_GETROUTE) || (rt_msg_type == RTM_GETNEIGH)) {
-        nlm_counters[sock_type].num_get_events_pub++;
-    }
-}
-
-static inline void netlink_pub_msg_failed_stat_update(nas_nl_sock_TYPES sock_type, int rt_msg_type) {
-    if ((rt_msg_type == RTM_NEWLINK) ||  (rt_msg_type == RTM_NEWADDR) ||
-        (rt_msg_type == RTM_NEWROUTE) || (rt_msg_type == RTM_NEWNEIGH)) {
-        nlm_counters[sock_type].num_add_events_pub_failed++;
-    } else if ((rt_msg_type == RTM_DELLINK) ||  (rt_msg_type == RTM_DELADDR) ||
-               (rt_msg_type == RTM_DELROUTE) || (rt_msg_type == RTM_DELNEIGH)) {
-        nlm_counters[sock_type].num_del_events_pub_failed++;
-    } else if ((rt_msg_type == RTM_GETLINK) ||  (rt_msg_type == RTM_GETADDR) ||
-               (rt_msg_type == RTM_GETROUTE) || (rt_msg_type == RTM_GETNEIGH)) {
-        nlm_counters[sock_type].num_get_events_pub_failed++;
-    }
-}
-
-static bool get_netlink_data(int rt_msg_type, struct nlmsghdr *hdr, void *data) {
+static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data) {
     static char buff[MAX_CPS_MSG_SIZE];
 
     cps_api_object_t obj = cps_api_object_init(buff,sizeof(buff));
@@ -258,14 +173,14 @@ static bool get_netlink_data(int rt_msg_type, struct nlmsghdr *hdr, void *data) 
      * Range upto SET_LINK
      */
     if (rt_msg_type <= RTM_SETLINK) {
-        netlink_tot_msg_stat_update(nas_nl_sock_T_INT, rt_msg_type);
+        nas_nl_stats_update_tot_msg (sock, rt_msg_type);
         if (os_interface_to_object(rt_msg_type,hdr,obj)) {
-            netlink_pub_msg_stat_update(nas_nl_sock_T_INT, rt_msg_type);
+            nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
-                netlink_pub_msg_failed_stat_update(nas_nl_sock_T_INT, rt_msg_type);
+                nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
             }
         } else {
-            netlink_invalid_msg_stat_update(nas_nl_sock_T_INT, rt_msg_type);
+            nas_nl_stats_update_invalid_msg (sock, rt_msg_type);
         }
         return true;
     }
@@ -274,14 +189,14 @@ static bool get_netlink_data(int rt_msg_type, struct nlmsghdr *hdr, void *data) 
      * Range upto GET_ADDRRESS
      */
     if (rt_msg_type <= RTM_GETADDR) {
-        netlink_tot_msg_stat_update(nas_nl_sock_T_INT, rt_msg_type);
+        nas_nl_stats_update_tot_msg (sock, rt_msg_type);
         if (nl_get_ip_info(rt_msg_type,hdr,obj)) {
-            netlink_pub_msg_stat_update(nas_nl_sock_T_INT, rt_msg_type);
+            nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
-                netlink_pub_msg_failed_stat_update(nas_nl_sock_T_INT, rt_msg_type);
+                nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
             }
         } else {
-            netlink_invalid_msg_stat_update(nas_nl_sock_T_INT, rt_msg_type);
+            nas_nl_stats_update_invalid_msg (sock, rt_msg_type);
         }
         return true;
     }
@@ -290,14 +205,14 @@ static bool get_netlink_data(int rt_msg_type, struct nlmsghdr *hdr, void *data) 
      * Range upto GET_ROUTE
      */
     if (rt_msg_type <= RTM_GETROUTE) {
-        netlink_tot_msg_stat_update(nas_nl_sock_T_ROUTE, rt_msg_type);
+        nas_nl_stats_update_tot_msg (sock, rt_msg_type);
         if (nl_to_route_info(rt_msg_type,hdr, obj)) {
-            netlink_pub_msg_stat_update(nas_nl_sock_T_ROUTE, rt_msg_type);
+            nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
-                netlink_pub_msg_failed_stat_update(nas_nl_sock_T_ROUTE, rt_msg_type);
+                nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
             }
         } else {
-            netlink_invalid_msg_stat_update(nas_nl_sock_T_ROUTE, rt_msg_type);
+            nas_nl_stats_update_invalid_msg (sock, rt_msg_type);
         }
         return true;
     }
@@ -306,20 +221,34 @@ static bool get_netlink_data(int rt_msg_type, struct nlmsghdr *hdr, void *data) 
      * Range upto GET_NEIGHBOR
      */
     if (rt_msg_type <= RTM_GETNEIGH) {
-        netlink_tot_msg_stat_update(nas_nl_sock_T_NEI, rt_msg_type);
+        nas_nl_stats_update_tot_msg (sock, rt_msg_type);
         if (nl_to_neigh_info(rt_msg_type, hdr,obj)) {
             cps_api_key_init(cps_api_object_key(obj),cps_api_qualifier_TARGET,
                              cps_api_obj_cat_ROUTE,cps_api_route_obj_NEIBH,0);
-            netlink_pub_msg_stat_update(nas_nl_sock_T_NEI, rt_msg_type);
+            nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
-                netlink_pub_msg_failed_stat_update(nas_nl_sock_T_NEI, rt_msg_type);
+                nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
             }
         } else {
-            netlink_invalid_msg_stat_update(nas_nl_sock_T_NEI, rt_msg_type);
+            nas_nl_stats_update_invalid_msg (sock, rt_msg_type);
         }
         return true;
     }
-
+    /*!
+     * Range upto GET_NETCONF
+     */
+    if (rt_msg_type <= RTM_GETNETCONF) {
+        nas_nl_stats_update_tot_msg (sock, rt_msg_type);
+        if (nl_get_ip_netconf_info(rt_msg_type,hdr, obj)) {
+            nas_nl_stats_update_pub_msg (sock, rt_msg_type);
+            if (net_publish_event(obj) != cps_api_ret_code_OK) {
+                nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
+            }
+        } else {
+            nas_nl_stats_update_invalid_msg (sock, rt_msg_type);
+        }
+        return true;
+    }
     return false;
 }
 
@@ -417,209 +346,86 @@ struct nl_event_desc {
 
 static bool trigger_route(int sock, int reqid);
 static bool trigger_neighbour(int sock, int reqid);
+static bool trigger_netconf(int sock, int reqid);
 
-static std::map<nas_nl_sock_TYPES,nl_event_desc > nlm_handlers = {
-        { nas_nl_sock_T_ROUTE , { get_netlink_data, &trigger_route} } ,
-        { nas_nl_sock_T_INT ,{ get_netlink_data, nl_interface_get_request} },
-        { nas_nl_sock_T_NEI ,{ get_netlink_data,&trigger_neighbour } },
+static auto nlm_handlers = new std::map<nas_nl_sock_TYPES,nl_event_desc >{
+    { nas_nl_sock_T_ROUTE , { get_netlink_data, &trigger_route} } ,
+    { nas_nl_sock_T_INT ,{ get_netlink_data, nl_interface_get_request} },
+    { nas_nl_sock_T_NEI ,{ get_netlink_data,&trigger_neighbour } },
+    { nas_nl_sock_T_NETCONF ,{ get_netlink_data, &trigger_netconf } },
 };
 
 static bool trigger_route(int sock, int reqid) {
     if (nl_request_existing_routes(sock,AF_INET,++reqid)) {
-        netlink_tools_process_socket(sock,nlm_handlers[nas_nl_sock_T_ROUTE].process,
+        netlink_tools_process_socket(sock,nlm_handlers->at(nas_nl_sock_T_ROUTE).process,
                 NULL,buf,sizeof(buf),&reqid,NULL);
     }
 
     if (nl_request_existing_routes(sock,AF_INET6,++reqid)) {
-        netlink_tools_process_socket(sock,nlm_handlers[nas_nl_sock_T_ROUTE].process,
+        netlink_tools_process_socket(sock,nlm_handlers->at(nas_nl_sock_T_ROUTE).process,
                 NULL,buf,sizeof(buf),&reqid,NULL);
     }
     return true;
 }
 static bool trigger_neighbour(int sock, int reqid) {
     if (nl_neigh_get_all_request(sock,AF_INET,++reqid)) {
-        netlink_tools_process_socket(sock,nlm_handlers[nas_nl_sock_T_NEI].process,
+        netlink_tools_process_socket(sock,nlm_handlers->at(nas_nl_sock_T_NEI).process,
                 NULL,buf,sizeof(buf),&reqid,NULL);
     }
 
     if (nl_neigh_get_all_request(sock,AF_INET6,++reqid)) {
-        netlink_tools_process_socket(sock,nlm_handlers[nas_nl_sock_T_NEI].process,
+        netlink_tools_process_socket(sock,nlm_handlers->at(nas_nl_sock_T_NEI).process,
                 NULL,buf,sizeof(buf),&reqid,NULL);
     }
     return true;
 }
 
-void nl_stats_update (int sock, uint32_t bulk_msg_count) {
-    for ( auto &it : nlm_sockets) {
-        if (it.first == sock ) {
-            nlm_counters[it.second].num_events_rcvd += bulk_msg_count;
-
-            if (bulk_msg_count > 1) //increment bulk rcvd count only if the count is > 1.
-            {
-                nlm_counters[it.second].num_bulk_events_rcvd++;
-
-                if (bulk_msg_count > nlm_counters[it.second].max_events_rcvd_in_bulk)
-                    nlm_counters[it.second].max_events_rcvd_in_bulk =  bulk_msg_count;
-
-                if (bulk_msg_count < nlm_counters[it.second].min_events_rcvd_in_bulk)
-                    nlm_counters[it.second].min_events_rcvd_in_bulk =  bulk_msg_count;
-                else if (nlm_counters[it.second].min_events_rcvd_in_bulk == 0)
-                    nlm_counters[it.second].min_events_rcvd_in_bulk =  bulk_msg_count;
-            }
-        }
+static bool trigger_netconf(int sock, int reqid) {
+    if (nl_netconf_get_all_request(sock,AF_INET,++reqid)) {
+        netlink_tools_process_socket(sock,nlm_handlers->at(nas_nl_sock_T_NETCONF).process,
+                NULL,buf,sizeof(buf),&reqid,NULL);
     }
-    return;
-}
-
-static void nl_stats_reset (nas_nl_sock_TYPES type) {
-    nlm_counters[type].num_events_rcvd = 0;
-    nlm_counters[type].num_bulk_events_rcvd = 0;
-    nlm_counters[type].max_events_rcvd_in_bulk = 0;
-    nlm_counters[type].min_events_rcvd_in_bulk = 0;
-
-
-    nlm_counters[type].num_add_events= 0;
-    nlm_counters[type].num_del_events= 0;
-    nlm_counters[type].num_get_events= 0;
-    nlm_counters[type].num_invalid_add_events= 0;
-    nlm_counters[type].num_invalid_del_events= 0;
-    nlm_counters[type].num_invalid_get_events= 0;
-    nlm_counters[type].num_add_events_pub= 0;
-    nlm_counters[type].num_del_events_pub= 0;
-    nlm_counters[type].num_get_events_pub= 0;
-    nlm_counters[type].num_add_events_pub_failed= 0;
-    nlm_counters[type].num_del_events_pub_failed= 0;
-    nlm_counters[type].num_get_events_pub_failed= 0;
-    return;
-}
-
-static const std::map<nas_nl_sock_TYPES, std::string> _sock_type_to_str = {
-    { nas_nl_sock_T_ROUTE, "ROUTE" },
-    { nas_nl_sock_T_INT, "INT" },
-    { nas_nl_sock_T_NEI, "NEIGH" },
-};
-
-static void nl_stats_print (nas_nl_sock_TYPES type) {
-    auto it = _sock_type_to_str.find(type);
-    if (it == _sock_type_to_str.end()) {
-        // invalid socket group for stats_print.
-        return;
+    if (nl_netconf_get_all_request(sock,AF_INET6,++reqid)) {
+        netlink_tools_process_socket(sock,nlm_handlers->at(nas_nl_sock_T_NETCONF).process,
+                NULL,buf,sizeof(buf),&reqid,NULL);
     }
 
-    printf("\r %-10s | %-10d | %-10d | %-10d | %-10d\r\n",
-            it->second.c_str(),
-            nlm_counters[type].num_events_rcvd,
-            nlm_counters[type].num_bulk_events_rcvd,
-            nlm_counters[type].max_events_rcvd_in_bulk,
-            nlm_counters[type].min_events_rcvd_in_bulk);
-    return;
+    return true;
 }
 
-static void nl_stats_print_msg_detail (nas_nl_sock_TYPES type) {
-
-    auto it = _sock_type_to_str.find(type);
-    if (it == _sock_type_to_str.end()) {
-        // invalid socket group for stats_print.
-        return;
-    }
-
-    printf("\r %-10s | %-10d | %-10d | %-10d | %-12d | %-12d | %-12d\r\n",
-           it->second.c_str(),
-           nlm_counters[type].num_add_events,
-           nlm_counters[type].num_del_events,
-           nlm_counters[type].num_get_events,
-           nlm_counters[type].num_invalid_add_events,
-           nlm_counters[type].num_invalid_del_events,
-           nlm_counters[type].num_invalid_get_events);
-
-    return;
-}
-
-static void nl_stats_print_pub_detail (nas_nl_sock_TYPES type) {
-
-    auto it = _sock_type_to_str.find(type);
-    if (it == _sock_type_to_str.end()) {
-        // invalid socket group for stats_print.
-        return;
-    }
-    printf("\r %-10s | %-10d | %-10d | %-10d | %-13d | %-13d | %-13d\r\n",
-           it->second.c_str(),
-           nlm_counters[type].num_add_events_pub,
-           nlm_counters[type].num_del_events_pub,
-           nlm_counters[type].num_get_events_pub,
-           nlm_counters[type].num_add_events_pub_failed,
-           nlm_counters[type].num_del_events_pub_failed,
-           nlm_counters[type].num_get_events_pub_failed);
-
-    return;
-}
 
 void os_debug_nl_stats_reset () {
-    for ( auto &it : nlm_sockets) {
-        if (nlm_counters[it.second].reset !=NULL) {
-            nlm_counters[it.second].reset(it.second);
-        }
+    for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end() ; ++it) {
+        nas_nl_stats_reset(it->first);
     }
 }
 
 void os_debug_nl_stats_print () {
-
-    printf("\r\n NETLINK STATS INFORMATION socket-rx-buf-size intf:%d "
-           "neigh:%d route:%d scratch buf-size:%d\r\n",
-           NL_INTF_SOCKET_BUFFER_LEN, NL_NEIGH_SOCKET_BUFFER_LEN, NL_ROUTE_SOCKET_BUFFER_LEN,
+    printf("\r\n NETLINK STATS INFORMATION scratch buf-size: %d\r\n",
            NL_SCRATCH_BUFFER_LEN);
-    for ( auto &it : nlm_sockets) {
-        printf("Socket type:%s sock-fd:%d\r\n",
-               ((it.second == nas_nl_sock_T_ROUTE) ? "Route" :
-                (it.second == nas_nl_sock_T_INT) ? "Intf" : "Nbr"), it.first);
-    }
 
-    printf("\r =========================\r\n");
-    printf("\r\n %-10s | %-10s | %-10s | %-10s | %-10s\r\n", "Sock Type", "#events", "#bulk", "#max_bulk", "min_bulk");
-    printf("\r %-10s | %-10s | %-10s | %-10s | %-10s\r\n",
-           "==========",
-           "==========",
-           "==========",
-           "==========",
-           "==========");
+    for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end() ; ++it) {
+        printf("\r\nSocket type: %-10s sock-fd: %-10d socket-rx-buf-size: %-10d\r\n",
+               ((it->second == nas_nl_sock_T_ROUTE) ? "Route" :
+                (it->second == nas_nl_sock_T_INT) ? "Intf" :
+                (it->second == nas_nl_sock_T_NEI) ? "Nbr" : "NetConf"),
+               it->first,
+               ((it->second == nas_nl_sock_T_ROUTE) ? NL_ROUTE_SOCKET_BUFFER_LEN :
+                (it->second == nas_nl_sock_T_INT) ? NL_INTF_SOCKET_BUFFER_LEN :
+                (it->second == nas_nl_sock_T_NEI) ? NL_NEIGH_SOCKET_BUFFER_LEN :
+                (it->second == nas_nl_sock_T_NETCONF) ? NL_NETCONF_SOCKET_BUFFER_LEN: 0));
+        printf("\r=========================================================================\r\n");
 
-    for ( auto &it : nlm_sockets) {
-        if (nlm_counters[it.second].print!=NULL) {
-            nlm_counters[it.second].print(it.second);
-        }
-    }
-    printf(" \r\n===============================Netlink Message Details=========================================\r\n");
-    printf("\r %-10s | %-10s | %-10s | %-10s | %-12s | %-12s | %-12s\r\n",
-           "Sock Type", "#add", "#del", "#get", "#invalid_add", "#invalid_del", "#invalid_get");
-    printf("\r %-10s | %-10s | %-10s | %-10s | %-12s | %-12s | %-12s\r\n",
-           "==========", "==========", "==========", "==========", "============",
-           "============", "============");
-
-    for ( auto &it : nlm_sockets) {
-        if (nlm_counters[it.second].print_msg_detail!=NULL) {
-            nlm_counters[it.second].print_msg_detail(it.second);
-        }
-    }
-    printf("  \r\n===============================Netlink Message Publish Details====================================\r\n");
-    printf("\r %-10s | %-10s | %-10s | %-10s | %-13s | %-13s | %-13s\r\n",
-           "Sock Type", "#add_pub", "#del_pub", "#get_pub", "#add_pub_fail", "#del_pub_fail", "#get_pub_fail");
-    printf("\r %-10s | %-10s | %-10s | %-10s | %-13s | %-13s | %-13s\r\n",
-           "==========", "==========", "==========", "==========", "=============",
-           "=============", "=============");
-
-    for ( auto &it : nlm_sockets) {
-        if (nlm_counters[it.second].print_pub_detail!=NULL) {
-            nlm_counters[it.second].print_pub_detail(it.second);
-        }
+        nas_nl_stats_print (it->first);
     }
 }
 
 void os_send_refresh(nas_nl_sock_TYPES type) {
     int RANDOM_REQ_ID = 0xee00;
 
-    for ( auto &it : nlm_sockets) {
-        if (it.second == type && nlm_handlers[it.second].trigger!=NULL) {
-            nlm_handlers[it.second].trigger(it.first,RANDOM_REQ_ID);
+    for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end() ; ++it) {
+        if (it->second == type && nlm_handlers->at(it->second).trigger!=NULL) {
+            nlm_handlers->at(it->second).trigger(it->first,RANDOM_REQ_ID);
         }
     }
 }
@@ -640,8 +446,9 @@ int net_main() {
             exit(-1);
         }
         EV_LOG(INFO,NETLINK,2, "NET-NOTIFY","Socket: ix %d, sock id %d", ix, sock);
-        nlm_sockets[sock] = (nas_nl_sock_TYPES)(ix);
+        nlm_sockets->insert({sock, (nas_nl_sock_TYPES)(ix)});
         add_fd_set(sock,read_fds,max_fd);
+        nas_nl_stats_init (sock);
     }
 
     //Publish existing..
@@ -650,7 +457,8 @@ int net_main() {
     nas_nl_sock_TYPES _refresh_list[] = {
             nas_nl_sock_T_INT,
             nas_nl_sock_T_NEI,
-            nas_nl_sock_T_ROUTE
+            nas_nl_sock_T_ROUTE,
+            nas_nl_sock_T_NETCONF
     };
 
     g_if_db = new (std::nothrow) (INTERFACE);
@@ -672,18 +480,24 @@ int net_main() {
         if(select((max_fd+1), &sel_fds, NULL, NULL, NULL) <= 0)
             continue;
 
-        for ( auto &it : nlm_sockets) {
-            if (FD_ISSET(it.first,&sel_fds)) {
-                netlink_tools_receive_event(it.first,nlm_handlers[it.second].process,
+        for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end() ; ++it) {
+            if (FD_ISSET(it->first,&sel_fds)) {
+                netlink_tools_receive_event(it->first,nlm_handlers->at(it->second).process,
                             NULL,buf,sizeof(buf),NULL);
             }
         }
+    }
+
+    /* deinit the netlink stats on exit */
+    for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end() ; ++it) {
+        nas_nl_stats_deinit (it->first);
     }
 
     return 0;
 }
 
 t_std_error cps_api_net_notify_init(void) {
+
     EV_LOG_TRACE(ev_log_t_NULL, 3, "NET-NOTIFY","Initializing Net Notify Thread");
 
     if (cps_api_event_client_connect(&_handle)!=STD_ERR_OK) {

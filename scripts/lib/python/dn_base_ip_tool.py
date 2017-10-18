@@ -20,6 +20,7 @@ import os
 import binascii
 
 iplink_cmd = '/sbin/ip'
+VXLAN_PORT = '4789'
 
 
 def get_ip_line_type(lines):
@@ -204,6 +205,32 @@ def del_ip_addr(addr_and_prefix, dev):
     return False
 
 
+def create_vxlan_if(name, vn_id, tunnel_source_ip):
+
+    """Method to create a VxLAN Interface
+    Args:
+        bname (str): Name of the VxLAN Interface
+        vn_id (str): VNI ID
+        tunnel_source_ip (str): Tunnel Source IP Address
+    Returns:
+        bool: The return value. True for success, False otherwise
+    """
+
+    res = []
+    cmd = [iplink_cmd,
+           'link', 'add',
+           'name', name,
+           'type', 'vxlan',
+           'id', vn_id,
+           'local', tunnel_source_ip,
+           'dstport', VXLAN_PORT
+           ]
+
+    if run_command(cmd, res) == 0:
+        return True
+    return False
+
+
 def create_loopback_if(name, mtu=None, mac=None):
     res = []
     cmd = [iplink_cmd,
@@ -228,6 +255,29 @@ def create_loopback_if(name, mtu=None, mac=None):
 def delete_if(name):
     res = []
     if run_command([iplink_cmd, 'link', 'delete', 'dev', name], res) == 0:
+        return True
+    return False
+
+
+def configure_vlan_tag(name, vlan_id):
+
+    """Method to configure a VLAN tag Interface
+    Args:
+        name (str): Name of the Interface
+        vlan_id (str): VLAN ID
+    Returns:
+        bool: The return value. True for success, False otherwise
+    """
+
+    res = []
+    cmd = [iplink_cmd,
+           'link', 'add',
+           'link', name,
+           'name', str(name) + '.' + str(vlan_id),
+           'type', 'vlan',
+           'id', str(vlan_id)
+           ]
+    if run_command(cmd, res) == 0:
         return True
     return False
 

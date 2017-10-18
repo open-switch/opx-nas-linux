@@ -31,6 +31,7 @@
 #include "nas_os_vlan_utils.h"
 #include "nas_linux_l2.h"
 #include "ds_api_linux_interface.h"
+#include "ds_api_linux_route.h"
 
 #include <sys/socket.h>
 #include <stdbool.h>
@@ -41,7 +42,6 @@
 
 // @TODO - This file has to conform to new yang model
 
-extern bool nas_rt_is_reserved_intf(char *if_name);
 char *nl_neigh_mac_to_str (hal_mac_addr_t *mac_addr) {
     static char str[18];
     snprintf (str, sizeof(str), "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -131,7 +131,7 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_STATE,ndmsg->ndm_state);
     cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_FAMILY,ndmsg->ndm_family);
 
-    EV_LOG(INFO, NETLINK,3,"NH-EVENT","Op:%s fly:%s(%d) flags:0x%x state:%s(%d) ifx:%d",
+    EV_LOGGING(NETLINK, INFO,"NH-EVENT","Op:%s fly:%s(%d) flags:0x%x state:%s(%d) ifx:%d",
            ((rt_msg_type == RTM_NEWNEIGH) ? "Add-NH" :
             ((rt_msg_type == RTM_DELNEIGH) ? "Del-NH" : "Get-NH")),
            ((ndmsg->ndm_family == AF_INET) ? "IPv4" : "IPv6"), ndmsg->ndm_family,
@@ -148,8 +148,8 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     for (; RTA_OK(rtatp, attrlen); rtatp = RTA_NEXT (rtatp, attrlen)) {
 
         if(rtatp->rta_type == NDA_DST) {
-            rta_add_ip((struct nlattr*)rtatp,ndmsg->ndm_family, obj,cps_api_if_NEIGH_A_NBR_ADDR);
-            EV_LOG(INFO, NETLINK,3,"NH-EVENT","NextHop IP:%s",
+            rta_add_ip((struct nlattr*)rtatp, obj,cps_api_if_NEIGH_A_NBR_ADDR);
+            EV_LOGGING(NETLINK, INFO,"NH-EVENT","NextHop IP:%s",
                    ((ndmsg->ndm_family == AF_INET) ?
                     (inet_ntop(ndmsg->ndm_family, ((struct in_addr *) nla_data((struct nlattr*)rtatp)), addr_str, INET_ADDRSTRLEN)) :
                     (inet_ntop(ndmsg->ndm_family, ((struct in6_addr *) nla_data((struct nlattr*)rtatp)), addr_str, INET6_ADDRSTRLEN))));
@@ -159,7 +159,7 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         if(rtatp->rta_type == NDA_LLADDR) {
             mac_addr = (hal_mac_addr_t *) nla_data((struct nlattr*)rtatp);
             rta_add_mac((struct nlattr*)rtatp,obj,cps_api_if_NEIGH_A_NBR_MAC);
-            EV_LOG(INFO, NETLINK,3,"NH-EVENT","NextHop MAC:%s", nl_neigh_mac_to_str(nla_data((struct nlattr*)rtatp)));
+            EV_LOGGING(NETLINK, INFO,"NH-EVENT","NextHop MAC:%s", nl_neigh_mac_to_str(nla_data((struct nlattr*)rtatp)));
         }
         if(rtatp->rta_type == NDA_MASTER) {
             char if_name[HAL_IF_NAME_SZ+1];
@@ -199,7 +199,7 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     return true;
 }
 
-static bool process_neigh_and_add_to_list(int rt_msg_type, struct nlmsghdr *nh, void *context) {
+static bool process_neigh_and_add_to_list(int sock, int rt_msg_type, struct nlmsghdr *nh, void *context) {
     cps_api_object_list_t *list = (cps_api_object_list_t*) context;
     cps_api_object_t obj=cps_api_object_create();
     if (!cps_api_object_list_append(*list,obj)) {

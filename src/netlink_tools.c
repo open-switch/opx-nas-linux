@@ -27,12 +27,14 @@
 #include "event_log.h"
 #include "nas_nlmsg.h"
 #include "nas_os_interface.h"
+#include "netlink_stats.h"
 
 #include <string.h>
 #include <unistd.h>
 
 #include <linux/rtnetlink.h>
 #include <sys/socket.h>
+#include <linux/socket.h>
 #include <errno.h>
 #include <time.h>
 
@@ -43,8 +45,6 @@ typedef struct {
     struct nlattr **tb;
     size_t max_type;
 }nl_param_t;
-
-void nl_stats_update (int sock, uint32_t bulk_msg_count);
 
 static void netlink_tool_attr(struct nlattr *attr, void *context) {
     nl_param_t * p = (nl_param_t*) context;
@@ -151,11 +151,11 @@ void netlink_tools_receive_event(int sock, fun_process_nl_message handlers,
         }
 
         msg_count++; //track statistics
-        if (!handlers(nh->nlmsg_type,nh,context)) { //assume function will log an error
+        if (!handlers(sock, nh->nlmsg_type,nh,context)) { //assume function will log an error
             return ;
         }
     }
-    nl_stats_update (sock, msg_count);
+    nas_nl_stats_update (sock, msg_count);
 }
 
 bool netlink_tools_process_socket(int sock,
@@ -279,7 +279,7 @@ bool netlink_tools_process_socket(int sock,
             }
 
             msg_count++; //track statistics
-            if (!func(nh->nlmsg_type,nh,context)) {
+            if (!func(sock, nh->nlmsg_type,nh,context)) {
                 return false;
             } else {
                 rc = true;
@@ -288,7 +288,6 @@ bool netlink_tools_process_socket(int sock,
 
         EV_LOGGING(NETLINK, DEBUG ,"ACK/ERR","sock %d, rc %d", sock, rc);
 
-        nl_stats_update (sock, msg_count);
         if (msg.msg_flags & MSG_TRUNC) {
             EV_LOG(INFO,NETLINK,0,"ACK/ERR","Truncated message %d (type:%d)",msg.msg_iovlen,
                     nlmsg_type);
@@ -377,7 +376,7 @@ int nlmsg_add_attr(struct nlmsghdr * m, int maxlen, int type, const void * data,
     return m->nlmsg_len;
 }
 
-bool _process_set_fun(int rt_msg_type, struct nlmsghdr *hdr, void * context) {
+bool _process_set_fun(int sock, int rt_msg_type, struct nlmsghdr *hdr, void * context) {
     return true;
 }
 
@@ -419,11 +418,36 @@ static int create_neigh_socket(bool include_bind) {
                           NL_NEIGH_SOCKET_BUFFER_LEN);
 }
 
+static int create_netconf_socket(bool include_bind) {
+    int sock = nl_sock_create(0, NETLINK_ROUTE,include_bind, NL_NETCONF_SOCKET_BUFFER_LEN);
+    /* Subscribe for the NETCONF groups to receive the IP forwarding
+     * enable/disable from kernel */
+    if ((sock != -1) && include_bind) {
+        int mc_group = RTNLGRP_IPV4_NETCONF;
+        int err = setsockopt(sock, NL_SOL_NETLINK, NETLINK_ADD_MEMBERSHIP,
+                             &mc_group, sizeof(mc_group));
+        if (err) {
+            EV_LOGGING(NETLINK, ERR,"NETLINK","NETCONF IPv4 subscription failed!");
+            return -1;
+        }
+        mc_group = RTNLGRP_IPV6_NETCONF;
+        err = setsockopt(sock, NL_SOL_NETLINK, NETLINK_ADD_MEMBERSHIP,
+                         &mc_group, sizeof(mc_group));
+        if (err) {
+            EV_LOGGING(NETLINK, ERR,"NETLINK","NETCONF IPv6 subscription failed!");
+            return -1;
+        }
+    }
+    return sock;
+}
+
+
 typedef int (*create_soc_fn)(bool include_bind);
 static create_soc_fn sock_create_functions[] = {
     create_route_socket,
     create_intf_socket,
-    create_neigh_socket
+    create_neigh_socket,
+    create_netconf_socket
 };
 
 int nas_nl_sock_create(nas_nl_sock_TYPES type, bool include_bind)  {

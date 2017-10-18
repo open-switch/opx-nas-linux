@@ -49,12 +49,12 @@ void rta_add_mac( struct nlattr* rtatp,cps_api_object_t obj, uint32_t attr );
 
 void rta_add_mask( int family, uint_t prefix_len, cps_api_object_t obj, uint32_t attr);
 
-void rta_add_e_ip( struct nlattr* rtatp,int family, cps_api_object_t obj,
+void rta_add_e_ip( struct nlattr* rtatp, cps_api_object_t obj,
         cps_api_attr_id_t *attr, size_t attr_id_len);
 
-inline static void rta_add_ip( struct nlattr* rtatp,int family,
+inline static void rta_add_ip( struct nlattr* rtatp,
         cps_api_object_t obj, cps_api_attr_id_t attr) {
-    rta_add_e_ip( rtatp,family,obj,&attr,1);
+    rta_add_e_ip( rtatp,obj,&attr,1);
 }
 
 unsigned int rta_add_name( struct nlattr* rtatp,cps_api_object_t obj, uint32_t attr);

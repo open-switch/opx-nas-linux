@@ -38,15 +38,15 @@
 #include <mutex>
 
 static std::mutex _if_stp_mutex;
-static std::map<hal_ifindex_t,uint8_t> _if_stp_state;
+static auto _if_stp_state = new std::map<hal_ifindex_t,uint8_t>;
 #define NL_MSG_BUFF_LEN 4096
 
 extern "C"{
 
 t_std_error get_if_stp_state(hal_ifindex_t index, uint8_t * state){
     std::lock_guard<std::mutex> lock(_if_stp_mutex);
-    auto it = _if_stp_state.find(index);
-    if(it != _if_stp_state.end()){
+    auto it = _if_stp_state->find(index);
+    if(it != _if_stp_state->end()){
         *state = it->second;
         return STD_ERR_OK;
     }
@@ -85,8 +85,8 @@ t_std_error nl_int_update_stp_state(cps_api_object_t obj){
 
     uint8_t state = cps_api_object_attr_data_u32(stp_state);
 
-    auto state_it = _if_stp_state.find(vlan_ifindex);
-    if( state_it != _if_stp_state.end()){
+    auto state_it = _if_stp_state->find(vlan_ifindex);
+    if( state_it != _if_stp_state->end()){
         /*
          * To prevent race condition for eg. port was in disabled and becomes oper up
          * kernel puts it in fwd, at that time this function will be invoked to put it
@@ -131,7 +131,11 @@ t_std_error nl_int_update_stp_state(cps_api_object_t obj){
         return STD_ERR(STG,FAIL,0);
     }
 
-    _if_stp_state[vlan_ifindex] = state;
+    if(state_it == _if_stp_state->end()){
+        _if_stp_state->insert({vlan_ifindex,state});
+    }else{
+        state_it->second = state;
+    }
     return STD_ERR_OK;
 }
 

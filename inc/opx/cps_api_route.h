@@ -59,6 +59,7 @@ typedef enum {
     cps_api_if_ROUTE_A_HOP_COUNT=11,
     cps_api_if_ROUTE_A_NH=12,
     cps_api_if_ROUTE_A_FAMILY=13,
+    cps_api_if_ROUTE_A_RT_TYPE=14,
     cps_api_if_ROUTE_A_MAX
 }cps_api_if_ROUTE_ATTR;
 

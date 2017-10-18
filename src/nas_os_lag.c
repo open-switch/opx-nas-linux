@@ -180,18 +180,20 @@ t_std_error nas_os_add_port_to_lag(cps_api_object_t obj)
     bool state = true;
     do {
         if (nas_os_get_interface_obj(if_index, if_obj)!=STD_ERR_OK) {
-	       rc = STD_ERR(NAS_OS,FAIL, 0);
-	       break;
-	    }
+           rc = STD_ERR(NAS_OS,FAIL, 0);
+           break;
+        }
 
         db_interface_state_t astate;
         db_interface_operational_state_t ostate;
         char if_name[HAL_IF_NAME_SZ+1];
         cps_api_interface_if_index_to_name(if_index, if_name, sizeof(if_name));
 
-        // get admin state information from kernel for the given member port 
-        if (nas_os_util_int_admin_state_get(if_name,&astate,&ostate)!=STD_ERR_OK) {
+        // get admin state information from kernel for the given member port
+        if (nas_os_util_int_admin_state_get(if_name,&astate,&ostate)==STD_ERR_OK) {
             state = (astate == DB_ADMIN_STATE_UP)? true: false;
+        } else {
+            EV_LOG(ERR,NAS_OS,0,"NAS-IF-REG","Get admin failed for idx %s", if_name);
         }
 
         EV_LOG(INFO, NAS_OS, 3, "NET-MAIN", "Masking admin state event for %d", if_index);

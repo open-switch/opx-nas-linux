@@ -159,7 +159,6 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
 
     if (nla_parse(details._attrs,__IFLA_MAX,head,nla_len)!=0) {
         EV_LOG(ERR,NAS_OS,0,"NL-PARSE","Failed to parse attributes");
-        cps_api_object_delete(obj);
         return false;
     }
 
@@ -291,7 +290,7 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
     return true;
 }
 
-static bool get_netlink_data(int rt_msg_type, struct nlmsghdr *hdr, void *data) {
+static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data) {
     if (rt_msg_type <= RTM_SETLINK) {
         cps_api_object_list_t * list = (cps_api_object_list_t*)data;
         cps_api_object_guard og(cps_api_object_create());

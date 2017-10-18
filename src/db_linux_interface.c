@@ -287,7 +287,7 @@ static cps_api_return_code_t get_interface(
     return cps_api_ret_code_OK;
 }
 
-static bool get_netlink_data(int rt_msg_type, struct nlmsghdr *hdr, void *data) {
+static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data) {
     if (rt_msg_type <= RTM_SETLINK) {
         cps_api_object_list_t * list = (cps_api_object_list_t*)data;
         cps_api_object_t obj = cps_api_object_create();

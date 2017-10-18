@@ -16,7 +16,6 @@
 import cps
 import subprocess
 import sys
-import time
 import cps_object
 import cps_utils
 import socket
@@ -25,6 +24,7 @@ import ifindex_utils
 
 import dn_base_ip_tool
 import systemd.daemon
+import event_log as ev
 
 iplink_cmd = '/sbin/ip'
 
@@ -41,6 +41,11 @@ _keys = {
     cps.key_from_name('target', 'base-ip/ipv6/address'): 'base-ip/ipv6/address',
 }
 
+def log_err(msg):
+    ev.logging("BASE_IP",ev.ERR,"IP-CONFIG","","",0,msg)
+
+def log_info(msg):
+    ev.logging("BASE_IP",ev.INFO,"IP-CONFIG","","",0,msg)
 
 def get_next_index(d):
     count = 0
@@ -48,8 +53,6 @@ def get_next_index(d):
         if str(count) not in d:
             return count
         count += 1
-    return count
-
 
 def _get_af_from_name(name):
     type = 'ipv4'
@@ -69,6 +72,11 @@ def _get_af_from_obj(obj):
 def _get_proc_fwd_entry(dev, iptype):
     return ['proc', 'sys', 'net', iptype, 'conf', dev, 'forwarding']
 
+def _get_proc_disable_ipv6_entry(dev):
+    return ['proc', 'sys', 'net', 'ipv6', 'conf', dev, 'disable_ipv6']
+
+def _get_proc_ipv6_autoconf_entry(dev):
+    return ['proc', 'sys', 'net', 'ipv6', 'conf', dev, 'autoconf']
 
 def _get_proc_variable(path):
     try:
@@ -85,10 +93,10 @@ def _set_proc_variable(path, value):
     try:
         path = '/'.join(path)
         with open('/' + path, 'w') as f:
-            data = f.write(str(value))
-        return int(data)
+            f.write(str(value))
     except:
         print "Error writing ", path
+        return -1
 
 
 def create_obj_from_line(obj_type, ifix, ifname):
@@ -184,8 +192,9 @@ def _get_ip_objs(filt, resp):
     for _if in lst:
         o = create_obj_from_line('base-ip/' + af, _if.ifix, _if.ifname)
 
+        name = o.get_attr_data('base-ip/' + af + '/name')
         if not filt.key_compare(
-            {'base-ip/' + af + '/name': o.get_attr_data('base-ip/' + af + '/name'),
+            {'base-ip/' + af + '/name': name,
                                'base-ip/' + af + '/ifindex': o.get_attr_data('base-ip/' + af + '/ifindex')}):
             continue
 
@@ -193,8 +202,24 @@ def _get_ip_objs(filt, resp):
             _get_proc_fwd_entry(o.get_attr_data('base-ip/' + af + '/name'), af))
         if fwd == -1:
             fwd = 0
-        o.add_attr('base-ip/' + af + '/enabled', 1)
         o.add_attr('base-ip/' + af + '/forwarding', fwd)
+
+        if af == 'ipv6':
+            enabled = 1
+            disable_ipv6 = _get_proc_variable(_get_proc_disable_ipv6_entry(name))
+            if disable_ipv6 == -1 or disable_ipv6 == 1:
+                enabled = 0
+            o.add_attr('base-ip/' + af + '/enabled', enabled)
+            autoconf = _get_proc_variable(_get_proc_ipv6_autoconf_entry(name))
+            if autoconf == -1 or autoconf == 0:
+                autoconf = 0
+            o.add_attr('base-ip/' + af + '/autoconf', autoconf)
+            log_msg = 'IPv6 intf-name:' + name + ' fwd status:' + str(fwd) + ' ipv6 status:' \
+                       + str(enabled) + 'auto conf:' + str(autoconf)
+            log_info(log_msg)
+        else:
+            log_msg = 'IPv4 intf-name:' + name + ' fwd status:' + str(fwd)
+            log_info(log_msg)
 
         for _ip in _if.ip:
             add_ip_info(af, o, _ip)
@@ -268,8 +293,40 @@ def trans_cb(methods, params):
 
     try:
         if params['operation'] == 'set' and obj.get_key() == _keys['base-ip/' + af]:
-            fwd = obj.get_attr_data('base-ip/' + af + '/forwarding')
-            _set_proc_variable(_get_proc_fwd_entry(name, af), str(fwd))
+            if af == 'ipv6':
+                try:
+                    enabled = obj.get_attr_data('base-ip/' + af + '/enabled')
+                    if enabled == 1:
+                        disable_ipv6 = 0
+                    else:
+                        disable_ipv6 = 1
+                    ret_val = _set_proc_variable(_get_proc_disable_ipv6_entry(name), str(disable_ipv6))
+                    log_msg = 'CPS set for intf-name:' + name + ' ipv6 status:' + str(enabled) + 'ret_val:' + str(ret_val)
+                    log_info(log_msg)
+                    if ret_val == -1:
+                        return False
+                except:
+                    pass
+                try:
+                    autoconf = obj.get_attr_data('base-ip/' + af + '/autoconf')
+                    ret_val = _set_proc_variable(_get_proc_ipv6_autoconf_entry(name), str(autoconf))
+                    log_msg = 'CPS set for intf-name:' + name + ' ipv6 auto conf status:' + str(autoconf) + 'ret_val:' + str(ret_val)
+                    log_info(log_msg)
+                    if ret_val == -1:
+                        return False
+                except:
+                    pass
+
+            try:
+                fwd = obj.get_attr_data('base-ip/' + af + '/forwarding')
+                ret_val = _set_proc_variable(_get_proc_fwd_entry(name, af), str(fwd))
+                log_msg = 'CPS set for intf-name:' + name + ' fwd status:' + str(fwd) + 'ret_val:' + str(ret_val)
+                log_info(log_msg)
+                if ret_val == -1:
+                    return False
+            except:
+                pass
+            return True
 
         if params['operation'] == 'create' and obj.get_key() == _keys['base-ip/' + af + '/address']:
             addr = _create_ip_and_prefix_from_obj(obj, af)
@@ -296,9 +353,9 @@ def sigterm_hdlr(signum, frame):
     shutdown = True
 
 if __name__ == '__main__':
-    
+
     shutdown = False
-    
+
     # Install signal handlers.
     import signal
     signal.signal(signal.SIGTERM, sigterm_hdlr)
@@ -326,7 +383,7 @@ if __name__ == '__main__':
     # wait until a signal is received
     while False == shutdown:
         signal.pause()
-        
+
     systemd.daemon.notify("STOPPING=1")
     # cleanup code here
     # No need to specifically call sys.exit(0).

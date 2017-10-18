@@ -48,8 +48,8 @@
 
 
 static std::mutex _intf_mutex;
-static std::unordered_map<hal_ifindex_t,std::unordered_set<hal_ifindex_t>>_intf_to_tagged_intf_map;
-static std::map<std::string,hal_ifindex_t>_intf_str_to_tagged_ifindex_map;
+static auto & _intf_to_tagged_intf_map = *(new std::unordered_map<hal_ifindex_t,std::unordered_set<hal_ifindex_t>>);
+static auto & _intf_str_to_tagged_ifindex_map = *(new std::map<std::string,hal_ifindex_t>);
 const static int MAX_CPS_MSG_BUFF=4096;
 
 /*
@@ -698,4 +698,3 @@ t_std_error nas_os_vlan_set_member_port_mtu(cps_api_object_t obj){
 
     return STD_ERR(NAS_OS,PARAM,0);
 }
-
