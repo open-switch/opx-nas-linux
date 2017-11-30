@@ -22,6 +22,7 @@ import binascii
 iplink_cmd = '/sbin/ip'
 VXLAN_PORT = '4789'
 
+_mgmt_vrf_name = 'management'
 
 def get_ip_line_type(lines):
     header = lines[0].strip().split()
@@ -191,16 +192,28 @@ def get_if_details(dev=None):
     return res
 
 
-def add_ip_addr(addr_and_prefix, dev):
+def add_ip_addr(addr_and_prefix, dev, vrf_name='default'):
     res = []
-    if run_command([iplink_cmd, 'addr', 'add', addr_and_prefix, 'dev', dev], res) == 0:
+    if vrf_name == 'default':
+        if run_command([iplink_cmd, 'addr', 'add', addr_and_prefix, 'dev', dev], res) == 0:
+            return True
+        return False
+
+    if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'addr', 'add',\
+                   addr_and_prefix, 'dev', dev], res) == 0:
         return True
     return False
 
 
-def del_ip_addr(addr_and_prefix, dev):
+def del_ip_addr(addr_and_prefix, dev, vrf_name='default'):
     res = []
-    if run_command([iplink_cmd, 'addr', 'del', addr_and_prefix, 'dev', dev], res) == 0:
+    if vrf_name == 'default':
+        if run_command([iplink_cmd, 'addr', 'del', addr_and_prefix, 'dev', dev], res) == 0:
+            return True
+        return False
+
+    if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'addr', 'del',\
+                   addr_and_prefix, 'dev', dev], res) == 0:
         return True
     return False
 
@@ -305,3 +318,72 @@ def set_if_state(name, state):
     if run_command([iplink_cmd, 'link', 'set', 'dev', name, state], res) == 0:
         return True
     return False
+
+def ip_forwarding_config(ip_type, if_name, fwd, vrf_name='default'):
+    res = []
+    if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'sysctl', '-w',\
+                   'net.'+ip_type+'.conf.'+if_name+'.forwarding='+fwd], res) == 0:
+        return True
+    return False
+
+def disable_ipv6_config(if_name, disable_ipv6, vrf_name='default'):
+    res = []
+    if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'sysctl', '-w',\
+                   'net.ipv6.conf.'+if_name+'.disable_ipv6='+disable_ipv6], res) == 0:
+        return True
+    return False
+
+def ipv6_autoconf_config(if_name, autoconf, vrf_name='default'):
+    res = []
+    if vrf_name == _mgmt_vrf_name:
+        # 2 - Overrule forwarding behaviour. Accept Router Advertisements
+        #     even if forwarding is enabled on the mgmt. interface
+        #     since forwarding is enabled for iptables to work.
+        accept_ra = 1
+        if autoconf:
+            accept_ra = 2
+        cmd = [iplink_cmd, 'netns', 'exec', vrf_name, 'sysctl', '-w',\
+              'net.ipv6.conf.'+if_name+'.accept_ra='+str(accept_ra)]
+        if run_command(cmd, res) != 0:
+            return False
+
+    if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'sysctl', '-w',\
+                   'net.ipv6.conf.'+if_name+'.autoconf='+str(autoconf)], res) == 0:
+        return True
+    return False
+
+def ipv6_accept_dad_config(if_name, accept_dad, vrf_name='default'):
+    res = []
+    if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'sysctl', '-w',\
+                   'net.ipv6.conf.'+if_name+'.accept_dad='+accept_dad], res) == 0:
+        return True
+    return False
+
+def flush_ip_neigh(af, dev, vrf_name='default'):
+    res = []
+    neigh_af = '-4'
+    if af == 'ipv6':
+        neigh_af = '-6'
+
+    if vrf_name == 'default':
+        if dev is not None:
+            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'dev', dev], res) == 0:
+                return True
+        else:
+            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'all'], res) == 0:
+                return True
+
+        return False
+
+    # Flush the neighbors present in the non-default VRF
+    if dev is not None:
+        if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
+                   'neigh', 'flush', 'dev', dev], res) == 0:
+            return True
+    else:
+        if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
+                   'neigh', 'flush', 'all'], res) == 0:
+            return True
+    return False
+
+
