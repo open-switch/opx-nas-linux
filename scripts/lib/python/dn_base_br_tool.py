@@ -185,23 +185,79 @@ def get_id(bname):
     return None
 
 
-def add_learnt_mac_to_ftep_fdb(name, dst_ip, learnt_mac="00:00:00:00:00:00"):
+#bridge fdb { add | append | del } LLADDR dev DEV { local | temp } { self } { embedded } { router } [ dst IPADDR ] [ vni VNI ] [ port PORT ] [ via DEVICE ]
+def del_learnt_mac_from_vtep_fdb(iname, dst_ip, addr_family, learnt_mac, vni=None, port=None, via=None):
 
-    """Add MAC entry learnt on a destination IP in the FDB
+    """Remove MAC entry learnt on a destination IP in the FDB
     Args:
-        name (str): Name of the Bridge
-        dst_ip (str): Destination IP Address
+        iname (str): Name of the Interface
+        dst_ip (bin): Destination IP Address
+        addr_family (int): Address family of the IP address
         learnt_mac (str): Learnt MAC Address
+        vni (int): VxLAN VNI Identifier
+        port (int): destination UDP port number to connect to Remote VTEP
+        via (str): Interface to reach Remote VTEP
     Returns:
         bool: The return value. True for success, False otherwise
     """
 
     res = []
-    if run_command([BRIDGE_CMD, 'fdb',
-                    'add', str(learnt_mac),
-                    'dev', str(name),
-                    'dst', str(dst_ip)
-                    ], res) == 0:
 
+    cmd = [BRIDGE_CMD, 'fdb',
+           'del', str(learnt_mac),
+           'dev', str(iname),
+           'dst', dst_ip]
+
+    if vni is not None:
+        cmd.append('vni')
+        cmd.append(vni)
+
+    if port is not None:
+        cmd.append('port')
+        cmd.append(port)
+
+    if via is not None:
+        cmd.append('via')
+        cmd.append(via)
+
+    if run_command(cmd, res) == 0:
+        return True
+    return False
+
+def add_learnt_mac_to_vtep_fdb(iname, dst_ip, addr_family, learnt_mac, vni=None, port=None, via=None):
+
+    """Add MAC entry learnt on a destination IP in the FDB
+    Args:
+        iname (str): Name of the Interface
+        dst_ip (bin): Destination IP Address
+        addr_family (int): Address family of the IP address
+        learnt_mac (str): Learnt MAC Address
+        vni (int): VxLAN VNI Identifier
+        port (int): destination UDP port number to connect to Remote VTEP
+        via (str): Interface to reach Remote VTEP
+    Returns:
+        bool: The return value. True for success, False otherwise
+    """
+
+    res = []
+
+    cmd = [BRIDGE_CMD, 'fdb',
+           'append', str(learnt_mac),
+           'dev', str(iname),
+           'dst', dst_ip]
+
+    if vni is not None:
+        cmd.append('vni')
+        cmd.append(vni)
+
+    if port is not None:
+        cmd.append('port')
+        cmd.append(port)
+
+    if via is not None:
+        cmd.append('via')
+        cmd.append(via)
+
+    if run_command(cmd, res) == 0:
         return True
     return False

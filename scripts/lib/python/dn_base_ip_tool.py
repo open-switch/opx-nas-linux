@@ -17,8 +17,6 @@ import subprocess
 import re
 import os
 
-import binascii
-
 iplink_cmd = '/sbin/ip'
 VXLAN_PORT = '4789'
 
@@ -50,16 +48,18 @@ def _group_lines_based_on_position(scope, lines):
     return resp
 
 
-def run_command(cmd, respose):
-    p = subprocess.Popen(
-        cmd,
-        shell=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT)
-    for line in p.stdout.readlines():
-        respose.append(line.rstrip())
-    retval = p.wait()
-    return retval
+def run_command(cmd, response):
+    p = subprocess.Popen(cmd, shell=False, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT)
+    output = p.communicate()[0]
+    for line in output.splitlines():
+        # If dump was interrupted during kernel info. dump, ignore it,
+        # App has to do get again for the latest information.
+        if 'Dump was interrupted and may be inconsistent.' in line:
+            continue
+        response.append(line.rstrip())
+
+    return p.returncode
 
 
 def _get_ip_addr(dev=None):
@@ -218,13 +218,14 @@ def del_ip_addr(addr_and_prefix, dev, vrf_name='default'):
     return False
 
 
-def create_vxlan_if(name, vn_id, tunnel_source_ip):
+def create_vxlan_if(name, vn_id, tunnel_source_ip, addr_family):
 
     """Method to create a VxLAN Interface
     Args:
         bname (str): Name of the VxLAN Interface
         vn_id (str): VNI ID
         tunnel_source_ip (str): Tunnel Source IP Address
+        addr_family (int): Address family of the IP address
     Returns:
         bool: The return value. True for success, False otherwise
     """

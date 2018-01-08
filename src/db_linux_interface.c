@@ -66,7 +66,7 @@
  */
 
 //db_if_event_t
-bool nl_get_if_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj) {
+bool nl_get_if_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context) {
 
     struct ifinfomsg *ifmsg = (struct ifinfomsg *)NLMSG_DATA(hdr);
 
@@ -291,7 +291,7 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
     if (rt_msg_type <= RTM_SETLINK) {
         cps_api_object_list_t * list = (cps_api_object_list_t*)data;
         cps_api_object_t obj = cps_api_object_create();
-        if (nl_get_if_info(rt_msg_type,hdr,obj)) {
+        if (nl_get_if_info(rt_msg_type,hdr,obj, data)) {
             if (cps_api_object_list_append(*list,obj)) {
                 return true;
             }
@@ -303,7 +303,7 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
 
 cps_api_return_code_t get_all_interfaces( cps_api_object_list_t list ) {
     int if_sock = 0;
-    if((if_sock = nas_nl_sock_create(nas_nl_sock_T_INT,false)) < 0) {
+    if((if_sock = nas_nl_sock_create(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,false)) < 0) {
        return cps_api_ret_code_ERR;
     }
 

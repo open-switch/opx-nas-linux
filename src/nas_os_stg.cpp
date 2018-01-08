@@ -29,6 +29,7 @@
 #include "nas_os_vlan_utils.h"
 #include "nas_os_if_priv.h"
 #include "nas_os_if_conversion_utils.h"
+#include "nas_os_mcast_snoop.h"
 
 #include <netinet/in.h>
 #include <linux/if_bridge.h>
@@ -39,6 +40,7 @@
 
 static std::mutex _if_stp_mutex;
 static auto _if_stp_state = new std::map<hal_ifindex_t,uint8_t>;
+static const size_t os_stp_fwd_state = 3;
 #define NL_MSG_BUFF_LEN 4096
 
 extern "C"{
@@ -72,8 +74,9 @@ t_std_error nl_int_update_stp_state(cps_api_object_t obj){
     hal_ifindex_t phy_ifindex = cps_api_object_attr_data_u32(ifindex);
     vlan_ifindex = phy_ifindex;
 
+    hal_vlan_id_t vlan_id = 0;
     if(vlan_id_attr != NULL){
-        hal_vlan_id_t vlan_id = cps_api_object_attr_data_u32(vlan_id_attr);
+        vlan_id = cps_api_object_attr_data_u32(vlan_id_attr);
 
         if(if_name_attr){
             const char * intf_name = (const char *)cps_api_object_attr_data_bin(if_name_attr);
@@ -100,6 +103,9 @@ t_std_error nl_int_update_stp_state(cps_api_object_t obj){
             }
         }else{
             if(state == state_it->second){
+                if(vlan_id && state == os_stp_fwd_state){
+                    nas_os_refresh_mcast_querier_status(vlan_id);
+                }
                 return STD_ERR_OK;
             }
         }
@@ -125,17 +131,32 @@ t_std_error nl_int_update_stp_state(cps_api_object_t obj){
     nlmsg_add_attr(nlh,sizeof(buff),IFLA_BRPORT_STATE,(void *)&state,sizeof(uint8_t));
     nlmsg_nested_end(nlh, stp_attr);
 
-    if(nl_do_set_request(nas_nl_sock_T_INT,nlh, buff, sizeof(buff)) != STD_ERR_OK){
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh, buff, sizeof(buff)) != STD_ERR_OK){
         EV_LOG(ERR,NAS_L2,0,"NAS_LINUX-STG","Failed to updated STP State to %d for Interface %d "
                 "in Kernel",state,vlan_ifindex);
         return STD_ERR(STG,FAIL,0);
     }
 
+    EV_LOGGING(NAS_OS,DEBUG,"NAS-STG","Updating the state tp %d for port %d in vlan %d",state,vlan_ifindex,vlan_id);
     if(state_it == _if_stp_state->end()){
         _if_stp_state->insert({vlan_ifindex,state});
     }else{
         state_it->second = state;
     }
+    /*
+     * When STP state of a port changes to forwarding, check if the querier status is enabled for the bridge for which state
+     * is being programmed. If it is enabled then disable/enable the querier status to start sending queries again. This is
+     * a limitation of 3.16 Kernel
+     */
+
+    /*
+     * @TODO - remove this when moved to stretch distribution where kernel would be upgraded to 4.9
+     */
+    if(vlan_id && state == os_stp_fwd_state){
+        nas_os_refresh_mcast_querier_status(vlan_id);
+    }
+
+
     return STD_ERR_OK;
 }
 

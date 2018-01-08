@@ -20,7 +20,11 @@
 
 
 #include "cps_api_object_attr.h"
+#include "cps_api_operation.h"
+#include "cps_api_object.h"
+#include "std_error_codes.h"
 #include "dell-base-routing.h"
+#include "os-routing-events.h"
 #include "standard_netlink_requests.h"
 #include "std_error_codes.h"
 #include "netlink_tools.h"
@@ -28,6 +32,7 @@
 #include "event_log.h"
 #include "cps_api_operation.h"
 #include "cps_api_route.h"
+#include "cps_class_map.h"
 #include "nas_nlmsg.h"
 #include "net_publish.h"
 #include "std_ip_utils.h"
@@ -35,6 +40,10 @@
 #include "hal_if_mapping.h"
 #include "std_utils.h"
 #include "std_mac_utils.h"
+#include "ietf-network-instance.h"
+#include "vrf-mgmt.h"
+#include "nas_os_int_utils.h"
+#include "nas_os_l3_utils.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -49,17 +58,9 @@
 #define NL_RT_RMSG_BUFFER_LEN 1024 /* Buffer len to receive reply for the route from kernel */
 #define NL_RT_NBR_MSG_BUFFER_LEN 1024 /* Buffer len to update the neighbor to kernel */
 #define MAX_NL_NH_ECMP_COUNT  256
+#define MAC_STRING_LEN 20
 
-typedef enum msg_type {
-    NAS_RT_ADD,
-    NAS_RT_DEL,
-    NAS_RT_SET,
-    NAS_RT_REFRESH,
-    NAS_RT_RESOLVE
-}msg_type;
-
-extern char *nl_neigh_mac_to_str (hal_mac_addr_t *mac_addr);
-static inline uint16_t nas_os_get_nl_flags(msg_type m_type)
+static inline uint16_t nas_os_get_nl_flags(nas_rt_msg_type m_type)
 {
     uint16_t flags = (NLM_F_REQUEST | NLM_F_ACK);
     if(m_type == NAS_RT_ADD) {
@@ -86,50 +87,52 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
 {
     static char buff[MAX_CPS_MSG_SIZE];
 
+    cps_api_operation_types_t op;
+    if(rt_msg_type == RTM_NEWROUTE) {
+        op = (is_rt_route_replace) ? cps_api_oper_SET : cps_api_oper_CREATE;
+    } else if(rt_msg_type == RTM_DELROUTE) {
+        op = cps_api_oper_DELETE;
+    } else {
+        EV_LOGGING (NAS_OS, ERR, "ROUTE-PUBLISH", "Invalid rt_msg_type:%d", rt_msg_type);
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+
     cps_api_object_t new_obj = cps_api_object_init(buff,sizeof(buff));
-    cps_api_key_init(cps_api_object_key(new_obj),cps_api_qualifier_TARGET,
-            cps_api_obj_cat_ROUTE,cps_api_route_obj_ROUTE,0 );
+
+    cps_api_key_from_attr_with_qual(cps_api_object_key(new_obj), OS_RE_BASE_ROUTE_OBJ_ENTRY_OBJ,
+                                    cps_api_qualifier_OBSERVED);
+    cps_api_object_set_type_operation(cps_api_object_key(new_obj), op);
 
     cps_api_object_attr_t prefix   = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_ROUTE_PREFIX);
+    if (prefix == CPS_API_ATTR_NULL) {
+        EV_LOGGING (NAS_OS, ERR, "ROUTE-PUBLISH", "Prefix is not present!");
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
     cps_api_object_attr_t af       = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_AF);
     cps_api_object_attr_t pref_len = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_PREFIX_LEN);
     cps_api_object_attr_t nh_count = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_NH_COUNT);
 
-    if(rt_msg_type == RTM_NEWROUTE) {
-        cps_api_object_attr_add_u32(new_obj, cps_api_if_ROUTE_A_MSG_TYPE,
-                                    (is_rt_route_replace ? ROUTE_UPD : ROUTE_ADD));
-    } else if(rt_msg_type == RTM_DELROUTE) {
-        cps_api_object_attr_add_u32(new_obj, cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_DEL);
-    } else {
-        return false;
-    }
-
-    cps_api_object_attr_add_u32(new_obj,cps_api_if_ROUTE_A_FAMILY,
+    cps_api_object_attr_add_u32(new_obj,BASE_ROUTE_OBJ_ENTRY_AF,
             cps_api_object_attr_data_u32(af));
 
     uint32_t addr_len;
-    hal_ip_addr_t ip;
     if(cps_api_object_attr_data_u32(af) == AF_INET) {
-        struct in_addr *inp = (struct in_addr *) cps_api_object_attr_data_bin(prefix);
-        std_ip_from_inet(&ip,inp);
         addr_len = HAL_INET4_LEN;
     } else {
-        struct in6_addr *inp6 = (struct in6_addr *) cps_api_object_attr_data_bin(prefix);
-        std_ip_from_inet6(&ip,inp6);
         addr_len = HAL_INET6_LEN;
     }
+    cps_api_object_attr_add(new_obj, BASE_ROUTE_OBJ_ENTRY_ROUTE_PREFIX,
+                            cps_api_object_attr_data_bin(prefix),
+                            cps_api_object_attr_len(prefix));
 
-    cps_api_attr_id_t attr = cps_api_if_ROUTE_A_PREFIX;
-    cps_api_object_e_add(new_obj, &attr, 1, cps_api_object_ATTR_T_BIN, &ip, sizeof(ip));
-
-    cps_api_object_attr_add_u32(new_obj,cps_api_if_ROUTE_A_PREFIX_LEN,
+    cps_api_object_attr_add_u32(new_obj,BASE_ROUTE_OBJ_ENTRY_PREFIX_LEN,
             cps_api_object_attr_data_u32(pref_len));
 
     uint32_t nhc = 0;
     if (nh_count != CPS_API_ATTR_NULL) {
         nhc = cps_api_object_attr_data_u32(nh_count);
 
-        cps_api_object_attr_add_u32(new_obj,cps_api_if_ROUTE_A_HOP_COUNT,nhc);
+        cps_api_object_attr_add_u32(new_obj,BASE_ROUTE_OBJ_ENTRY_NH_COUNT,nhc);
         size_t ix = 0;
         for (ix = 0; ix < nhc ; ++ix) {
             cps_api_attr_id_t ids[3] = { BASE_ROUTE_OBJ_ENTRY_NH_LIST,
@@ -142,11 +145,11 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
             cps_api_object_attr_t gwix = cps_api_object_e_get(obj,ids,ids_len);
 
             cps_api_attr_id_t new_ids[3];
-            new_ids[0] = cps_api_if_ROUTE_A_NH;
+            new_ids[0] = BASE_ROUTE_OBJ_ENTRY_NH_LIST;
             new_ids[1] = ix;
 
             if (gw != CPS_API_ATTR_NULL) {
-                new_ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_ADDR;
+                new_ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_NH_ADDR;
 
                 hal_ip_addr_t ip;
                 if(addr_len == HAL_INET4_LEN) {
@@ -161,7 +164,7 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
             }
 
             if (gwix != CPS_API_ATTR_NULL) {
-                new_ids[2] = cps_api_if_ROUTE_A_NH_IFINDEX;
+                new_ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_IFINDEX;
                 uint32_t gw_idx = cps_api_object_attr_data_u32(gwix);
                 cps_api_object_e_add(new_obj,new_ids,ids_len,cps_api_object_ATTR_T_U32,
                                      (void *)&gw_idx, sizeof(uint32_t));
@@ -188,50 +191,53 @@ static t_std_error nas_os_publish_route_nexthop (int rt_msg_type, cps_api_object
 {
     static char buff[MAX_CPS_MSG_SIZE];
 
+    cps_api_operation_types_t op;
+    if(rt_msg_type == RTM_NEWROUTE) {
+        op = (is_rt_route_replace) ? cps_api_oper_SET : cps_api_oper_CREATE;
+    } else if(rt_msg_type == RTM_DELROUTE) {
+        op = cps_api_oper_DELETE;
+    } else {
+        EV_LOGGING (NAS_OS, ERR, "ROUTE-PUBLISH", "Invalid rt_msg_type:%d", rt_msg_type);
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+
     cps_api_object_t new_obj = cps_api_object_init(buff,sizeof(buff));
-    cps_api_key_init(cps_api_object_key(new_obj),cps_api_qualifier_TARGET,
-            cps_api_obj_cat_ROUTE,cps_api_route_obj_ROUTE,0 );
+
+    cps_api_key_from_attr_with_qual(cps_api_object_key(new_obj), OS_RE_BASE_ROUTE_OBJ_ENTRY_OBJ,
+                                    cps_api_qualifier_OBSERVED);
+    cps_api_object_set_type_operation(cps_api_object_key(new_obj), op);
+
 
     cps_api_object_attr_t prefix   = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_ROUTE_PREFIX);
+    if (prefix == CPS_API_ATTR_NULL) {
+        EV_LOGGING (NAS_OS, ERR, "ROUTE-PUBLISH", "Prefix is not present!");
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
     cps_api_object_attr_t af       = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_AF);
     cps_api_object_attr_t pref_len = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_PREFIX_LEN);
     cps_api_object_attr_t nh_count = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_COUNT);
 
-    if(rt_msg_type == RTM_NEWROUTE) {
-        cps_api_object_attr_add_u32(new_obj, cps_api_if_ROUTE_A_MSG_TYPE,
-                                    (is_rt_route_replace ? ROUTE_UPD : ROUTE_ADD));
-    } else if(rt_msg_type == RTM_DELROUTE) {
-        cps_api_object_attr_add_u32(new_obj, cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_DEL);
-    } else {
-        return false;
-    }
-
-    cps_api_object_attr_add_u32(new_obj,cps_api_if_ROUTE_A_FAMILY,
+    cps_api_object_attr_add_u32(new_obj,BASE_ROUTE_OBJ_ENTRY_AF,
             cps_api_object_attr_data_u32(af));
 
     uint32_t addr_len;
-    hal_ip_addr_t ip;
     if(cps_api_object_attr_data_u32(af) == AF_INET) {
-        struct in_addr *inp = (struct in_addr *) cps_api_object_attr_data_bin(prefix);
-        std_ip_from_inet(&ip,inp);
         addr_len = HAL_INET4_LEN;
     } else {
-        struct in6_addr *inp6 = (struct in6_addr *) cps_api_object_attr_data_bin(prefix);
-        std_ip_from_inet6(&ip,inp6);
         addr_len = HAL_INET6_LEN;
     }
+    cps_api_object_attr_add(new_obj, BASE_ROUTE_OBJ_ENTRY_ROUTE_PREFIX,
+                            cps_api_object_attr_data_bin(prefix),
+                            cps_api_object_attr_len(prefix));
 
-    cps_api_attr_id_t attr = cps_api_if_ROUTE_A_PREFIX;
-    cps_api_object_e_add(new_obj, &attr, 1, cps_api_object_ATTR_T_BIN, &ip, sizeof(ip));
-
-    cps_api_object_attr_add_u32(new_obj,cps_api_if_ROUTE_A_PREFIX_LEN,
+    cps_api_object_attr_add_u32(new_obj,BASE_ROUTE_OBJ_ENTRY_PREFIX_LEN,
             cps_api_object_attr_data_u32(pref_len));
 
     uint32_t nhc = 0;
     if (nh_count != CPS_API_ATTR_NULL) {
         nhc = cps_api_object_attr_data_u32(nh_count);
 
-        cps_api_object_attr_add_u32(new_obj,cps_api_if_ROUTE_A_HOP_COUNT,nhc);
+        cps_api_object_attr_add_u32(new_obj,BASE_ROUTE_OBJ_ENTRY_NH_COUNT,nhc);
         size_t ix = 0;
         for (ix = 0; ix < nhc ; ++ix) {
             cps_api_attr_id_t ids[3] = { BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_LIST,
@@ -244,11 +250,11 @@ static t_std_error nas_os_publish_route_nexthop (int rt_msg_type, cps_api_object
             cps_api_object_attr_t gwix = cps_api_object_e_get(obj,ids,ids_len);
 
             cps_api_attr_id_t new_ids[3];
-            new_ids[0] = cps_api_if_ROUTE_A_NH;
+            new_ids[0] = BASE_ROUTE_OBJ_ENTRY_NH_LIST;
             new_ids[1] = ix;
 
             if (gw != CPS_API_ATTR_NULL) {
-                new_ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_ADDR;
+                new_ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_NH_ADDR;
 
                 hal_ip_addr_t ip;
                 if(addr_len == HAL_INET4_LEN) {
@@ -263,7 +269,7 @@ static t_std_error nas_os_publish_route_nexthop (int rt_msg_type, cps_api_object
             }
 
             if (gwix != CPS_API_ATTR_NULL) {
-                new_ids[2] = cps_api_if_ROUTE_A_NH_IFINDEX;
+                new_ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_IFINDEX;
                 uint32_t gw_idx = cps_api_object_attr_data_u32(gwix);
                 cps_api_object_e_add(new_obj,new_ids,ids_len,cps_api_object_ATTR_T_U32,
                                      (void *)&gw_idx, sizeof(uint32_t));
@@ -282,7 +288,7 @@ static t_std_error nas_os_publish_route_nexthop (int rt_msg_type, cps_api_object
 /* Ensure for any changes made to nas_os_update_route() related to netlink route
  * processing, nas_os_update_route_nexthop() has to be updated accordingly.
  */
-cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, msg_type m_type)
+cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, nas_rt_msg_type m_type)
 {
     static char buff[NL_RT_MSG_BUFFER_LEN], buff1[NL_RT_RMSG_BUFFER_LEN]; // Allocate from DS
     char            addr_str[INET6_ADDRSTRLEN];
@@ -291,6 +297,7 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, msg_type m_type
 
     memset(buff,0,sizeof(struct nlmsghdr));
 
+    const char *vrf_name           = cps_api_object_get_data(obj,BASE_ROUTE_OBJ_VRF_NAME);
     cps_api_object_attr_t prefix   = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_ROUTE_PREFIX);
     cps_api_object_attr_t af       = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_AF);
     cps_api_object_attr_t nh_count = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_NH_COUNT);
@@ -376,7 +383,8 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, msg_type m_type
     uint32_t addr_len = (rm->rtm_family == AF_INET)?HAL_INET4_LEN:HAL_INET6_LEN;
     nlmsg_add_attr(nlh,sizeof(buff),RTA_DST,cps_api_object_attr_data_bin(prefix),addr_len);
 
-    EV_LOGGING (NAS_OS,INFO, "ROUTE-UPD","NH count:%d family:%s msg:%s for prefix:%s len:%d scope:%d type:%d", nhc,
+    EV_LOGGING (NAS_OS,INFO, "ROUTE-UPD","VRF:%s NH count:%d family:%s msg:%s for prefix:%s len:%d scope:%d type:%d",
+                (vrf_name ? vrf_name : ""), nhc,
            ((rm->rtm_family == AF_INET) ? "IPv4" : "IPv6"), ((m_type == NAS_RT_ADD) ? "Route-Add" : ((m_type == NAS_RT_DEL) ? "Route-Del" : "Route-Set")),
            ((rm->rtm_family == AF_INET) ?
             (inet_ntop(rm->rtm_family, cps_api_object_attr_data_bin(prefix), addr_str, INET_ADDRSTRLEN)) :
@@ -429,6 +437,18 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, msg_type m_type
                     EV_LOGGING(NAS_OS, ERR, "ROUTE-UPD",
                                "Interface %s to if_index returned error %d", intf_ctrl.if_name, rc);
                     return cps_api_ret_code_ERR;
+                }
+                if (intf_ctrl.int_type == nas_int_type_MGMT) {
+                    int if_index = 0;
+                    if (nas_os_util_int_if_index_get(vrf_name, intf_ctrl.if_name, &if_index) != STD_ERR_OK) {
+                        EV_LOGGING(NAS_OS, ERR, "ROUTE-UPD",
+                                   "Interface %s to if_index from OS returned error",
+                                   intf_ctrl.if_name);
+                        return cps_api_ret_code_ERR;
+                    }
+                    EV_LOGGING(NAS_OS,INFO,"ROUTE-UPD","out-intf: %s(%d) OS-intf:%d",
+                               intf_ctrl.if_name, intf_ctrl.if_index, if_index);
+                    intf_ctrl.if_index = if_index;
                 }
                 EV_LOGGING(NAS_OS,INFO,"ROUTE-UPD","out-intf: %s(%d)",
                            intf_ctrl.if_name, intf_ctrl.if_index);
@@ -489,6 +509,19 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, msg_type m_type
                                    "Interface %s to if_index returned error %d", intf_ctrl.if_name, rc);
                         return cps_api_ret_code_ERR;
                     }
+                    if (intf_ctrl.int_type == nas_int_type_MGMT) {
+                        int if_index = 0;
+                        if (nas_os_util_int_if_index_get(vrf_name, intf_ctrl.if_name, &if_index) != STD_ERR_OK) {
+                            EV_LOGGING(NAS_OS, ERR, "ROUTE-UPD",
+                                       "Interface %s to if_index from OS returned error",
+                                       intf_ctrl.if_name);
+                            return cps_api_ret_code_ERR;
+                        }
+                        EV_LOGGING(NAS_OS,INFO,"ROUTE-UPD","out-intf: %s(%d) OS-intf:%d",
+                                   intf_ctrl.if_name, intf_ctrl.if_index, if_index);
+                        intf_ctrl.if_index = if_index;
+                    }
+
                     EV_LOGGING(NAS_OS,INFO,"ROUTE-UPD","out-intf: %s(%d) ",
                                intf_ctrl.if_name, intf_ctrl.if_index);
                     rtnh->rtnh_ifindex = intf_ctrl.if_index;
@@ -520,7 +553,7 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, msg_type m_type
 
     do  {
 
-        rc = nl_do_set_request(nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
+        rc = nl_do_set_request(vrf_name, nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
         nhm_count--;
         err_code = STD_ERR_EXT_PRIV (rc);
         EV_LOGGING(NAS_OS, INFO,"ROUE_UPD","Netlink error_code %d", err_code);
@@ -564,11 +597,12 @@ t_std_error nas_os_update_route_nexthop (cps_api_object_t obj)
     char        addr_str[INET6_ADDRSTRLEN];
     uint32_t    nhc = 0;
     int         op = 0;
-    msg_type    m_type;
+    nas_rt_msg_type    m_type;
     t_std_error rc = STD_ERR_OK;
 
     memset(buff,0,sizeof(struct nlmsghdr));
 
+    const char *vrf_name           = cps_api_object_get_data(obj,BASE_ROUTE_OBJ_VRF_NAME);
     cps_api_object_attr_t prefix   = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_ROUTE_PREFIX);
     cps_api_object_attr_t af       = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_AF);
     cps_api_object_attr_t pref_len = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_PREFIX_LEN);
@@ -738,6 +772,7 @@ t_std_error nas_os_update_route_nexthop (cps_api_object_t obj)
                                    "Interface %s to if_index returned error %d", intf_ctrl.if_name, rc);
                         return cps_api_ret_code_ERR;
                     }
+
                     EV_LOGGING(NAS_OS,INFO,"ROUTE-UPD","out-intf: %s(%d) ",
                                intf_ctrl.if_name, intf_ctrl.if_index);
                     rtnh->rtnh_ifindex = intf_ctrl.if_index;
@@ -755,7 +790,7 @@ t_std_error nas_os_update_route_nexthop (cps_api_object_t obj)
 
     int err_code;
 
-    rc = nl_do_set_request(nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
+    rc = nl_do_set_request(vrf_name, nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
 
     err_code = STD_ERR_EXT_PRIV (rc);
     EV_LOGGING (NAS_OS, INFO, "ROUE-NH-UPD","Netlink error_code %d", err_code);
@@ -821,7 +856,7 @@ t_std_error nas_os_del_route (cps_api_object_t obj)
     return STD_ERR_OK;
 }
 
-cps_api_return_code_t nas_os_update_neighbor(cps_api_object_t obj, msg_type m_type)
+cps_api_return_code_t nas_os_update_neighbor(cps_api_object_t obj, nas_rt_msg_type m_type)
 {
     char buff[NL_RT_NBR_MSG_BUFFER_LEN];
     hal_mac_addr_t mac_addr;
@@ -829,6 +864,7 @@ cps_api_return_code_t nas_os_update_neighbor(cps_api_object_t obj, msg_type m_ty
     memset(buff,0,sizeof(struct nlmsghdr));
     memset(mac_addr, 0, sizeof(mac_addr));
 
+    const char *vrf_name      = cps_api_object_get_data(obj,BASE_ROUTE_OBJ_VRF_NAME);
     cps_api_object_attr_t ip  = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_NBR_ADDRESS);
     cps_api_object_attr_t af  = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_NBR_AF);
     cps_api_object_attr_t mac = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_NBR_MAC_ADDR);
@@ -864,6 +900,20 @@ cps_api_return_code_t nas_os_update_neighbor(cps_api_object_t obj, msg_type m_ty
                        "Interface %s to if_index returned error %d", intf_ctrl.if_name, rc);
             return cps_api_ret_code_ERR;
         }
+        if (intf_ctrl.int_type == nas_int_type_MGMT) {
+            int if_index = 0;
+            if (nas_os_util_int_if_index_get(vrf_name, intf_ctrl.if_name, &if_index) != STD_ERR_OK) {
+                EV_LOGGING(NAS_OS, ERR, "NEIGH-UPD",
+                           "Interface %s to if_index from OS returned error",
+                           intf_ctrl.if_name);
+                return cps_api_ret_code_ERR;
+            }
+            EV_LOGGING(NAS_OS,INFO,"NEIGH-UPD","out-intf: %s(%d) OS-intf:%d",
+                       intf_ctrl.if_name, intf_ctrl.if_index, if_index);
+            intf_ctrl.if_index = if_index;
+        }
+
+
         EV_LOGGING(NAS_OS, INFO, "NEIGH-UPD",
                    "Interface %s to if_index:%d success", intf_ctrl.if_name, intf_ctrl.if_index);
         ndm->ndm_ifindex = intf_ctrl.if_index;
@@ -920,17 +970,20 @@ cps_api_return_code_t nas_os_update_neighbor(cps_api_object_t obj, msg_type m_ty
         nlmsg_add_attr(nlh,sizeof(buff),NDA_LLADDR, &mac_addr, HAL_MAC_ADDR_LEN);
     }
 
-    t_std_error rc = nl_do_set_request(nas_nl_sock_T_NEI,nlh,buff,sizeof(buff));
+    t_std_error rc = nl_do_set_request(vrf_name, nas_nl_sock_T_NEI,nlh,buff,sizeof(buff));
     int err_code = STD_ERR_EXT_PRIV (rc);
+    char mac_buff[MAC_STRING_LEN];
+    memset(mac_buff, '\0', sizeof(mac_buff));
+    std_mac_to_string((const hal_mac_addr_t *)mac_addr ,mac_buff,sizeof(mac_buff));
     EV_LOGGING(NAS_OS, INFO,"NEIGH-UPD","Operation:%s family:%s NH:%s MAC:%s out-intf:%d state:%s rc:%d",
-           ((m_type == NAS_RT_DEL) ? "Arp-Del" : ((m_type == NAS_RT_ADD) ? "Arp-Add" :
-                                                  ((m_type == NAS_RT_REFRESH) ? "Arp-Refresh" : "Arp-Replace"))),
-           ((ndm->ndm_family == AF_INET) ? "IPv4" : "IPv6"),
-           ((ndm->ndm_family == AF_INET) ?
-            (inet_ntop(ndm->ndm_family, cps_api_object_attr_data_bin(ip), addr_str, INET_ADDRSTRLEN)) :
-            (inet_ntop(ndm->ndm_family, cps_api_object_attr_data_bin(ip), addr_str, INET6_ADDRSTRLEN))),
-           nl_neigh_mac_to_str(&mac_addr), ndm->ndm_ifindex,
-           ((ndm->ndm_state == NUD_REACHABLE) ? "Dynamic" : "Static"), err_code);
+               ((m_type == NAS_RT_DEL) ? "Arp-Del" : ((m_type == NAS_RT_ADD) ? "Arp-Add" :
+                                                      ((m_type == NAS_RT_REFRESH) ? "Arp-Refresh" : "Arp-Replace"))),
+               ((ndm->ndm_family == AF_INET) ? "IPv4" : "IPv6"),
+               ((ndm->ndm_family == AF_INET) ?
+                (inet_ntop(ndm->ndm_family, cps_api_object_attr_data_bin(ip), addr_str, INET_ADDRSTRLEN)) :
+                (inet_ntop(ndm->ndm_family, cps_api_object_attr_data_bin(ip), addr_str, INET6_ADDRSTRLEN))),
+               mac_buff, ndm->ndm_ifindex,
+               ((ndm->ndm_state == NUD_REACHABLE) ? "Dynamic" : "Static"), err_code);
     return rc;
 }
 
@@ -981,6 +1034,56 @@ t_std_error nas_os_resolve_neighbor (cps_api_object_t obj)
 {
     if (nas_os_update_neighbor(obj, NAS_RT_RESOLVE) != cps_api_ret_code_OK) {
         EV_LOGGING(NAS_OS, ERR, "NEIGH-RESOLVE", "Kernel write failed");
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+
+    return STD_ERR_OK;
+}
+
+t_std_error nas_os_add_vrf (cps_api_object_t obj)
+{
+    if (nas_os_update_vrf(obj, NAS_RT_ADD) != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "VRF-OS-ADD", "Kernel write failed");
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+
+    return STD_ERR_OK;
+}
+
+t_std_error nas_os_set_vrf (cps_api_object_t obj)
+{
+    if (nas_os_update_vrf(obj, NAS_RT_SET) != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "VRF-OS-SET", "Kernel write failed");
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+
+    return STD_ERR_OK;
+}
+
+t_std_error nas_os_del_vrf (cps_api_object_t obj)
+{
+    if (nas_os_update_vrf(obj, NAS_RT_DEL) != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "VRF-OS-DEL", "Kernel write failed");
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+
+    return STD_ERR_OK;
+}
+
+t_std_error nas_os_bind_if_name_to_vrf (cps_api_object_t obj)
+{
+    if (nas_os_handle_intf_to_vrf(obj, NAS_RT_ADD) != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "VRF-OS-BIND", "Kernel write failed");
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+
+    return STD_ERR_OK;
+}
+
+t_std_error nas_os_unbind_if_name_from_vrf (cps_api_object_t obj)
+{
+    if (nas_os_handle_intf_to_vrf(obj, NAS_RT_DEL) != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "VRF-OS-UNBIND", "Kernel write failed");
         return (STD_ERR(NAS_OS, FAIL, 0));
     }
 

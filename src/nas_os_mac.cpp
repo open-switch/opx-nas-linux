@@ -64,7 +64,7 @@ static bool nas_os_update_mac_learning(hal_ifindex_t ifindex, bool enable){
     nlmsg_add_attr(nlh,sizeof(buff),IFLA_BRPORT_LEARNING,(void *)&learning,sizeof(uint8_t));
     nlmsg_nested_end(nlh, mac_attr);
 
-    if(nl_do_set_request(nas_nl_sock_T_INT,nlh, buff, sizeof(buff)) != STD_ERR_OK){
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh, buff, sizeof(buff)) != STD_ERR_OK){
         EV_LOG(ERR,NAS_OS,0,"NAS-L2-MAC","Failed to set mac learn mode to %d for interface %d "
                 "in Kernel",enable,ifindex);
         return false;
@@ -159,7 +159,7 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
     hal_mac_addr_t *mac_addr = (hal_mac_addr_t*)cps_api_object_attr_data_bin(mac_attr);
     char mac_buff[MAC_STRING_LEN];
 
-    if(nl_do_set_request(nas_nl_sock_T_NEI,nlh, buff, sizeof(buff)) != STD_ERR_OK){
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_NEI,nlh, buff, sizeof(buff)) != STD_ERR_OK){
         EV_LOG(ERR,NAS_OS,0,"NAS-L2-MAC","Failed to %s mac address entry %s for Interface %d "
                 "with cps operation %d in Kernel",s.c_str(),std_mac_to_string(mac_addr,mac_buff,sizeof(mac_buff)),
                 req->ndm_ifindex,op);

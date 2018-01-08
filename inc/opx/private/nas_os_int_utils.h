@@ -62,6 +62,9 @@ t_std_error os_intf_admin_state_get(hal_ifindex_t ifix, bool *p_admin_status);
 
 t_std_error os_intf_mac_addr_get(hal_ifindex_t ifix, hal_mac_addr_t mac);
 
+t_std_error nas_os_util_int_if_index_get(const char *vrf_name, const char *if_name, int *if_index);
+
+t_std_error nas_os_util_int_if_name_get(const char *vrf_name, int if_index, char *if_name);
 #ifdef __cplusplus
 }
 #endif

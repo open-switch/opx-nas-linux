@@ -38,7 +38,7 @@
 #include <utility>
 
 
-bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj);
+bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context);
 cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t ifix, bool get_all );
 
 typedef struct {
@@ -70,7 +70,7 @@ class INTERFACE {
     std_rw_lock_t rw_lock;
 
     enum {
-        PHY=0, LAG, VLAN, STG, IP, MAX
+        PHY=0, LAG, VLAN, MACVLAN, STG, IP, MAX
     };
     bool (INTERFACE::*fptr[MAX]) (if_details *, cps_api_object_t);
 
@@ -78,6 +78,7 @@ class INTERFACE {
     bool os_interface_vlan_attrs_handler(if_details *, cps_api_object_t obj);
     bool os_interface_lag_attrs_handler(if_details *, cps_api_object_t obj);
     bool os_interface_stg_attrs_handler(if_details *, cps_api_object_t obj);
+    bool os_interface_macvlan_attrs_handler(if_details *, cps_api_object_t obj);
     bool os_interface_ip_attrs_handler(if_details *, cps_api_object_t obj) { return true; };
 
 public:
@@ -86,6 +87,7 @@ public:
         fptr[PHY] = &INTERFACE::os_interface_phy_attrs_handler;
         fptr[LAG] = &INTERFACE::os_interface_lag_attrs_handler;
         fptr[VLAN] = &INTERFACE::os_interface_vlan_attrs_handler;
+        fptr[MACVLAN] = &INTERFACE::os_interface_macvlan_attrs_handler;
         fptr[STG] = &INTERFACE::os_interface_stg_attrs_handler;
         fptr[IP] = &INTERFACE::os_interface_ip_attrs_handler;
 

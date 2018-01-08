@@ -27,6 +27,7 @@
 #include "cps_api_operation.h"
 #include "std_type_defs.h"
 #include "std_error_codes.h"
+#include "std_socket_tools.h"
 
 #include <stddef.h>
 #include <linux/rtnetlink.h>
@@ -60,20 +61,22 @@ extern "C" {
  * revisit when the kernel version is upgarded.
  * and hence defined the below macro */
 #define NL_SOL_NETLINK 270
-
+/* Default VRF name */
+#define NL_DEFAULT_VRF_NAME "default"
 typedef enum  {
     nas_nl_sock_T_ROUTE=0,
     nas_nl_sock_T_INT=1,
     nas_nl_sock_T_NEI=2,
     nas_nl_sock_T_NETCONF=3,
+    nas_nl_sock_T_MCAST_SNOOP=4,
     nas_nl_sock_T_MAX
 }nas_nl_sock_TYPES;
 
 
-int nas_nl_sock_create(nas_nl_sock_TYPES type, bool include_bind) ;
+int nas_nl_sock_create(const char* vrf_name, nas_nl_sock_TYPES type, bool include_bind) ;
 
 
-void os_send_refresh(nas_nl_sock_TYPES type);
+void os_send_refresh(nas_nl_sock_TYPES type, const char *vrf_name);
 
 typedef bool (*fun_process_nl_message) (int sock, int rt_msg_type, struct nlmsghdr *hdr, void * context);
 
@@ -94,7 +97,8 @@ bool nl_send_request(int sock, int type, int flags, int seq, void * req, size_t 
 
 bool nl_send_nlmsg(int sock, struct nlmsghdr *m);
 
-t_std_error nl_do_set_request(nas_nl_sock_TYPES type,struct nlmsghdr *m, void *buff, size_t bufflen);
+t_std_error nl_do_set_request(const char *vrf_name, nas_nl_sock_TYPES type,struct nlmsghdr *m,
+                              void *buff, size_t bufflen);
 
 void nas_os_pack_nl_hdr(struct nlmsghdr *nlh, __u16 msg_type, __u16 nl_flags);
 
@@ -103,6 +107,11 @@ void nas_os_pack_if_hdr(struct ifinfomsg *ifmsg, unsigned char ifi_family,
 
 int nas_os_bind_nf_sub(int fd, int family, int type, int queue_num);
 bool os_nflog_enable ();
+
+t_std_error os_create_netlink_sock(const char *vrf_name);
+t_std_error os_del_netlink_sock(const char *vrf_name);
+t_std_error os_sock_create(const char *vrf_name, e_std_socket_domain_t domain,
+                           e_std_sock_type_t type, int protocol, int *sock);
 
 #ifdef __cplusplus
 }

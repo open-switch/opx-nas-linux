@@ -70,7 +70,7 @@ extern "C" t_std_error nas_os_del_interface(hal_ifindex_t if_index)
 
     nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, 0, if_index);
 
-    if(nl_do_set_request(nas_nl_sock_T_INT, nlh, buff,sizeof(buff)) != STD_ERR_OK) {
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT, nlh, buff,sizeof(buff)) != STD_ERR_OK) {
         EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Failure deleting interface in kernel");
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
@@ -207,7 +207,7 @@ extern "C" t_std_error nas_os_interface_set_attribute(cps_api_object_t obj,cps_a
     if (it==_funcs.end()) return STD_ERR_OK;
     it->second(obj,nlh,ifmsg,sizeof(buff));
 
-    if(nl_do_set_request(nas_nl_sock_T_INT, nlh, buff,sizeof(buff)) != STD_ERR_OK) {
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT, nlh, buff,sizeof(buff)) != STD_ERR_OK) {
         EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Failure updating interface in kernel");
         return (STD_ERR(NAS_OS,FAIL, 0));
     }

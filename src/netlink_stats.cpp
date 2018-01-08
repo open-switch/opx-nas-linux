@@ -31,18 +31,19 @@ static auto nlm_counters = new std::map<int, nas_nl_stats_desc_t>;
 static inline bool nas_nl_is_rt_add_event (int rt_msg_type) {
     return ((rt_msg_type == RTM_NEWLINK) || (rt_msg_type == RTM_NEWADDR) ||
             (rt_msg_type == RTM_NEWROUTE) || (rt_msg_type == RTM_NEWNEIGH) ||
-            (rt_msg_type == RTM_NEWNETCONF));
+            (rt_msg_type == RTM_NEWNETCONF)  || (rt_msg_type == RTM_NEWMDB));
 }
 
 static inline bool nas_nl_is_rt_del_event (int rt_msg_type) {
     return ((rt_msg_type == RTM_DELLINK) || (rt_msg_type == RTM_DELADDR) ||
-            (rt_msg_type == RTM_DELROUTE) || (rt_msg_type == RTM_DELNEIGH));
+            (rt_msg_type == RTM_DELROUTE) || (rt_msg_type == RTM_DELNEIGH) ||
+            (rt_msg_type == RTM_DELMDB) );
 }
 
 static inline bool nas_nl_is_rt_get_event (int rt_msg_type) {
     return ((rt_msg_type == RTM_GETLINK) || (rt_msg_type == RTM_GETADDR) ||
             (rt_msg_type == RTM_GETROUTE) || (rt_msg_type == RTM_GETNEIGH) ||
-            (rt_msg_type == RTM_GETNETCONF));
+            (rt_msg_type == RTM_GETNETCONF) || (rt_msg_type == RTM_GETMDB));
 }
 
 static void nl_stats_print (int sock) {

@@ -82,7 +82,7 @@ t_std_error nas_os_create_lag(cps_api_object_t obj, hal_ifindex_t *lag_index)
     nlmsg_nested_end(nlh,attr_nh_data);
     nlmsg_nested_end(nlh,attr_nh);
 
-    if(nl_do_set_request(nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
         EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Failure to create LAG in kernel");
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
@@ -141,7 +141,7 @@ t_std_error nas_os_process_ports(hal_ifindex_t lag_index,hal_ifindex_t if_index)
     ifmsg->ifi_index = if_index;
 
     nlmsg_add_attr(nlh,sizeof(buff), IFLA_MASTER, &lag_index, sizeof(int));
-    if(nl_do_set_request(nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
         EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL,"NAS-OS",
                 "Failure Add/Dell interface in kernel for LAG");
         return (STD_ERR(NAS_OS,FAIL, 0));

@@ -21,6 +21,11 @@
 #include "cps_api_operation.h"
 #include "cps_api_interface_types.h"
 
+#include "cps_class_map.h"
+
+#include "dell-base-routing.h"
+#include "os-routing-events.h"
+
 #include "standard_netlink_requests.h"
 #include "std_error_codes.h"
 #include "netlink_tools.h"
@@ -74,6 +79,53 @@ bool nas_rt_is_reserved_intf(char *intf_name) {
     return false;
 }
 
+/*
+ * This function validates the given interface index for following:
+ * 1. Checks if its not management/eth0 or default lo interface
+ * 2. Checks if its not management VLAN interface
+ * 3. Checks if its not a linux sub interface (only if input flag is true).
+ */
+bool nas_rt_is_reserved_intf_idx (unsigned int if_idx, bool sub_intf_check_required) {
+    interface_ctrl_t intf_ctrl;
+
+    memset(&intf_ctrl, 0, sizeof(intf_ctrl));
+
+    intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
+    intf_ctrl.if_index = if_idx;
+
+    if (dn_hal_get_interface_info(&intf_ctrl) != STD_ERR_OK) {
+        /* interface cache in nas is updated based on netlink events,
+         * so there is a likely chance that when this is called i/f cache
+         * may not be populated. Hence retrieving name from linux
+         */
+        if(cps_api_interface_if_index_to_name(if_idx, intf_ctrl.if_name,
+                                              sizeof(intf_ctrl.if_name)) == NULL) {
+            EV_LOGGING(NETLINK,DEBUG,"NAS-LINUX-INTERFACE", "Interface (%d) not found", if_idx);
+            return false;
+        }
+        /* Skip eth0 interface */
+        if (strcmp(intf_ctrl.if_name, "eth") == 0)
+            return true;
+    } else {
+        if ((intf_ctrl.int_type == nas_int_type_MGMT) ||
+            ((intf_ctrl.int_type == nas_int_type_VLAN) &&
+             (intf_ctrl.int_sub_type == BASE_IF_VLAN_TYPE_MANAGEMENT))) {
+            return true;
+        }
+    }
+    /* Skip linux sub interfaces if caller asked for it */
+    if (sub_intf_check_required && (strchr(intf_ctrl.if_name,'.'))) {
+        EV_LOGGING(NETLINK,DEBUG,"NAS-LINUX-INTERFACE", "Linux sub-intf:%s ignored!",
+                   intf_ctrl.if_name);
+        return true;
+    }
+    /* Skip lo interface */
+    if ((strncmp(intf_ctrl.if_name, "lo", strlen("lo")) == 0) &&
+        (strlen(intf_ctrl.if_name) == strlen("lo"))) {
+        return true;
+    }
+    return false;
+}
 
 // @TODO - This file has to conform to new yang model
 
@@ -116,10 +168,13 @@ static inline void nas_os_log_route_info(struct nlmsghdr *hdr, int rt_msg_type, 
 }
 
 //db_route_t
-bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj) {
+bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context) {
 
     struct rtmsg    *rtmsg = (struct rtmsg *)NLMSG_DATA(hdr);
     char            addr_str[INET6_ADDRSTRLEN];
+    char            prefix_str[INET6_ADDRSTRLEN];
+    ssize_t         addr_len = INET_ADDRSTRLEN;
+    bool            is_intf_flush_required = false;
 
     if(hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*rtmsg)))
         return false;
@@ -127,23 +182,43 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     if ((rtmsg->rtm_family != AF_INET) && (rtmsg->rtm_family != AF_INET6))
         return false;
 
-    cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_FAMILY,rtmsg->rtm_family);
+    /* Ignore the unspecified route table updates, once the L3MDEV based VRF is supported,
+     * check for RTA_TABLE presence in the msg if the rtm_table is RT_TABLE_UNSPEC,
+     * if the above check fails, skip the netlink route update from kernel. */
+    if (rtmsg->rtm_table == RT_TABLE_UNSPEC) {
+        EV_LOGGING(NETLINK,DEBUG,"NL-ROUTE-PARSE","Invalid route table:%d ", rtmsg->rtm_table);
+        return false;
+    }
+
+    cps_api_operation_types_t op;
     if(rt_msg_type == RTM_NEWROUTE) {
         /* NETLINK Header flags if received with NLM_F_REPLACE, send it as ROUTE_UPD instead of ROUTE_ADD */
         if (hdr->nlmsg_flags & NLM_F_REPLACE) {
-           cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_UPD);
-           } else {
-           cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_ADD);
-           }
+            op = cps_api_oper_SET;
+            /* for route replace case, OIF may be changed,
+             * so flush all the neighbors for the route prefix
+             * on all interfaces (single-path/multi-path).
+             */
+            is_intf_flush_required = false;
+        } else {
+            op = cps_api_oper_CREATE;
+        }
     } else if(rt_msg_type == RTM_DELROUTE) {
-        cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_MSG_TYPE,ROUTE_DEL);
+        op = cps_api_oper_DELETE;
+        /* for route delete,
+         * flush neighbors on that OIF for the route prefix.
+         */
+        is_intf_flush_required = true;
     } else {
         return false;
     }
 
-    cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_PROTOCOL,rtmsg->rtm_protocol);
-
-
+    if (context) {
+        cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_VRF_NAME, (char*)context,
+                                strlen((char*)context)+1);
+    }
+    cps_api_object_attr_add_u32(obj, BASE_ROUTE_OBJ_ENTRY_AF, rtmsg->rtm_family);
+    cps_api_object_attr_add_u32(obj, BASE_ROUTE_OBJ_ENTRY_PROTOCOL, rtmsg->rtm_protocol);
 
     int attr_len = nlmsg_attrlen(hdr,sizeof(*rtmsg));
     struct nlattr *head = nlmsg_attrdata(hdr, sizeof(struct rtmsg));
@@ -156,8 +231,7 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         return false;
     }
 
-    cps_api_key_init(cps_api_object_key(obj),cps_api_qualifier_TARGET,
-            cps_api_obj_cat_ROUTE,cps_api_route_obj_ROUTE,0 );
+    memset (prefix_str, 0, sizeof (prefix_str));
 
     if(attrs[RTA_DST]!=NULL) {
         /* Ignore the link local route here, we program the link local self IPv6
@@ -170,9 +244,16 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
                 EV_LOGGING(NETLINK,DEBUG,"NL-ROUTE-PARSE","LLA skipped!");
                 return false;
             }
+            addr_len = INET6_ADDRSTRLEN;
         }
-        rta_add_ip((struct nlattr*)attrs[RTA_DST],
-                   obj,cps_api_if_ROUTE_A_PREFIX);
+
+        inet_ntop(rtmsg->rtm_family,
+                  (nla_data((struct nlattr*)attrs[RTA_DST])),
+                  prefix_str, addr_len);
+
+        cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_ENTRY_ROUTE_PREFIX,
+                                nla_data((struct nlattr*)attrs[RTA_DST]),
+                                nla_len((struct nlattr*)attrs[RTA_DST]));
     }
     nas_os_log_route_info(hdr,rt_msg_type, rtmsg, attrs);
     /* If the route is not local/unicast, dont handle it.
@@ -192,7 +273,6 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
 
     if((rtmsg->rtm_flags & RTM_F_CLONED) && (rtmsg->rtm_family == AF_INET6)) {
         // Skip cloned route updates
-        char addr_str[INET6_ADDRSTRLEN];
         EV_LOGGING(NETLINK,DEBUG,"ROUTE-EVENT","Cache entry %s",
                 (attrs[RTA_DST]!=NULL)?(inet_ntop(rtmsg->rtm_family,
                 ((struct in6_addr *) nla_data((struct nlattr*)attrs[RTA_DST])),
@@ -200,23 +280,28 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         return false;
     }
 
-    cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_PREFIX_LEN,rtmsg->rtm_dst_len);
-    cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_RT_TYPE, rtmsg->rtm_type);
-
+    cps_api_object_attr_add_u32(obj, BASE_ROUTE_OBJ_ENTRY_PREFIX_LEN, rtmsg->rtm_dst_len);
+    switch(rtmsg->rtm_type) {
+        case RTN_BLACKHOLE:
+        case RTN_UNREACHABLE:
+        case RTN_PROHIBIT:
+        case RTN_LOCAL:
+            cps_api_object_attr_add_u32(obj, BASE_ROUTE_OBJ_ENTRY_SPECIAL_NEXT_HOP, rtmsg->rtm_type);
+            break;
+    }
     size_t hop_count = 0;
 
     cps_api_attr_id_t ids[3];
 
     const int ids_len = sizeof(ids)/sizeof(*ids);
-    ids[0] = cps_api_if_ROUTE_A_NH;
+    ids[0] = BASE_ROUTE_OBJ_ENTRY_NH_LIST;
     ids[1] = hop_count;
 
     if (attrs[RTA_GATEWAY]!=NULL) {
-        ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_ADDR;
-        rta_add_e_ip((struct nlattr*)attrs[RTA_GATEWAY],obj, ids,ids_len);
-
-        rta_add_ip((struct nlattr*)attrs[RTA_GATEWAY],obj,
-                cps_api_if_ROUTE_A_NEXT_HOP_ADDR);
+        ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_NH_ADDR;
+        cps_api_object_e_add(obj, ids, ids_len, cps_api_object_ATTR_T_BIN,
+                             nla_data((struct nlattr*)attrs[RTA_GATEWAY]),
+                             nla_len((struct nlattr*)attrs[RTA_GATEWAY]));
     }
 
     /* netlink notifications for IPv6 blackhole/unreachable/prohibit routes
@@ -227,56 +312,70 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         (rtmsg->rtm_type != RTN_UNREACHABLE) &&
         (rtmsg->rtm_type != RTN_PROHIBIT) &&
         (attrs[RTA_OIF]!=NULL)) {
-        ids[2] = cps_api_if_ROUTE_A_NH_IFINDEX;
+        ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_IFINDEX;
         unsigned int *x = (unsigned int *) nla_data(attrs[RTA_OIF]);
 
-        char intf_name[HAL_IF_NAME_SZ+1];
-        if(cps_api_interface_if_index_to_name(*x, intf_name,
-                                              sizeof(intf_name))!=NULL) {
-            /* Skip linux sub interfaces */
-            if (strstr(intf_name,".")) {
-                EV_LOGGING(NETLINK,DEBUG,"NAS-LINUX-INTERFACE", "Linux sub-intf:%s ignored!",
-                           intf_name);
-                return false;
-            }
-
-            if (nas_rt_is_reserved_intf(intf_name))
-                return false;
-        }
+        if (nas_rt_is_reserved_intf_idx(*x, true))
+            return false;
 
         cps_api_object_e_add(obj,ids,ids_len,cps_api_object_ATTR_T_U32,
                 nla_data(attrs[RTA_OIF]),sizeof(uint32_t));
 
-        cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_NH_IFINDEX,*x);
+        cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_ENTRY_NH_LIST_IFINDEX,*x);
+
+        /* route is configured on OIF only and no gateway configured,
+         * then trigger flush of neighbor entries for this prefix.
+         */
+        if ((op != cps_api_oper_CREATE) &&
+            (attrs[RTA_DST]) && (attrs[RTA_GATEWAY] == NULL)) {
+            interface_ctrl_t intf_ctrl;
+            memset(&intf_ctrl, 0, sizeof(intf_ctrl));
+            intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
+            intf_ctrl.if_index = *x;
+
+            if (dn_hal_get_interface_info(&intf_ctrl) != STD_ERR_OK) {
+                EV_LOGGING(NETLINK,INFO,"ROUTE-EVENT","Invalid Interface Index %d ",*x);
+            }
+            nas_os_flush_ip_neigh(prefix_str, rtmsg->rtm_dst_len, is_intf_flush_required, intf_ctrl.if_name);
+        }
     }
     if (attrs[RTA_MULTIPATH]) {
         //array of next hops
         struct rtnexthop * rtnh = (struct rtnexthop * )nla_data(attrs[RTA_MULTIPATH]);
         int remaining = nla_len(attrs[RTA_MULTIPATH]);
+        bool rc = false;
         while (RTNH_OK(rtnh, remaining)) {
             ids[1] = hop_count;
-            ids[2] = cps_api_if_ROUTE_A_NH_IFINDEX;
+            ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_IFINDEX;
             uint32_t _int = rtnh->rtnh_ifindex;
-            cps_api_object_e_add(obj,ids,ids_len,cps_api_object_ATTR_T_U32,
-                    &rtnh->rtnh_ifindex,sizeof(uint32_t));
-
-            _int = rtnh->rtnh_flags;
-            ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_FLAGS;
-            cps_api_object_e_add(obj,ids,ids_len,cps_api_object_ATTR_T_U32,
-                    &_int,sizeof(uint32_t));
-
-            ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_WEIGHT;
+            rc = cps_api_object_e_add(obj,ids,ids_len,cps_api_object_ATTR_T_U32,
+                                      &rtnh->rtnh_ifindex,sizeof(uint32_t));
+            if (!rc) {
+                EV_LOGGING(NETLINK,ERR,"ROUTE-EVENT-MEM","Not enough memory to fill the route mulitpath info.!");
+                return false;
+            }
+            ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_WEIGHT;
             _int = rtnh->rtnh_hops;
-            cps_api_object_e_add(obj,ids,ids_len,cps_api_object_ATTR_T_U32,
+            rc = cps_api_object_e_add(obj,ids,ids_len,cps_api_object_ATTR_T_U32,
                     &_int,sizeof(uint32_t));
+            if (!rc) {
+                EV_LOGGING(NETLINK,ERR,"ROUTE-EVENT-MEM","Not enough memory to fill the route mulitpath info.!");
+                return false;
+            }
 
             struct nlattr *nhattr[__RTA_MAX];
             memset(nhattr,0,sizeof(nhattr));
             nhrt_parse(nhattr,__IFLA_MAX,rtnh);
             if (nhattr[RTA_GATEWAY]) {
-                ids[2] = cps_api_if_ROUTE_A_NEXT_HOP_ADDR;
-                rta_add_e_ip((struct nlattr*)nhattr[RTA_GATEWAY],
-                             obj, ids,ids_len);
+                ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_NH_ADDR;
+                rc = cps_api_object_e_add(obj, ids, ids_len, cps_api_object_ATTR_T_BIN,
+                                     nla_data((struct nlattr*)nhattr[RTA_GATEWAY]),
+                                     nla_len((struct nlattr*)nhattr[RTA_GATEWAY]));
+                if (!rc) {
+                    EV_LOGGING(NETLINK,ERR,"ROUTE-EVENT-MEM","Not enough memory to fill the route mulitpath info.!");
+                    return false;
+                }
+
                 EV_LOGGING(NETLINK, INFO,"ROUTE-EVENT","MultiPath nh-cnt:%d gateway:%s ifIndex:%d nh-flags:0x%x weight:%d",
                        hop_count,
                        ((rtmsg->rtm_family == AF_INET) ?
@@ -288,6 +387,21 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
             } else {
                 EV_LOGGING(NETLINK, INFO,"ROUTE-EVENT","MultiPath nh-cnt:%d ifIndex:%d nh-flags:0x%x weight:%d",
                        hop_count, rtnh->rtnh_ifindex, rtnh->rtnh_flags, rtnh->rtnh_hops);
+
+                /* multipath OIF is present,
+                 * trigger flush of neighbor entries for this prefix.
+                 */
+                if ((op != cps_api_oper_CREATE) && (attrs[RTA_DST])) {
+                    interface_ctrl_t intf_ctrl;
+                    memset(&intf_ctrl, 0, sizeof(intf_ctrl));
+                    intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
+                    intf_ctrl.if_index = rtnh->rtnh_ifindex;
+
+                    if (dn_hal_get_interface_info(&intf_ctrl) != STD_ERR_OK) {
+                        EV_LOGGING(NETLINK,INFO,"ROUTE-EVENT","Invalid Interface Index %d ", rtnh->rtnh_ifindex);
+                    }
+                    nas_os_flush_ip_neigh(prefix_str, rtmsg->rtm_dst_len, is_intf_flush_required, intf_ctrl.if_name);
+                }
             }
             rtnh = rtnh_next(rtnh,&remaining);
             ++hop_count;
@@ -298,8 +412,12 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
             ++hop_count;
         }
     }
-    cps_api_object_attr_add_u32(obj,cps_api_if_ROUTE_A_HOP_COUNT,hop_count);
+    cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_ENTRY_NH_COUNT,hop_count);
 
+    cps_api_key_from_attr_with_qual(cps_api_object_key(obj), OS_RE_BASE_ROUTE_OBJ_ENTRY_OBJ,
+                                    cps_api_qualifier_OBSERVED);
+    cps_api_object_set_type_operation(cps_api_object_key(obj), op);
+    EV_LOGGING(NETLINK,INFO,"ROUTE-EVENT", "Object size:%d", (int)cps_api_object_to_array_len(obj));
     return true;
 }
 
@@ -313,7 +431,7 @@ static bool process_route_and_add_to_list(int sock, int rt_msg_type, struct nlms
         return false;
     }
 
-    if (!nl_to_route_info(nh->nlmsg_type,nh,obj)) {
+    if (!nl_to_route_info(nh->nlmsg_type,nh,obj,context)) {
         return false;
     }
     return true;
@@ -324,7 +442,7 @@ bool nl_request_existing_routes(int sock, int family, int req_id) {
 }
 
 bool read_all_routes(cps_api_object_list_t list, route_filter_t *filter) {
-    int sock = nas_nl_sock_create(nas_nl_sock_T_ROUTE, false);
+    int sock = nas_nl_sock_create(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_ROUTE, false);
     const int RANDOM_REQ_ID = 0x101;
     if (sock==-1) return false;
     bool rc = nl_request_existing_routes(sock,filter->family, RANDOM_REQ_ID);
@@ -453,7 +571,7 @@ static cps_api_return_code_t _op(cps_api_operation_types_t op,void * context, cp
         }
         nlmsg_nested_end(nlh,attr_nh);
     }
-    return (cps_api_return_code_t) nl_do_set_request(nas_nl_sock_T_ROUTE,nlh,buff,sizeof(buff));
+    return (cps_api_return_code_t) nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_ROUTE,nlh,buff,sizeof(buff));
 }
 
 static cps_api_return_code_t _write_function(void * context, cps_api_transaction_params_t * param,size_t ix) {
@@ -471,7 +589,7 @@ static cps_api_return_code_t _write_function(void * context, cps_api_transaction
     cps_api_key_t _local_key;
     cps_api_key_init(&_local_key,cps_api_qualifier_TARGET,cps_api_obj_cat_ROUTE,cps_api_route_obj_EVENT,0);
     if (cps_api_key_matches(&_local_key,cps_api_object_key(obj),true)) {
-        os_send_refresh(nas_nl_sock_T_ROUTE);
+        os_send_refresh(nas_nl_sock_T_ROUTE, NL_DEFAULT_VRF_NAME);
     } else {
         return _op(op,context,obj,prev);
     }

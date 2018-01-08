@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 Dell Inc.
+ * Copyright (c) 2017 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -14,27 +14,28 @@
  * permissions and limitations under the License.
  */
 
+
 /*
- * ds_api_linux_neigh.h
+ * nas_os_mcast_snoop.h
  */
 
-#ifndef DS_API_LINUX_NEIGH_H_
-#define DS_API_LINUX_NEIGH_H_
+#ifndef NAS_OS_MCAST_SNOOP_H_
+#define NAS_OS_MCAST_SNOOP_H_
+
+#include "cps_api_object.h"
+#include "ds_common_types.h"
+#include <linux/netlink.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "cps_api_object.h"
+bool nl_to_mcast_snoop_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t data, void *context);
 
-bool nl_neigh_get_all_request(int sock, int family, int req_id) ;
-bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr,cps_api_object_t obj, void *context);
-
-t_std_error ds_api_linux_neigh_init(cps_api_operation_handle_t handle);
+bool nas_os_refresh_mcast_querier_status(hal_vlan_id_t vlan_id);
 
 #ifdef __cplusplus
 }
 #endif
 
-
-#endif /* DS_API_LINUX_NEIGH_H_ */
+#endif /* NAS_OS_MCAST_SNOOP_H_ */

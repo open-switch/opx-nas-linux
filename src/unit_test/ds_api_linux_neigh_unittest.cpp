@@ -29,13 +29,14 @@
 #include "private/netlink_tools.h"
 #include "db_api_linux_init.h"
 #include "ds_api_linux_neigh.h"
-#include "std_ip_utils.h"
 
 bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data) {
     cps_api_object_t obj = cps_api_object_create();
 
-    if (nl_to_neigh_info(rt_msg_type,hdr, obj)) {
+    if (nl_to_neigh_info(rt_msg_type,hdr, obj,data)) {
         cps_api_object_attr_t mac = cps_api_object_attr_get(obj,cps_api_if_NEIGH_A_NBR_MAC);
+        if (mac == nullptr)
+            return false;
         hal_mac_addr_t m;
         memcpy(m,cps_api_object_attr_data_bin(mac),sizeof(m));
         char buff[50];
@@ -47,7 +48,7 @@ bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *dat
 }
 
 bool test_netlink() {
-    int sock = nas_nl_sock_create(nas_nl_sock_T_NEI,false);
+    int sock = nas_nl_sock_create(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_NEI,false);
     int RANDOM_REQ_ID = 1231231;
     if (nl_neigh_get_all_request(sock,AF_INET,RANDOM_REQ_ID)) {
         char buf[2048];

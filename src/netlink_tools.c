@@ -24,17 +24,16 @@
 
 #include "netlink_tools.h"
 #include "std_socket_tools.h"
+#include "std_time_tools.h"
 #include "event_log.h"
 #include "nas_nlmsg.h"
 #include "nas_os_interface.h"
 #include "netlink_stats.h"
-
 #include <string.h>
 #include <unistd.h>
 
 #include <linux/rtnetlink.h>
 #include <sys/socket.h>
-#include <linux/socket.h>
 #include <errno.h>
 #include <time.h>
 
@@ -63,17 +62,16 @@ int nla_parse(struct nlattr *tb[], int max_type, struct nlattr * head, int len) 
     return 0;
 }
 
-int nl_sock_create(int ln_groups, int type,bool include_bind, int sock_buf_len) {
+int nl_sock_create(const char *vrf_name, int ln_groups, int type,bool include_bind, int sock_buf_len) {
     struct sockaddr_nl sa;
+    int sock = 0;
     memset(&sa, 0, sizeof(sa));
 
     sa.nl_family = AF_NETLINK;
     sa.nl_groups = ln_groups;
-    int sock = socket (AF_NETLINK, SOCK_RAW, type);
-    if(sock < 0) {
-        EV_LOG_ERRNO(ev_log_t_NETLINK,0,"NK-SOCKCR",errno);
+    if (os_sock_create(vrf_name, e_std_sock_NETLINK, e_std_sock_type_RAW, type, &sock) != STD_ERR_OK)
         return -1;
-    }
+
     std_sock_set_rcvbuf(sock, sock_buf_len);
 
     if (!include_bind) return sock;
@@ -132,13 +130,13 @@ void netlink_tools_receive_event(int sock, fun_process_nl_message handlers,
         }
 
         if (nh->nlmsg_type == NLMSG_NOOP) {
-            EV_LOG(INFO,NETLINK,3,"ACK/ERR","Received a NOOP message");
+            EV_LOGGING(NETLINK,INFO,"ACK/ERR","Received a NOOP message");
             continue;
         }
 
         if (nh->nlmsg_type == NLMSG_ERROR) {
             struct nlmsgerr *err = (struct nlmsgerr *) NLMSG_DATA (nh);
-            EV_LOG(INFO,NETLINK,0,"ACK/ERR","Received response errid:%d msg:%d",err->error,err->msg);
+            EV_LOGGING(NETLINK,INFO,"ACK/ERR","Received response errid:%d msg:%d",err->error,err->msg);
             if (err->error==0) {
                 continue;
             }
@@ -236,7 +234,7 @@ bool netlink_tools_process_socket(int sock,
             nlmsg_type = nh->nlmsg_type;
 
             if ((seq!=NULL) && ((*seq)!=nh->nlmsg_seq)) {
-                EV_LOG(INFO,NETLINK,2,"ACK/ERR","sock %d, out of sequence, msg_type %d",
+                EV_LOGGING(NETLINK,INFO,"ACK/ERR","sock %d, out of sequence, msg_type %d",
                        sock, nlmsg_type);
                 continue;
             }
@@ -259,13 +257,13 @@ bool netlink_tools_process_socket(int sock,
             }
 
             if (nh->nlmsg_type == NLMSG_NOOP) {
-                EV_LOG(INFO,NETLINK,3,"ACK/ERR","Received a NOOP message");
+                EV_LOGGING(NETLINK,INFO,"ACK/ERR","Received a NOOP message");
                 continue;
             }
 
             if (nh->nlmsg_type == NLMSG_ERROR) {
                 struct nlmsgerr *err = (struct nlmsgerr *) NLMSG_DATA (nh);
-                EV_LOG(INFO,NETLINK,0,"ACK/ERR","Received response errid:%d msg:%d",err->error,err->msg);
+                EV_LOGGING(NETLINK,INFO,"ACK/ERR","Received response errid:%d msg:%d",err->error,err->msg);
                 if (err->error==0) {
                     rc = true;
                     continue;
@@ -289,7 +287,7 @@ bool netlink_tools_process_socket(int sock,
         EV_LOGGING(NETLINK, DEBUG ,"ACK/ERR","sock %d, rc %d", sock, rc);
 
         if (msg.msg_flags & MSG_TRUNC) {
-            EV_LOG(INFO,NETLINK,0,"ACK/ERR","Truncated message %d (type:%d)",msg.msg_iovlen,
+            EV_LOGGING(NETLINK,INFO,"ACK/ERR","Truncated message %d (type:%d)",msg.msg_iovlen,
                     nlmsg_type);
             return false;
         }
@@ -379,13 +377,12 @@ int nlmsg_add_attr(struct nlmsghdr * m, int maxlen, int type, const void * data,
 bool _process_set_fun(int sock, int rt_msg_type, struct nlmsghdr *hdr, void * context) {
     return true;
 }
-
-t_std_error nl_do_set_request(nas_nl_sock_TYPES type,struct nlmsghdr *m, void *buff, size_t bufflen) {
+t_std_error nl_do_set_request(const char *vrf_name, nas_nl_sock_TYPES type,struct nlmsghdr *m, void *buff, size_t bufflen) {
     int error = 0;
-    int sock = nas_nl_sock_create(type,false);
+    int sock = nas_nl_sock_create(vrf_name, type,false);
     if (sock==-1) return STD_ERR(ROUTE,FAIL,errno);
     do {
-        int seq = (int)time(NULL);
+        int seq = (int)std_get_uptime(NULL);
         m->nlmsg_seq = seq;
         if (!nl_send_nlmsg(sock,m)) {
             break;
@@ -402,24 +399,41 @@ t_std_error nl_do_set_request(nas_nl_sock_TYPES type,struct nlmsghdr *m, void *b
     return STD_ERR(ROUTE,FAIL,error);
 }
 
-
-static int create_intf_socket(bool include_bind) {
-    return nl_sock_create(RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR,
+static int create_intf_socket(const char *vrf_name, bool include_bind) {
+    return nl_sock_create(vrf_name, RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR,
                           NETLINK_ROUTE,include_bind, NL_INTF_SOCKET_BUFFER_LEN);
 }
 
-static int create_route_socket(bool include_bind) {
-    return nl_sock_create(RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE,
+static int create_route_socket(const char *vrf_name, bool include_bind) {
+    return nl_sock_create(vrf_name, RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE,
                           NETLINK_ROUTE,include_bind, NL_ROUTE_SOCKET_BUFFER_LEN);
 }
 
-static int create_neigh_socket(bool include_bind) {
-    return nl_sock_create(RTMGRP_NEIGH,NETLINK_ROUTE,include_bind,
+static int create_neigh_socket(const char *vrf_name, bool include_bind) {
+    return nl_sock_create(vrf_name, RTMGRP_NEIGH,NETLINK_ROUTE,include_bind,
                           NL_NEIGH_SOCKET_BUFFER_LEN);
 }
 
-static int create_netconf_socket(bool include_bind) {
-    int sock = nl_sock_create(0, NETLINK_ROUTE,include_bind, NL_NETCONF_SOCKET_BUFFER_LEN);
+static int create_mcast_snoop_socket(const char *vrf_name, bool include_bind) {
+    EV_LOGGING(NETLINK_MCAST_SNOOP, DEBUG,"NETLINK","Create MCAST Snoop Socket");
+    int sock = nl_sock_create(vrf_name, 0, NETLINK_ROUTE,include_bind, NL_SCRATCH_BUFFER_LEN);
+    if ((sock != -1) && include_bind) {
+        int mc_group = RTNLGRP_MDB;
+        int err = setsockopt(sock, NL_SOL_NETLINK, NETLINK_ADD_MEMBERSHIP,
+                         &mc_group, sizeof(mc_group));
+        if (err) {
+            close(sock);
+            EV_LOGGING(NETLINK_MCAST_SNOOP, ERR,"NETLINK","MDB Subscription failed!");
+            return -1;
+        }
+    }
+    EV_LOGGING(NETLINK_MCAST_SNOOP, DEBUG,"NETLINK","MDB Subscription Success!");
+    return sock;
+
+}
+
+static int create_netconf_socket(const char *vrf_name, bool include_bind) {
+    int sock = nl_sock_create(vrf_name, 0, NETLINK_ROUTE,include_bind, NL_NETCONF_SOCKET_BUFFER_LEN);
     /* Subscribe for the NETCONF groups to receive the IP forwarding
      * enable/disable from kernel */
     if ((sock != -1) && include_bind) {
@@ -434,6 +448,7 @@ static int create_netconf_socket(bool include_bind) {
         err = setsockopt(sock, NL_SOL_NETLINK, NETLINK_ADD_MEMBERSHIP,
                          &mc_group, sizeof(mc_group));
         if (err) {
+            close(sock);
             EV_LOGGING(NETLINK, ERR,"NETLINK","NETCONF IPv6 subscription failed!");
             return -1;
         }
@@ -442,17 +457,18 @@ static int create_netconf_socket(bool include_bind) {
 }
 
 
-typedef int (*create_soc_fn)(bool include_bind);
+typedef int (*create_soc_fn)(const char *vrf_name, bool include_bind);
 static create_soc_fn sock_create_functions[] = {
     create_route_socket,
     create_intf_socket,
     create_neigh_socket,
-    create_netconf_socket
+    create_netconf_socket,
+    create_mcast_snoop_socket
 };
 
-int nas_nl_sock_create(nas_nl_sock_TYPES type, bool include_bind)  {
+int nas_nl_sock_create(const char *vrf_name, nas_nl_sock_TYPES type, bool include_bind)  {
     if (type >= nas_nl_sock_T_MAX) return -1;
-    return sock_create_functions[type](include_bind);
+    return sock_create_functions[type](vrf_name, include_bind);
 }
 
 
@@ -668,7 +684,7 @@ int nas_os_nl_nflog_init ()
     int fd;
     int netlink_type = NETLINK_NETFILTER;
 
-    fd = nl_sock_create(NL_NFLOG_GROUP, netlink_type,true, NL_NFLOG_SOCK_BUFFER);
+    fd = nl_sock_create(NL_DEFAULT_VRF_NAME, NL_NFLOG_GROUP, netlink_type,true, NL_NFLOG_SOCK_BUFFER);
 
     if (fd < 0) {
         EV_LOGGING(NETLINK, ERR, "NK-SOCKCR-NFLOG", "NFLOG initialization failed: %d", errno);

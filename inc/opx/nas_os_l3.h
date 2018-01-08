@@ -22,7 +22,6 @@
 #ifndef NAS_OS_L3_H_
 #define NAS_OS_L3_H_
 
-#include "cps_api_operation.h"
 #include "cps_api_object.h"
 #include "std_error_codes.h"
 
@@ -31,85 +30,130 @@ extern "C" {
 #endif
 
 /**
- * @brief : Add Route : This adds an IPv4/v6 unicast route in kernel
+ * @brief This adds an IPv4/v6 unicast route in kernel
  *
- * @obj : CPS API object which contains route params
+ * @param obj CPS API object which contains route params
  *
- * @return : STD_ERR_OK if successful, otherwise different error code
+ * @return STD_ERR_OK if successful, otherwise different error code
  */
 t_std_error nas_os_add_route (cps_api_object_t obj);
 
 /**
- * @brief : Delete Route : This deletes an IPv4/v6 unicast route in kernel
+ * @brief This deletes an IPv4/v6 unicast route in kernel
  *
- * @obj : CPS API object which contains route params
+ * @param obj CPS API object which contains route params
  *
- * @return : STD_ERR_OK if successful, otherwise different error code
+ * @return STD_ERR_OK if successful, otherwise different error code
  */
 t_std_error nas_os_del_route (cps_api_object_t obj);
 
 /**
- * @brief : Set Route : This replaces an IPv4/v6 unicast route in kernel
+ * @brief This replaces an IPv4/v6 unicast route in kernel
  *
- * @obj : CPS API object which contains route params
+ * @param obj CPS API object which contains route params
  *
- * @return : STD_ERR_OK if successful, otherwise different error code
+ * @return STD_ERR_OK if successful, otherwise different error code
  */
 t_std_error nas_os_set_route (cps_api_object_t obj);
 
 /**
- * @brief : Update Route Nexthop(s): This is used to apped/delete nexthop(s) of an existing IPv4/v6 unicast route in kernel
+ * @brief Update Route Nexthop(s): This is used to apped/delete nexthop(s) of an existing IPv4/v6 unicast route in kernel
  *
- * @obj : CPS API object which contains route params
+ * @param obj CPS API object which contains route params
  *
- * @return : STD_ERR_OK if successful, otherwise different error code
+ * @return STD_ERR_OK if successful, otherwise different error code
  */
 t_std_error nas_os_update_route_nexthop (cps_api_object_t obj);
 
 /**
- * @brief : Add Neighbor : This adds a neighbor entry in kernel
+ * @brief This adds a neighbor entry in kernel
  *
- * @obj : CPS API object which contains arp/nd params
+ * @param obj CPS API object which contains arp/nd params
  *
- * @return : STD_ERR_OK if successful, otherwise different error code
+ * @return STD_ERR_OK if successful, otherwise different error code
  */
 t_std_error nas_os_add_neighbor (cps_api_object_t obj);
 
 /**
- * @brief : Delete Neighbor : This deletes a neighbor entry in kernel
+ * @brief This deletes a neighbor entry in kernel
  *
- * @obj : CPS API object which contains arp/nd params
+ * @param obj CPS API object which contains arp/nd params
  *
- * @return : STD_ERR_OK if successful, otherwise different error code
+ * @return STD_ERR_OK if successful, otherwise different error code
  */
 t_std_error nas_os_del_neighbor (cps_api_object_t obj);
 
 /**
- * @brief : Set Neighbor : This replaces a neighbor entry in kernel
+ * @brief This replaces a neighbor entry in kernel
  *
- * @obj : CPS API object which contains arp/nd params
+ * @param obj CPS API object which contains arp/nd params
  *
- * @return : STD_ERR_OK if successful, otherwise different error code
+ * @return STD_ERR_OK if successful, otherwise different error code
  */
 t_std_error nas_os_set_neighbor (cps_api_object_t obj);
 
 /**
- * @brief : Refresh Neighbor : This freshes the neighbor entry in kernel
+ * @brief This refreshes the neighbor entry in kernel
  *
- * @obj : CPS API object which contains arp/nd params
+ * @param obj CPS API object which contains arp/nd params
  *
- * @return : STD_ERR_OK if successful, otherwise different error code
+ * @return STD_ERR_OK if successful, otherwise different error code
  */
 t_std_error nas_os_refresh_neighbor (cps_api_object_t obj);
 
 /**
- * @brief : Resolve Neighbor : This resolves the neighbor entry in kernel
+ * @brief This resolves the neighbor entry in kernel
  *
- * @obj : CPS API object which contains arp/nd params
+ * @param obj CPS API object which contains arp/nd params
+ *
+ * @return STD_ERR_OK if successful, otherwise different error code
+ */
+t_std_error nas_os_resolve_neighbor (cps_api_object_t obj);
+
+/**
+ * @brief : This creates the VRF in the kernel
+ *
+ * @param obj : CPS API object which contains VRF params
  *
  * @return : STD_ERR_OK if successful, otherwise different error code
  */
-t_std_error nas_os_resolve_neighbor (cps_api_object_t obj);
+t_std_error nas_os_add_vrf (cps_api_object_t obj);
+
+/**
+ * @brief : This updates the VRF info. in the kernel
+ *
+ * @param obj : CPS API object which contains VRF params
+ *
+ * @return : STD_ERR_OK if successful, otherwise different error code
+ */
+t_std_error nas_os_set_vrf (cps_api_object_t obj);
+
+/**
+ * @brief : This deletes the VRF in the kernel
+ *
+ * @param obj : CPS API object which contains VRF params
+ *
+ * @return : STD_ERR_OK if successful, otherwise different error code
+ */
+t_std_error nas_os_del_vrf (cps_api_object_t obj);
+
+/**
+ * @brief : This binds the VRF with L3 interface in the kernel
+ *
+ * @param obj : CPS API object which contains VRF name and if name
+ *
+ * @return : STD_ERR_OK if successful, otherwise different error code
+ */
+t_std_error nas_os_bind_if_name_to_vrf (cps_api_object_t obj);
+
+/**
+ * @brief : This unbinds the L3 interface from VRF in the kernel
+ *
+ * @param obj : CPS API object which contains VRF name and if name
+ *
+ * @return : STD_ERR_OK if successful, otherwise different error code
+ */
+t_std_error nas_os_unbind_if_name_from_vrf (cps_api_object_t obj);
 
 #ifdef __cplusplus
 }

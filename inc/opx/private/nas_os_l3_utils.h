@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 Dell Inc.
+ * Copyright (c) 2017 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -15,26 +15,28 @@
  */
 
 /*
- * ds_api_linux_neigh.h
+ * filename : nas_os_l3_utils.h
  */
 
-#ifndef DS_API_LINUX_NEIGH_H_
-#define DS_API_LINUX_NEIGH_H_
+#ifndef NAS_OS_L3_UTILS_H_
+#define NAS_OS_L3_UTILS_H_
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "cps_api_object.h"
+typedef enum _nas_rt_msg_type {
+    NAS_RT_ADD,
+    NAS_RT_DEL,
+    NAS_RT_SET,
+    NAS_RT_REFRESH,
+    NAS_RT_RESOLVE
+}nas_rt_msg_type;
 
-bool nl_neigh_get_all_request(int sock, int family, int req_id) ;
-bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr,cps_api_object_t obj, void *context);
-
-t_std_error ds_api_linux_neigh_init(cps_api_operation_handle_t handle);
-
+t_std_error nas_os_update_vrf(cps_api_object_t obj, nas_rt_msg_type m_type);
+t_std_error nas_os_handle_intf_to_vrf(cps_api_object_t obj, nas_rt_msg_type m_type);
 #ifdef __cplusplus
 }
 #endif
 
-
-#endif /* DS_API_LINUX_NEIGH_H_ */
+#endif /* NAS_OS_L3_UTILS_H_ */

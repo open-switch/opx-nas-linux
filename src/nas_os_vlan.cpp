@@ -206,7 +206,7 @@ t_std_error nas_os_add_vlan(cps_api_object_t obj, hal_ifindex_t *br_index)
     nlmsg_add_attr(nlh,sizeof(buff),IFLA_INFO_KIND, info_kind, (strlen(info_kind)+1));
     nlmsg_nested_end(nlh,attr_nh);
 
-    if(nl_do_set_request(nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
         EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Failure adding Vlan %s to kernel",
                br_name);
         return (STD_ERR(NAS_OS,FAIL, 0));
@@ -267,7 +267,7 @@ static t_std_error nas_os_add_vlan_in_br(int vlan_id, int vlan_index, int if_ind
     nlmsg_add_attr(nlh,sizeof(buff),IFLA_MASTER, &br_index, sizeof(int));
     nlmsg_add_attr(nlh,sizeof(buff),IFLA_LINK, &if_index, sizeof(int));
 
-    if(nl_do_set_request(nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
         EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Failure adding port to bridge in kernel");
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
@@ -336,12 +336,11 @@ static t_std_error nas_os_add_t_port_to_os(int vlan_id, const char *vlan_name, i
     //End of IFLA_LINK_INFO
     nlmsg_nested_end(nlh,attr_nh);
 
-    if(nl_do_set_request(nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK ||
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK ||
         (*vlan_index = cps_api_interface_name_to_if_index(vlan_name)) == 0) {
         EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "Failed to add tagged intf %d in kernel", vlan_name);
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
-
     return STD_ERR_OK;
 }
 
@@ -435,7 +434,13 @@ t_std_error nas_os_t_port_to_vlan(int vlan_id, const char *vlan_name, int port_i
     _update_intf_to_tagged_intf_map(port_index,*vlan_index,true);
 
     //Add the interface in the bridge now
-    return (nas_os_add_vlan_in_br(vlan_id, *vlan_index, port_index, br_index));
+    t_std_error ret = nas_os_add_vlan_in_br(vlan_id, *vlan_index, port_index, br_index);
+    if (ret != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failed to add port with index  %d to %s in kernel",
+                                port_index,vlan_name);
+        return ret;
+    }
+    return ret;
 
 }
 
@@ -544,7 +549,7 @@ static t_std_error nas_os_del_vlan_from_br(hal_ifindex_t vlan_if_index)
 
     nlmsg_add_attr(nlh, sizeof(buff),IFLA_MASTER, &master_index, sizeof(int));
 
-    if(nl_do_set_request(nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
         EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Failure deleting port from bridge in kernel");
            return (STD_ERR(NAS_OS,FAIL, 0));
     }

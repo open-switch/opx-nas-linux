@@ -27,11 +27,15 @@
 #include "nas_nlmsg_object_utils.h"
 #include "event_log.h"
 #include "nas_if_utils.h"
+#include "std_mac_utils.h"
 #include "nas_os_int_utils.h"
 #include "nas_os_vlan_utils.h"
 #include "nas_linux_l2.h"
 #include "ds_api_linux_interface.h"
 #include "ds_api_linux_route.h"
+#include "dell-base-routing.h"
+#include "os-routing-events.h"
+#include "cps_class_map.h"
 
 #include <sys/socket.h>
 #include <stdbool.h>
@@ -40,17 +44,7 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 
-// @TODO - This file has to conform to new yang model
-
-char *nl_neigh_mac_to_str (hal_mac_addr_t *mac_addr) {
-    static char str[18];
-    snprintf (str, sizeof(str), "%02x:%02x:%02x:%02x:%02x:%02x",
-             (*mac_addr) [0], (*mac_addr) [1], (*mac_addr) [2],
-             (*mac_addr) [3], (*mac_addr) [4], (*mac_addr) [5]);
-
-    return str;
-}
-
+#define MAC_STRING_LEN 20
 char *nl_neigh_state_to_str (int state) {
     static char str[18];
         if (state == NUD_INCOMPLETE)
@@ -84,7 +78,7 @@ bool nl_neigh_get_all_request(int sock, int family,int req_id) {
             req_id,&ifm,sizeof(ifm));
 }
 
-bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj) {
+bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context) {
     struct ndmsg    *ndmsg = (struct ndmsg *)NLMSG_DATA(hdr);
     struct rtattr   *rtatp = NULL;
     unsigned int     attrlen;
@@ -111,8 +105,9 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     /* RTM_GETNEIGH - message is received with NUD_INCOMPLETE to blockhole
      * the neighbor entry while ARP resolution is progress, this message is being
      * received after enabling the option app_solicit=1*/
+    cps_api_operation_types_t op;
     if ((rt_msg_type == RTM_NEWNEIGH) || (rt_msg_type == RTM_GETNEIGH)) {
-        cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_OPERATION,NBR_ADD);
+        op = cps_api_oper_CREATE;
     } else if(rt_msg_type == RTM_DELNEIGH) {
         if ((ndmsg->ndm_family == AF_INET) || (ndmsg->ndm_family == AF_INET6)) {
             /* If the interface is admin down/not present, simply ignore message here,
@@ -123,13 +118,18 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
                 return false;
             }
         }
-        cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_OPERATION,NBR_DEL);
+        op = cps_api_oper_DELETE;
     } else {
         return false;
     }
-    cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_FLAGS,ndmsg->ndm_flags);
-    cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_STATE,ndmsg->ndm_state);
-    cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_FAMILY,ndmsg->ndm_family);
+
+    if (context) {
+        cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_VRF_NAME, (char*)context,
+                                strlen((char*)context)+1);
+    }
+    cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_NBR_FLAGS,ndmsg->ndm_flags);
+    cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_NBR_STATE,ndmsg->ndm_state);
+    cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_NBR_AF,ndmsg->ndm_family);
 
     EV_LOGGING(NETLINK, INFO,"NH-EVENT","Op:%s fly:%s(%d) flags:0x%x state:%s(%d) ifx:%d",
            ((rt_msg_type == RTM_NEWNEIGH) ? "Add-NH" :
@@ -148,18 +148,25 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     for (; RTA_OK(rtatp, attrlen); rtatp = RTA_NEXT (rtatp, attrlen)) {
 
         if(rtatp->rta_type == NDA_DST) {
-            rta_add_ip((struct nlattr*)rtatp, obj,cps_api_if_NEIGH_A_NBR_ADDR);
-            EV_LOGGING(NETLINK, INFO,"NH-EVENT","NextHop IP:%s",
-                   ((ndmsg->ndm_family == AF_INET) ?
-                    (inet_ntop(ndmsg->ndm_family, ((struct in_addr *) nla_data((struct nlattr*)rtatp)), addr_str, INET_ADDRSTRLEN)) :
-                    (inet_ntop(ndmsg->ndm_family, ((struct in6_addr *) nla_data((struct nlattr*)rtatp)), addr_str, INET6_ADDRSTRLEN))));
+            cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_NBR_ADDRESS,
+                                    nla_data((struct nlattr*)rtatp),
+                                    nla_len((struct nlattr*)rtatp));
 
+            EV_LOGGING(NETLINK, INFO,"NH-EVENT","NextHop IP:%s",
+                       ((ndmsg->ndm_family == AF_INET) ?
+                        (inet_ntop(ndmsg->ndm_family, ((struct in_addr *) nla_data((struct nlattr*)rtatp)),
+                                   addr_str, INET_ADDRSTRLEN)) :
+                        (inet_ntop(ndmsg->ndm_family, ((struct in6_addr *) nla_data((struct nlattr*)rtatp)),
+                                   addr_str, INET6_ADDRSTRLEN))));
         }
 
         if(rtatp->rta_type == NDA_LLADDR) {
             mac_addr = (hal_mac_addr_t *) nla_data((struct nlattr*)rtatp);
-            rta_add_mac((struct nlattr*)rtatp,obj,cps_api_if_NEIGH_A_NBR_MAC);
-            EV_LOGGING(NETLINK, INFO,"NH-EVENT","NextHop MAC:%s", nl_neigh_mac_to_str(nla_data((struct nlattr*)rtatp)));
+            char mac_buff[MAC_STRING_LEN];
+            memset(mac_buff, '\0', sizeof(mac_buff));
+            std_mac_to_string((const hal_mac_addr_t *)mac_addr ,mac_buff,sizeof(mac_buff));
+            cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_NBR_MAC_ADDR, mac_buff, strlen(mac_buff)+1);
+            EV_LOGGING(NETLINK, INFO,"NH-EVENT","NextHop MAC:%s", mac_buff);
         }
         if(rtatp->rta_type == NDA_MASTER) {
             char if_name[HAL_IF_NAME_SZ+1];
@@ -170,11 +177,11 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
             nas_os_physical_to_vlan_ifindex(ndmsg->ndm_ifindex, 0, false, &mbr_ifindex);
             char mbr_name[HAL_IF_NAME_SZ+1];
             cps_api_interface_if_index_to_name(mbr_ifindex,mbr_name, sizeof(mbr_name));
-            cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_IFINDEX,ifix);
+            cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_NBR_IFINDEX,ifix);
 
             //Populate the physical index only if mac learning is enabled
             if(nas_os_mac_get_learning(ndmsg->ndm_ifindex))
-                cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_PHY_IFINDEX,mbr_ifindex);
+                cps_api_object_attr_add_u32(obj,OS_RE_BASE_ROUTE_OBJ_NBR_MBR_IFINDEX,mbr_ifindex);
             is_bridge = true;
             EV_LOGGING(NETLINK, INFO,"NH-EVENT","VLAN:%s(%d) mbr:%s(%d)", if_name, ifix, mbr_name, mbr_ifindex);
         }
@@ -182,7 +189,7 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     /* Incase of the bridge FDB(L2 FDB Nbr), the VLAN and port information have been added into
      * the CPS object above and for non-bridge case(IP nbr), add the L3 out intf below. */
     if (is_bridge == false)
-        cps_api_object_attr_add_u32(obj,cps_api_if_NEIGH_A_IFINDEX,ndmsg->ndm_ifindex);
+        cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_NBR_IFINDEX,ndmsg->ndm_ifindex);
     else {
         // Ignore self-mac address during FDB learning.
         if(ndmsg->ndm_family == AF_BRIDGE) {
@@ -196,6 +203,9 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         }
     }
 
+    cps_api_key_from_attr_with_qual(cps_api_object_key(obj), OS_RE_BASE_ROUTE_OBJ_NBR_OBJ,
+                                    cps_api_qualifier_OBSERVED);
+    cps_api_object_set_type_operation(cps_api_object_key(obj),op);
     return true;
 }
 
@@ -206,14 +216,14 @@ static bool process_neigh_and_add_to_list(int sock, int rt_msg_type, struct nlms
         cps_api_object_delete(obj);
         return false;
     }
-    if (!nl_to_neigh_info(nh->nlmsg_type,nh,obj)) {
+    if (!nl_to_neigh_info(nh->nlmsg_type,nh,obj,context)) {
         return false;
     }
     return true;
 }
 
 static bool read_all_neighbours(cps_api_object_list_t list) {
-    int sock = nas_nl_sock_create(nas_nl_sock_T_NEI,false);
+    int sock = nas_nl_sock_create(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_NEI,false);
     if (sock<0) return false;
 
     bool rc = false;

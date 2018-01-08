@@ -37,7 +37,7 @@
 bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data) {
 
     cps_api_object_t obj=cps_api_object_create();
-    if (!nl_get_if_info(rt_msg_type,hdr,obj)) return false;
+    if (!nl_get_if_info(rt_msg_type,hdr,obj,data)) return false;
     cps_api_object_attr_t attr = cps_api_object_attr_get(obj,cps_api_if_STRUCT_A_NAME);
     if (attr==CPS_API_ATTR_NULL) return false;
     char buff[1024];
@@ -48,7 +48,7 @@ bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *dat
 }
 
 bool netlinl_test() {
-    int sock = nas_nl_sock_create(nas_nl_sock_T_INT,false);
+    int sock = nas_nl_sock_create(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,false);
     char buf[4196];
     const int RANDOM_REQ_ID = 23231;
     if (nl_interface_get_request(sock,RANDOM_REQ_ID)) {

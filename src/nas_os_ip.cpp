@@ -27,6 +27,7 @@
 #include "cps_class_map.h"
 #include "ds_api_linux_interface.h"
 #include "ds_api_linux_route.h"
+#include "nas_os_int_utils.h"
 
 #include "nas_nlmsg_object_utils.h"
 #include "standard_netlink_requests.h"
@@ -43,31 +44,64 @@
 /* This provides the global IP forwarding status */
 static bool is_global_ipv4_fwd_enable = true;
 static bool is_global_ipv6_fwd_enable = true;
-/* @@TODO This is the work-around to flush the associated neighbors on IPv6 address del
- * until kernel supports it internally */
-bool nas_os_flush_ip6_neigh(char *prefix, uint32_t prefix_len, char *dev) {
+
+extern "C" t_std_error nas_os_read_ipv6_status(char *name, int *ipv6_status) {
+    const std::string NETCONF_IPV6_CONF = "/proc/sys/net/ipv6/conf/";
+
+    std::string disabled_ipv6 = NETCONF_IPV6_CONF + std::string(name) + "/disable_ipv6";
+    FILE *fp = fopen(disabled_ipv6.c_str(),"r");
+    if(fp){
+        int ret = fscanf(fp, "%d",ipv6_status);
+        /*If data read from file returned not 1 (the no. of argument read), return failure */
+        if (ret != 1) {
+            fclose(fp);
+            return (STD_ERR(NAS_OS,FAIL, 0));
+        }
+
+        /* ipv6_status now reflects the disable_ipv6 status,
+         * so, to get the IPv6 enabled do the following. */
+        if (*ipv6_status)
+            *ipv6_status = false;
+        else
+            *ipv6_status = true;
+
+        fclose(fp);
+        return STD_ERR_OK;
+    }
+    return (STD_ERR(NAS_OS,FAIL, 0));
+}
+/* @@TODO This is the work-around to flush the associated neighbors
+ * for a given subnet during following scenarios as kernel doesn't delete it.
+ * 1) IPv6 address delete
+ * 2) IPv4/IPv6 route delete
+ */
+extern "C" t_std_error nas_os_flush_ip_neigh(char *prefix, uint32_t prefix_len, bool is_intf_flush, char *dev) {
     /* This function builds the following linux command for IP neigh flush
-     * ip neigh flush to <prefix> dev <intf> e.g ip neigh flush to 2222::1/64 dev br200 */
+     * ip neigh flush to <prefix> [dev <intf>] e.g ip neigh flush to 2222::1/64 dev br200 */
     std::stringstream str_stream;
 
-    str_stream << "ip neigh flush to " << prefix << "/" << prefix_len << " dev " << dev;
+    if (is_intf_flush)
+        str_stream << "ip neigh flush to " << prefix << "/" << prefix_len << " dev " << dev;
+    else
+        str_stream << "ip neigh flush to " << prefix << "/" << prefix_len;
+
     std::string neigh_flush_cmd = str_stream.str();
     if(system(neigh_flush_cmd.c_str()) != 0) {
         EV_LOGGING(NAS_OS, ERR, "NEIGH-UPD", "cmd:%s failed", neigh_flush_cmd.c_str());
-        return false;
+        return (STD_ERR(NAS_OS,FAIL, 0));
     }
     EV_LOGGING(NAS_OS, INFO, "NEIGH-UPD", "cmd:%s success", neigh_flush_cmd.c_str());
-    return true;
+    return STD_ERR_OK;
 }
 
-extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj) {
+extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context) {
 
     struct ifaddrmsg *ifmsg = (struct ifaddrmsg *)NLMSG_DATA(hdr);
 
     if(hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*ifmsg)))
         return false;
 
-    typedef enum { IP_KEY, IFINDEX, PREFIX, ADDRESS, IFNAME } attr_t ;
+    typedef enum { IP_KEY, IFINDEX, PREFIX, ADDRESS, IFNAME, VRFNAME, DAD_FAILED, ENABLED } attr_t ;
     static const std::map<uint32_t, std::map<int,cps_api_attr_id_t>> _ipmap = {
       {AF_INET,
       {
@@ -75,7 +109,8 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
         {IFINDEX, BASE_IP_IPV4_IFINDEX},
         {PREFIX,  BASE_IP_IPV4_ADDRESS_PREFIX_LENGTH},
         {ADDRESS, BASE_IP_IPV4_ADDRESS_IP},
-        {IFNAME,  BASE_IP_IPV4_NAME}
+        {IFNAME,  BASE_IP_IPV4_NAME},
+        {VRFNAME, BASE_IP_IPV4_VRF_NAME}
       }},
 
       {AF_INET6,
@@ -84,16 +119,22 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
         {IFINDEX, BASE_IP_IPV6_IFINDEX},
         {PREFIX,  BASE_IP_IPV6_ADDRESS_PREFIX_LENGTH},
         {ADDRESS, BASE_IP_IPV6_ADDRESS_IP},
-        {IFNAME,  BASE_IP_IPV6_NAME}
+        {IFNAME,  BASE_IP_IPV6_NAME},
+        {VRFNAME, BASE_IP_IPV6_VRF_NAME},
+        {DAD_FAILED, BASE_IP_IPV6_DAD_FAILED},
+        {ENABLED, BASE_IP_IPV6_ENABLED}
       }}
     };
 
     cps_api_key_from_attr_with_qual(cps_api_object_key(obj),_ipmap.at(ifmsg->ifa_family).at(IP_KEY),
-                                    cps_api_qualifier_TARGET);
+                                    cps_api_qualifier_OBSERVED);
 
     cps_api_set_key_data(obj,_ipmap.at(ifmsg->ifa_family).at(IFINDEX), cps_api_object_ATTR_T_U32,
                          &ifmsg->ifa_index,sizeof(ifmsg->ifa_index));
-
+    if (context) {
+        cps_api_object_attr_add(obj, _ipmap.at(ifmsg->ifa_family).at(VRFNAME), (char*)context,
+                                strlen((char*)context)+1);
+    }
     cps_api_object_attr_add_u32(obj, _ipmap.at(ifmsg->ifa_family).at(IFINDEX), ifmsg->ifa_index);
     cps_api_object_attr_add_u32(obj, _ipmap.at(ifmsg->ifa_family).at(PREFIX), ifmsg->ifa_prefixlen);
 
@@ -107,6 +148,22 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
         EV_LOG_TRACE(ev_log_t_NAS_OS,ev_log_s_WARNING,"IP-NL-PARSE","Failed to parse attributes");
         return false;
     }
+    char            addr_str[INET6_ADDRSTRLEN];
+    EV_LOGGING(NAS_OS,INFO,"NAS-OS-IP", "Operation:%s(%d) VRF:%s flags:0x%x if-index:%s(%d) IP:%s/%d",
+               ((rt_msg_type == RTM_NEWADDR) ? "Add" : ((rt_msg_type == RTM_DELADDR) ? "Del" : "Set")),
+               rt_msg_type, (char*)context,
+               (attrs[IFA_FLAGS] ? *(int *)nla_data((struct nlattr*)attrs[IFA_FLAGS]) :0),
+               (attrs[IFA_LABEL] ? (char*)nla_data((struct nlattr*)attrs[IFA_LABEL]) :""),
+               ifmsg->ifa_index,
+               ((attrs[IFA_ADDRESS] != NULL) ?
+                ((ifmsg->ifa_family == AF_INET) ?
+                 (inet_ntop(ifmsg->ifa_family,
+                            ((struct in_addr *) nla_data((struct nlattr*)attrs[IFA_ADDRESS])),
+                            addr_str, INET_ADDRSTRLEN)) :
+                 (inet_ntop(ifmsg->ifa_family,
+                            ((struct in6_addr *) nla_data((struct nlattr*)attrs[IFA_ADDRESS])),
+                            addr_str, INET6_ADDRSTRLEN))) : "NA"), ifmsg->ifa_prefixlen);
+
 
     if(attrs[IFA_ADDRESS]!=NULL) {
         size_t addr_len = (ifmsg->ifa_family == AF_INET)?HAL_INET4_LEN:HAL_INET6_LEN;
@@ -119,7 +176,14 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
       rta_add_name(attrs[IFA_LABEL], obj, _ipmap.at(ifmsg->ifa_family).at(IFNAME));
     }
 
-
+    int ifa_flags = 0;
+    if ((attrs[IFA_FLAGS]) && (ifmsg->ifa_family == AF_INET6)) {
+        ifa_flags = *(int *)nla_data((struct nlattr*)attrs[IFA_FLAGS]);
+        if (ifa_flags & IFA_F_DADFAILED) {
+            cps_api_object_attr_add_u32(obj, _ipmap.at(ifmsg->ifa_family).at(DAD_FAILED),
+                                        true);
+        }
+    }
     if (rt_msg_type == RTM_NEWADDR)  {
         cps_api_object_set_type_operation(cps_api_object_key(obj),cps_api_oper_CREATE);
     } else if (rt_msg_type == RTM_DELADDR)  {
@@ -128,49 +192,79 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
         cps_api_object_set_type_operation(cps_api_object_key(obj),cps_api_oper_SET);
     }
 
-    if ((ifmsg->ifa_family == AF_INET6) && (rt_msg_type == RTM_DELADDR)) {
-        /* @@TODO This is the work-around to flush the associated neighbors on IPv6 address del
-         * until kernel supports it internally */
-        char addr_str[INET6_ADDRSTRLEN];
-        if (inet_ntop(ifmsg->ifa_family, (const void *)(nla_data(attrs[IFA_ADDRESS])), addr_str,
-                      INET6_ADDRSTRLEN) == NULL) {
-            EV_LOGGING(NAS_OS,ERR,"NAS-IP","IP address get failed for intf:%d ",ifmsg->ifa_index);
-            return true;
-        }
+    if (ifmsg->ifa_family == AF_INET6) {
         char intf_name[HAL_IF_NAME_SZ+1];
-        if(cps_api_interface_if_index_to_name(ifmsg->ifa_index,intf_name,sizeof(intf_name))==NULL){
-            EV_LOGGING(NAS_OS,INFO,"NAS-LINUX-INTERFACE","Invalid Interface Index %d ",ifmsg->ifa_index);
-            return true;
+        if (nas_os_util_int_if_name_get((char*)context, ifmsg->ifa_index, intf_name) != STD_ERR_OK) {
+            EV_LOGGING(NAS_OS, ERR, "IP-PUB",
+                       "Interface %d to if_name from OS returned error",
+                       ifmsg->ifa_index);
+            return false;
         }
 
-        nas_os_flush_ip6_neigh(addr_str, ifmsg->ifa_prefixlen, intf_name);
+        if(attrs[IFA_LABEL] == NULL) {
+            /* If interface name is not present in the netlink data,
+             * fetch the interface name from internal DB and fill it in the CPS object.*/
+            cps_api_object_attr_add(obj, _ipmap.at(ifmsg->ifa_family).at(IFNAME),
+                                    (const void *)intf_name, strlen(intf_name)+1);
+        }
+        if (ifa_flags & IFA_F_DADFAILED) {
+            int ipv6_enabled = 0;
+            /* If DAD failed, get the IPv6 status from kernel and update it in the CPS object.
+             * if accept-dad= enable-dad-disable-ipv6-oper and MAC based duplicate LLA is found,
+             * kernel changes the IPv6 status to disabled automatically, this should be notified
+             * to the App to take appropriate action */
+            if (nas_os_read_ipv6_status(intf_name, &ipv6_enabled) == STD_ERR_OK) {
+                cps_api_object_attr_add_u32(obj, _ipmap.at(ifmsg->ifa_family).at(ENABLED),
+                                            ipv6_enabled);
+            } else {
+                EV_LOGGING(NAS_OS,ERR,"NAS-IP","IPv6 status read for the intf:%s failed!", intf_name);
+            }
+        }
+        if (rt_msg_type == RTM_DELADDR) {
+            /* @@TODO This is the work-around to flush the associated neighbors on IPv6 address del
+             * until kernel supports it internally */
+            char addr_str[INET6_ADDRSTRLEN];
+            if (inet_ntop(ifmsg->ifa_family, (const void *)(nla_data(attrs[IFA_ADDRESS])), addr_str,
+                          INET6_ADDRSTRLEN) == NULL) {
+                EV_LOGGING(NAS_OS,ERR,"NAS-IP","IP address get failed for intf:%d ",ifmsg->ifa_index);
+                return true;
+            }
+
+            nas_os_flush_ip_neigh(addr_str, ifmsg->ifa_prefixlen, true, intf_name);
+        }
     }
     return true;
 }
 
 /* This function handles the netconf netlink messages from the kernel and constructs
  * the CPS object with the if-index and fwd attributes */
-extern "C" bool nl_get_ip_netconf_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj) {
+extern "C" bool nl_get_ip_netconf_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context) {
     struct rtattr   *rtatp = NULL;
     struct netconfmsg *ncmsg = (struct netconfmsg*)NLMSG_DATA(hdr);
-    typedef enum { IP_KEY, IFINDEX, FWD } attr_t ;
+    typedef enum { IP_KEY, IFINDEX, FWD, VRFNAME } attr_t ;
     static const std::map<uint32_t, std::map<int,cps_api_attr_id_t>> _ipmap = {
         {AF_INET,
             {
                 {IP_KEY,  BASE_IP_IPV4_OBJ},
                 {IFINDEX, BASE_IP_IPV4_IFINDEX},
-                {FWD,     BASE_IP_IPV4_FORWARDING}
+                {FWD,     BASE_IP_IPV4_FORWARDING},
+                {VRFNAME, BASE_IP_IPV4_VRF_NAME}
             }},
 
         {AF_INET6,
             {
                 {IP_KEY,  BASE_IP_IPV6_OBJ},
                 {IFINDEX, BASE_IP_IPV6_IFINDEX},
-                {FWD,     BASE_IP_IPV6_FORWARDING}
+                {FWD,     BASE_IP_IPV6_FORWARDING},
+                {VRFNAME, BASE_IP_IPV6_VRF_NAME}
             }}
     };
     cps_api_key_from_attr_with_qual(cps_api_object_key(obj),_ipmap.at(ncmsg->ncm_family).at(IP_KEY),
                                     cps_api_qualifier_TARGET);
+    if (context) {
+        cps_api_object_attr_add(obj, _ipmap.at(ncmsg->ncm_family).at(VRFNAME), (char*)context,
+                                strlen((char*)context)+1);
+    }
 
     unsigned int attrlen = hdr->nlmsg_len - NLMSG_LENGTH(sizeof(*ncmsg));
 

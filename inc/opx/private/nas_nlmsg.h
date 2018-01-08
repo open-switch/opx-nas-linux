@@ -149,6 +149,17 @@ static inline void nla_for_each_attr(struct nlattr *head, int len,
 }
 
 /**
+ * nla_for_each_nested - iterate over nested attributes
+ * @pos: loop counter, set to current attribute
+ * @nla: attribute containing the nested attributes
+ * @rem: initialized to len, holds bytes currently remaining in stream
+ */
+#define nla_for_each_nested(pos, nla, rem) \
+        for (pos =  (nlattr*)(nla_data(nla)), rem =  nla_len(nla); \
+	     nla_ok(pos, rem); \
+	     pos = (nlattr*)(nla_next(pos, &(rem))))
+
+/**
  * Get the netlink attribute's data
  * @param nla the netlink attribute pointer
  */

@@ -1,3 +1,25 @@
+opx-nas-linux (5.11.0) unstable; urgency=medium
+
+  * Update: Handle mcast querier status change when port stp state is changed to forwarding
+  * Update: Dynamically install or delete ebtable rules when igmp/mld snooping is globally enabled or disabled
+  * Update: Set max groups as 16K on enabling igmp/mld snooping; Update membership interval on changing query interval
+  * Update: Notify ready signal before waiting for interface object to be ready
+  * Update: Let multicast snooping service wait for nas-interface being ready before registering callback
+  * Update: Flush group entries learnt on a vlan on receiving igmp/mld snooping disable config
+  * Update: Set IGMP/MLD snooping fast leave enabled as default value for VLAN ports.
+  * Update: Added check for mcast snoop configs oper type
+  * Update: IP neighbor flush support thru CPS.
+  * Update: IETF bind-ni-name attribute added in the Linux interface object published.
+  * Update: Mutex added for every netlink socket access.
+  * Bugfix: Fix Logging issues
+  * Bugfix: Fix bug to clear cache in case snooping disabled
+  * Bugfix: Fix error from popen communicate has been removed since it's being handled as part of PIPE output itself.
+  * Bugfix: Fix Creating the veth pair interfaces upon mgmt VRF creation, not flushing the default IP NAT rules on mgmt interface deletion
+  * Bugfix: Fix 3DES encryption key
+  * Bugfix: Fix key lengths for aes cbc encryption algorithm
+
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Mon, 11 Dec 2017 14:56:43 -0800
+
 opx-nas-linux (5.3.0) unstable; urgency=medium
 
   * Update: Remove family from ip add since it is not used

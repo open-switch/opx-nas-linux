@@ -35,13 +35,26 @@ extern "C" {
  */
 t_std_error ds_api_linux_route_init(cps_api_operation_handle_t handle);
 
-bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t data);
+bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t data, void *context);
 
 bool nl_request_existing_routes(int sock, int family, int req_id);
 
 bool nas_rt_is_reserved_intf(char *intf_name);
 
 bool nl_netconf_get_all_request(int sock, int family,int req_id);
+
+/**
+ * @brief flush neighbor entries for a given subnet in kernel
+ *
+ * @param[in] prefix ip prefix
+ * @param[in] prefix_len prefix length
+ * @param[in] is_intf_flush flag for interface based flush
+ * @param[in] dev device name for interface based flush
+ *
+ * @return STD_ERR_OK if successful otherwise error code
+ *
+ */
+t_std_error nas_os_flush_ip_neigh(char *prefix, uint32_t prefix_len, bool is_intf_flush, char *dev);
 #ifdef __cplusplus
 }
 #endif

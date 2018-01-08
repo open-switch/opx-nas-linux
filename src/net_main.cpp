@@ -26,6 +26,7 @@
 
 #include "nas_os_if_priv.h"
 #include "os_if_utils.h"
+#include "nas_os_mcast_snoop.h"
 
 #include "event_log.h"
 #include "ds_api_linux_route.h"
@@ -60,12 +61,12 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <fcntl.h>
 
 #include <sys/socket.h>
-#include <arpa/inet.h>
 #include <linux/rtnetlink.h>
-#include <linux/if.h>
 #include <map>
+#include <mutex>
 
 /*
  * Global variables
@@ -73,7 +74,12 @@
 
 typedef bool (*fn_nl_msg_handle)(int sock, int type, struct nlmsghdr * nh, void *context);
 
-static auto nlm_sockets = new std::map<int,nas_nl_sock_TYPES>;
+typedef struct _nlm_sock_info {
+    nas_nl_sock_TYPES sock_type;
+    char vrf_name[HAL_IF_NAME_SZ+1];
+}nlm_sock_info;
+
+static auto nlm_sockets = new std::map<int, nlm_sock_info>;
 
 static INTERFACE *g_if_db;
 INTERFACE *os_get_if_db_hdlr() {
@@ -99,13 +105,28 @@ static uint64_t                     _local_event_count = 0;
 static std_thread_create_param_t      _net_main_thr;
 static cps_api_event_service_handle_t         _handle;
 
-const static int MAX_CPS_MSG_SIZE=10000;
+/* This size should be increased incase the no. of path for a route increased beyond 128 */
+const static int MAX_CPS_MSG_SIZE=12000;
 
+static fd_set read_fds;
+static int max_fd = -1;
+static std::mutex _nl_sock_mutex;
 /*
  * Functions
  */
 
 #define KN_DEBUG(x,...) EV_LOG_TRACE (ev_log_t_NETLINK,0,"NL-DBG",x, ##__VA_ARGS__)
+
+static t_std_error nas_os_create_publish_handle() {
+    if (_handle != nullptr)
+        return STD_ERR_OK;
+
+    if (cps_api_event_client_connect(&_handle)!=STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "NET-NOTIFY","Failed to create the handle for event publish!");
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+    return STD_ERR_OK;
+}
 
 cps_api_return_code_t net_publish_event(cps_api_object_t msg) {
     cps_api_return_code_t rc = cps_api_ret_code_OK;
@@ -169,12 +190,17 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
     if (rt_msg_type < RTM_BASE)
         return false;
 
+    EV_LOGGING(NETLINK,INFO,"NL_EVT","VRF:%s sock:%d msg_type:%d(%s) ", (data ? data : ""), sock, rt_msg_type,
+               ((rt_msg_type <= RTM_SETLINK) ? "Link" : ((rt_msg_type <= RTM_GETADDR) ? "Addr" :
+                                                         ((rt_msg_type <= RTM_GETROUTE) ? "Route" :
+                                                          ((rt_msg_type <= RTM_GETNEIGH) ? "Neigh" :
+                                                           "Unknown")))));
     /*!
      * Range upto SET_LINK
      */
     if (rt_msg_type <= RTM_SETLINK) {
         nas_nl_stats_update_tot_msg (sock, rt_msg_type);
-        if (os_interface_to_object(rt_msg_type,hdr,obj)) {
+        if (os_interface_to_object(rt_msg_type,hdr,obj,data)) {
             nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
                 nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
@@ -190,7 +216,7 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
      */
     if (rt_msg_type <= RTM_GETADDR) {
         nas_nl_stats_update_tot_msg (sock, rt_msg_type);
-        if (nl_get_ip_info(rt_msg_type,hdr,obj)) {
+        if (nl_get_ip_info(rt_msg_type,hdr,obj,data)) {
             nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
                 nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
@@ -206,7 +232,7 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
      */
     if (rt_msg_type <= RTM_GETROUTE) {
         nas_nl_stats_update_tot_msg (sock, rt_msg_type);
-        if (nl_to_route_info(rt_msg_type,hdr, obj)) {
+        if (nl_to_route_info(rt_msg_type,hdr, obj, data)) {
             nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
                 nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
@@ -222,9 +248,7 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
      */
     if (rt_msg_type <= RTM_GETNEIGH) {
         nas_nl_stats_update_tot_msg (sock, rt_msg_type);
-        if (nl_to_neigh_info(rt_msg_type, hdr,obj)) {
-            cps_api_key_init(cps_api_object_key(obj),cps_api_qualifier_TARGET,
-                             cps_api_obj_cat_ROUTE,cps_api_route_obj_NEIBH,0);
+        if (nl_to_neigh_info(rt_msg_type, hdr,obj,data)) {
             nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
                 nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
@@ -239,7 +263,7 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
      */
     if (rt_msg_type <= RTM_GETNETCONF) {
         nas_nl_stats_update_tot_msg (sock, rt_msg_type);
-        if (nl_get_ip_netconf_info(rt_msg_type,hdr, obj)) {
+        if (nl_get_ip_netconf_info(rt_msg_type,hdr, obj, data)) {
             nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
                 nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
@@ -249,6 +273,22 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
         }
         return true;
     }
+    /*!
+     * Range upto GET_MDB
+     */
+    if (rt_msg_type <= RTM_GETMDB) {
+        nas_nl_stats_update_tot_msg (sock, rt_msg_type);
+        if (nl_to_mcast_snoop_info(rt_msg_type,hdr, obj, data)) {
+            nas_nl_stats_update_pub_msg (sock, rt_msg_type);
+            if (net_publish_event(obj) != cps_api_ret_code_OK) {
+                nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
+            }
+        } else {
+            nas_nl_stats_update_invalid_msg (sock, rt_msg_type);
+        }
+        return true;
+    }
+
     return false;
 }
 
@@ -347,12 +387,14 @@ struct nl_event_desc {
 static bool trigger_route(int sock, int reqid);
 static bool trigger_neighbour(int sock, int reqid);
 static bool trigger_netconf(int sock, int reqid);
+static bool trigger_mcast_snoop(int sock, int reqid);
 
 static auto nlm_handlers = new std::map<nas_nl_sock_TYPES,nl_event_desc >{
     { nas_nl_sock_T_ROUTE , { get_netlink_data, &trigger_route} } ,
     { nas_nl_sock_T_INT ,{ get_netlink_data, nl_interface_get_request} },
     { nas_nl_sock_T_NEI ,{ get_netlink_data,&trigger_neighbour } },
     { nas_nl_sock_T_NETCONF ,{ get_netlink_data, &trigger_netconf } },
+    { nas_nl_sock_T_MCAST_SNOOP , { get_netlink_data, &trigger_mcast_snoop} }
 };
 
 static bool trigger_route(int sock, int reqid) {
@@ -367,6 +409,20 @@ static bool trigger_route(int sock, int reqid) {
     }
     return true;
 }
+
+static bool trigger_mcast_snoop(int sock, int reqid) {
+    if (nl_request_existing_routes(sock,AF_INET,++reqid)) {
+        netlink_tools_process_socket(sock,nlm_handlers->at(nas_nl_sock_T_MCAST_SNOOP).process,
+                NULL,buf,sizeof(buf),&reqid,NULL);
+    }
+
+    if (nl_request_existing_routes(sock,AF_INET6,++reqid)) {
+        netlink_tools_process_socket(sock,nlm_handlers->at(nas_nl_sock_T_MCAST_SNOOP).process,
+                NULL,buf,sizeof(buf),&reqid,NULL);
+    }
+    return true;
+}
+
 static bool trigger_neighbour(int sock, int reqid) {
     if (nl_neigh_get_all_request(sock,AF_INET,++reqid)) {
         netlink_tools_process_socket(sock,nlm_handlers->at(nas_nl_sock_T_NEI).process,
@@ -395,6 +451,7 @@ static bool trigger_netconf(int sock, int reqid) {
 
 
 void os_debug_nl_stats_reset () {
+    std::lock_guard<std::mutex> lock(_nl_sock_mutex);
     for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end() ; ++it) {
         nas_nl_stats_reset(it->first);
     }
@@ -404,91 +461,77 @@ void os_debug_nl_stats_print () {
     printf("\r\n NETLINK STATS INFORMATION scratch buf-size: %d\r\n",
            NL_SCRATCH_BUFFER_LEN);
 
+    std::lock_guard<std::mutex> lock(_nl_sock_mutex);
     for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end() ; ++it) {
-        printf("\r\nSocket type: %-10s sock-fd: %-10d socket-rx-buf-size: %-10d\r\n",
-               ((it->second == nas_nl_sock_T_ROUTE) ? "Route" :
-                (it->second == nas_nl_sock_T_INT) ? "Intf" :
-                (it->second == nas_nl_sock_T_NEI) ? "Nbr" : "NetConf"),
+        printf("\r\n VRF:%s Socket type: %-10s sock-fd: %-10d socket-rx-buf-size: %-10d\r\n",
+               it->second.vrf_name,
+               ((it->second.sock_type == nas_nl_sock_T_ROUTE) ? "Route" :
+                (it->second.sock_type == nas_nl_sock_T_INT) ? "Intf" :
+                (it->second.sock_type == nas_nl_sock_T_NEI) ? "Nbr" : "NetConf"),
                it->first,
-               ((it->second == nas_nl_sock_T_ROUTE) ? NL_ROUTE_SOCKET_BUFFER_LEN :
-                (it->second == nas_nl_sock_T_INT) ? NL_INTF_SOCKET_BUFFER_LEN :
-                (it->second == nas_nl_sock_T_NEI) ? NL_NEIGH_SOCKET_BUFFER_LEN :
-                (it->second == nas_nl_sock_T_NETCONF) ? NL_NETCONF_SOCKET_BUFFER_LEN: 0));
+               ((it->second.sock_type == nas_nl_sock_T_ROUTE) ? NL_ROUTE_SOCKET_BUFFER_LEN :
+                (it->second.sock_type == nas_nl_sock_T_INT) ? NL_INTF_SOCKET_BUFFER_LEN :
+                (it->second.sock_type == nas_nl_sock_T_NEI) ? NL_NEIGH_SOCKET_BUFFER_LEN :
+                (it->second.sock_type == nas_nl_sock_T_NETCONF) ? NL_NETCONF_SOCKET_BUFFER_LEN: 0));
         printf("\r=========================================================================\r\n");
 
         nas_nl_stats_print (it->first);
     }
 }
 
-void os_send_refresh(nas_nl_sock_TYPES type) {
+void os_send_refresh(nas_nl_sock_TYPES type, const char *vrf_name) {
     int RANDOM_REQ_ID = 0xee00;
 
-    for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end() ; ++it) {
-        if (it->second == type && nlm_handlers->at(it->second).trigger!=NULL) {
-            nlm_handlers->at(it->second).trigger(it->first,RANDOM_REQ_ID);
+    for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end(); ++it) {
+        if (((it->second).sock_type == type) &&
+            (strncmp(vrf_name, (it->second).vrf_name,
+                     strlen((it->second).vrf_name)) == 0) &&
+            (nlm_handlers->at((it->second).sock_type).trigger!=NULL)) {
+            nlm_handlers->at((it->second).sock_type).trigger(it->first,RANDOM_REQ_ID);
         }
     }
 }
 
 int net_main() {
-    int max_fd = -1;
-    struct sockaddr_nl sa;
-    fd_set read_fds, sel_fds;
-
-    FD_ZERO(&read_fds);
-    memset(&sa, 0, sizeof(sa));
-
-    size_t ix = nas_nl_sock_T_ROUTE;
-    for ( ; ix < (size_t)nas_nl_sock_T_MAX; ++ix ) {
-        int sock = nas_nl_sock_create((nas_nl_sock_TYPES)(ix),true);
-        if(sock==-1) {
-            EV_LOG(ERR,NETLINK,0,"INIT","Failed to initialize sockets...%d",errno);
-            exit(-1);
-        }
-        EV_LOG(INFO,NETLINK,2, "NET-NOTIFY","Socket: ix %d, sock id %d", ix, sock);
-        nlm_sockets->insert({sock, (nas_nl_sock_TYPES)(ix)});
-        add_fd_set(sock,read_fds,max_fd);
-        nas_nl_stats_init (sock);
-    }
+    fd_set sel_fds;
 
     //Publish existing..
     publish_existing();
-
-    nas_nl_sock_TYPES _refresh_list[] = {
-            nas_nl_sock_T_INT,
-            nas_nl_sock_T_NEI,
-            nas_nl_sock_T_ROUTE,
-            nas_nl_sock_T_NETCONF
-    };
 
     g_if_db = new (std::nothrow) (INTERFACE);
     g_if_bridge_db = new (std::nothrow) (if_bridge);
     g_if_bond_db = new (std::nothrow) (if_bond);
 
     if(g_if_db == nullptr || g_if_bridge_db == nullptr || g_if_bridge_db == nullptr)
-        EV_LOG(ERR,NETLINK,0,"INIT","Allocation failed for class objects...");
+        EV_LOGGING(NETLINK,ERR,"INIT","Allocation failed for class objects...");
 
-    ix = 0;
-    size_t refresh_mx = sizeof(_refresh_list)/sizeof(*_refresh_list);
-    for ( ; ix < refresh_mx ; ++ix ) {
-        os_send_refresh(_refresh_list[ix]);
+    FD_ZERO(&read_fds);
+    /* Create netlink sockets for listening events from default VRF (namespace) */
+    if (os_create_netlink_sock(NL_DEFAULT_VRF_NAME) != STD_ERR_OK) {
+        os_del_netlink_sock(NL_DEFAULT_VRF_NAME);
+        return 0;
     }
 
     while (1) {
-        memcpy ((char *) &sel_fds, (char *) &read_fds, sizeof(fd_set));
-
+        {
+            /* Take the lock and update the select fds from read fds */
+            std::lock_guard<std::mutex> lock(_nl_sock_mutex);
+            memcpy ((char *) &sel_fds, (char *) &read_fds, sizeof(fd_set));
+        }
         if(select((max_fd+1), &sel_fds, NULL, NULL, NULL) <= 0)
             continue;
 
+        std::lock_guard<std::mutex> lock(_nl_sock_mutex);
         for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end() ; ++it) {
             if (FD_ISSET(it->first,&sel_fds)) {
-                netlink_tools_receive_event(it->first,nlm_handlers->at(it->second).process,
-                            NULL,buf,sizeof(buf),NULL);
+                netlink_tools_receive_event(it->first,nlm_handlers->at((it->second).sock_type).process,
+                                            (it->second).vrf_name,buf,sizeof(buf),NULL);
             }
         }
     }
 
     /* deinit the netlink stats on exit */
+    std::lock_guard<std::mutex> lock(_nl_sock_mutex);
     for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end() ; ++it) {
         nas_nl_stats_deinit (it->first);
     }
@@ -500,17 +543,15 @@ t_std_error cps_api_net_notify_init(void) {
 
     EV_LOG_TRACE(ev_log_t_NULL, 3, "NET-NOTIFY","Initializing Net Notify Thread");
 
-    if (cps_api_event_client_connect(&_handle)!=STD_ERR_OK) {
-        EV_LOG_ERR(ev_log_t_NULL, 3, "NET-NOTIFY","Failed to initialize");
+    if (nas_os_create_publish_handle() != STD_ERR_OK) {
         return STD_ERR(INTERFACE,FAIL,0);
     }
-
     std_thread_init_struct(&_net_main_thr);
     _net_main_thr.name = "db-api-linux-events";
     _net_main_thr.thread_function = (std_thread_function_t)net_main;
     t_std_error rc = std_thread_create(&_net_main_thr);
     if (rc!=STD_ERR_OK) {
-        EV_LOG(ERR,INTERFACE,3,"db-api-linux-event-init-fail","Failed to "
+        EV_LOGGING(INTERFACE,ERR,"db-api-linux-event-init-fail","Failed to "
                 "initialize event service due");
     }
     cps_api_operation_handle_t handle;
@@ -549,4 +590,109 @@ bool os_nflog_enable ()
     return true;
 }
 
+void os_refresh_netlink_info(const char *vrf_name) {
+    nas_nl_sock_TYPES _refresh_list[] = {
+            nas_nl_sock_T_INT,
+            nas_nl_sock_T_NEI,
+            nas_nl_sock_T_ROUTE,
+            nas_nl_sock_T_NETCONF
+    };
+    size_t ix = 0;
+    size_t refresh_mx = sizeof(_refresh_list)/sizeof(*_refresh_list);
+    for ( ; ix < refresh_mx ; ++ix ) {
+        os_send_refresh(_refresh_list[ix], vrf_name);
+    }
 }
+
+t_std_error os_create_netlink_sock(const char *vrf_name) {
+    nlm_sock_info sock_info;
+    size_t ix = nas_nl_sock_T_ROUTE;
+    /* Incase of mgmt VRF, before NAS process spawns
+     * the NAS-linux thread, NAS-linux is handling the mgmt VRF creation
+     * from the CPS context (NAS-Intf) and then creating the sockets for listening
+     * the events from mgmt namespace and then performing the get all from the mgmt namespace,
+     * if the _handle is nullptr while publishing the events from mgmt namespace,
+     * CPS is asserting, to avoid that,
+     * getting the CPS handle here for event publish. */
+    if (nas_os_create_publish_handle() != STD_ERR_OK) {
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    /* Take the lock to update the read_fds */
+    std::lock_guard<std::mutex> lock(_nl_sock_mutex);
+
+    for ( ; ix < (size_t)nas_nl_sock_T_MAX; ++ix ) {
+        int sock = nas_nl_sock_create(vrf_name, (nas_nl_sock_TYPES)(ix),true);
+        if(sock == -1) {
+            EV_LOGGING(NETLINK,ERR,"NL_SOCK","Failed to initialize sockets for VRF:%s "
+                       "sock-id:%d err-no:%d",vrf_name, ix, errno);
+            return (STD_ERR(NAS_OS,FAIL, 0));
+        }
+        EV_LOGGING(NETLINK, INFO, "NL_SOCK","Socket: VRF:%s id:%d, sock-fd:%d",
+                   vrf_name, ix, sock);
+        /* Fill netlink socket information */
+        memset(&sock_info, 0, sizeof(sock_info));
+        sock_info.sock_type = (nas_nl_sock_TYPES)(ix);
+        safestrncpy(sock_info.vrf_name, vrf_name, sizeof(sock_info.vrf_name));
+        nlm_sockets->insert(std::make_pair(sock, sock_info));
+
+        /* Add socket fds into select read_fds for listening events from
+         * the particular VRF */
+        add_fd_set(sock,read_fds,max_fd);
+        nas_nl_stats_init (sock);
+    }
+
+    os_refresh_netlink_info(vrf_name);
+    return STD_ERR_OK;
+}
+
+t_std_error os_del_netlink_sock(const char *vrf_name) {
+    /* Take the lock to update the read_fds */
+    std::lock_guard<std::mutex> lock(_nl_sock_mutex);
+
+    for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end();) {
+        EV_LOGGING(NETLINK,DEBUG,"NL_SOCK","Existig VRF:%s sock:%d", it->second.vrf_name, it->first);
+        if (strncmp(vrf_name, it->second.vrf_name, strlen(it->second.vrf_name)) == 0) {
+            nas_nl_stats_deinit(it->first);
+            EV_LOGGING(NETLINK,DEBUG,"NL_SOCK","Closing VRF:%s sock:%d", it->second.vrf_name, it->first);
+            close(it->first);
+            auto del_it = it;
+            it++;
+            nlm_sockets->erase(del_it->first);
+        } else {
+            it++;
+        }
+    }
+    /* Reset max_fd and read fds and fill based on available sockets */
+    max_fd = -1;
+    FD_ZERO(&read_fds);
+    for ( auto it = nlm_sockets->begin(); it != nlm_sockets->end() ; ++it) {
+        EV_LOGGING(NETLINK,DEBUG,"NL_SOCK","New VRF:%s sock:%d", it->second.vrf_name, it->first);
+        add_fd_set( it->first,read_fds,max_fd);
+    }
+
+    return STD_ERR_OK;
+}
+
+t_std_error os_sock_create(const char *vrf_name, e_std_socket_domain_t domain, e_std_sock_type_t type,
+                           int protocol, int *sock) {
+    /* If the VRF name is non-default, select the namespace before creating the socket. */
+    if (vrf_name && (strncmp(vrf_name, NL_DEFAULT_VRF_NAME, strlen(NL_DEFAULT_VRF_NAME)) != 0)) {
+        if (std_netns_socket_create(domain, type, protocol,
+                                    NULL, vrf_name, sock) != STD_ERR_OK) {
+            EV_LOG_ERRNO(ev_log_t_NETLINK,0,"NK-SOCKCR",errno);
+            return (STD_ERR(NAS_OS,FAIL, 0));
+        }
+    } else {
+        if (std_socket_create(domain, type, protocol,
+                              NULL, sock) != STD_ERR_OK) {
+            EV_LOG_ERRNO(ev_log_t_NETLINK,0,"NK-SOCKCR",errno);
+            return (STD_ERR(NAS_OS,FAIL, 0));
+        }
+    }
+    return STD_ERR_OK;
+}
+
+
+}
+

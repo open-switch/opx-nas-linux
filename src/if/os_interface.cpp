@@ -48,6 +48,7 @@
 #include "iana-if-type.h"
 #include "ietf-interfaces.h"
 #include "ietf-ip.h"
+#include "ietf-network-instance.h"
 
 #include <sys/socket.h>
 #include <linux/if_link.h>
@@ -103,7 +104,7 @@ static bool is_sub_interface(if_details &details)
     return false;
 }
 
-bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj)
+bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context)
 {
     struct ifinfomsg *ifmsg = (struct ifinfomsg *)NLMSG_DATA(hdr);
 
@@ -117,6 +118,10 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
     details._op = cps_api_oper_NULL;
     details._family = ifmsg->ifi_family;
 
+    if (context) {
+        cps_api_object_attr_add(obj, NI_IF_INTERFACES_INTERFACE_BIND_NI_NAME, (char*)context,
+                                strlen((char*)context)+1);
+    }
     cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,ifmsg->ifi_index);
 
     static const std::unordered_map<int,cps_api_operation_types_t> _to_op_type = {
@@ -296,7 +301,7 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
         cps_api_object_guard og(cps_api_object_create());
         if (!og.valid()) return false;
 
-        if (os_interface_to_object(rt_msg_type,hdr,og.get())) {
+        if (os_interface_to_object(rt_msg_type,hdr,og.get(), NULL)) {
             if (cps_api_object_list_append(*list,og.get())) {
                 og.release();
                 return true;
@@ -386,7 +391,7 @@ cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t
         return cps_api_ret_code_OK;
 
     int if_sock = 0;
-    if((if_sock = nas_nl_sock_create(nas_nl_sock_T_INT,false)) < 0) {
+    if((if_sock = nas_nl_sock_create(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,false)) < 0) {
        return cps_api_ret_code_ERR;
     }
 

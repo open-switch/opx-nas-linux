@@ -23,12 +23,15 @@
 #include "nas_os_int_utils.h"
 
 #include "std_error_codes.h"
+#include "std_utils.h"
+#include "std_socket_tools.h"
 #include "cps_api_interface_types.h"
 #include "event_log.h"
 #include "std_mac_utils.h"
 #include "dell-interface.h"
 #include "dell-base-if.h"
 #include "dell-base-if-linux.h"
+#include "netlink_tools.h"
 
 #include <net/if_arp.h>
 #include <linux/if.h>
@@ -238,4 +241,51 @@ t_std_error nas_os_util_int_get_if_details(const char *name, cps_api_object_t ob
     close(sock);
     return err;
 }
+
+t_std_error nas_os_util_int_if_index_get(const char *vrf_name, const char *if_name, int *if_index) {
+
+    int sock = 0;
+    t_std_error err = STD_ERR(INTERFACE,FAIL,errno);
+
+    if (os_sock_create(vrf_name, e_std_sock_INET4, e_std_sock_type_DGRAM, 0, &sock) != STD_ERR_OK)
+        return err;
+
+    struct ifreq  ifr;
+
+    memset(&ifr, 0, sizeof(ifr));
+
+    safestrncpy(ifr.ifr_ifrn.ifrn_name, if_name,
+                sizeof(ifr.ifr_ifrn.ifrn_name));
+
+    if (ioctl(sock, SIOCGIFINDEX, &ifr) >= 0) {
+        *if_index = (ifr.ifr_ifindex);
+        err = STD_ERR_OK;
+    }
+
+    close(sock);
+    return err;
+}
+
+t_std_error nas_os_util_int_if_name_get(const char *vrf_name, int if_index, char *if_name) {
+
+    int sock = 0;
+    t_std_error err = STD_ERR(INTERFACE,FAIL,errno);
+
+    if (os_sock_create(vrf_name, e_std_sock_INET4, e_std_sock_type_DGRAM, 0, &sock) != STD_ERR_OK)
+        return err;
+
+    struct ifreq  ifr;
+
+    memset(&ifr, 0, sizeof(ifr));
+
+    ifr.ifr_ifindex = if_index;
+    if (ioctl(sock, SIOCGIFNAME, &ifr) >= 0) {
+        safestrncpy(if_name, ifr.ifr_ifrn.ifrn_name, HAL_IF_NAME_SZ);
+        err = STD_ERR_OK;
+    }
+
+    close(sock);
+    return err;
+}
+
 

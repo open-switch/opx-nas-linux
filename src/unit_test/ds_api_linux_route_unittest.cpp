@@ -130,7 +130,7 @@ void cps_obj_to_route(cps_api_object_t obj, db_route_t *r) {
 bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data) {
     cps_api_object_t obj = cps_api_object_create();
 
-    if (nl_to_route_info(rt_msg_type,hdr, obj)) {
+    if (nl_to_route_info(rt_msg_type,hdr, obj, data)) {
         db_route_t r;
         cps_obj_to_route(obj,&r);
     }
@@ -141,7 +141,7 @@ bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *dat
 
 bool test_netlink() {
 
-    int sock = nas_nl_sock_create(nas_nl_sock_T_ROUTE,false);
+    int sock = nas_nl_sock_create(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_ROUTE,false);
     const int RANDOM_REQ_ID = 1231231;
     if (nl_request_existing_routes(sock,0,RANDOM_REQ_ID)) {
         const char *len = std_getenv("NL_ROUTE_BUFFER");
@@ -214,6 +214,8 @@ bool test_get_all_neigh(void) {
         for ( ; ix < mx ; ++ix ) {
             cps_api_object_t obj = cps_api_object_list_get(gp.list,ix);
             cps_api_object_attr_t mac = cps_api_object_attr_get(obj,cps_api_if_NEIGH_A_NBR_MAC);
+            if (mac == nullptr)
+                break;
             hal_mac_addr_t m;
             memcpy(m,cps_api_object_attr_data_bin(mac),sizeof(m));
             char buff[50];
