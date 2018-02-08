@@ -173,8 +173,8 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
 
     if (details._attrs[IFLA_LINKINFO] != nullptr && details._linkinfo[IFLA_INFO_KIND]!=nullptr) {
         details._info_kind = (const char *)nla_data(details._linkinfo[IFLA_INFO_KIND]);
-        ifinfo.if_type.assign(details._info_kind,strlen(details._info_kind));
-        EV_LOGGING(NAS_OS, DEBUG, "NET-MAIN", "Intf type %s ifindex %d", ifinfo.if_type.c_str(), ifmsg->ifi_index);
+        ifinfo.os_link_type.assign(details._info_kind,strlen(details._info_kind));
+        EV_LOGGING(NAS_OS, DEBUG, "NET-MAIN", "Intf type %s ifindex %d", ifinfo.os_link_type.c_str(), ifmsg->ifi_index);
     }
 
     if (details._attrs[IFLA_ADDRESS]!=NULL) {
@@ -216,6 +216,7 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
     if(fill && !(fill->if_hdlr(&details, obj)))
         return false; // Return in case of sub-interfaces etc (Handler will return false)
 
+    ifinfo.if_type = details._type;
     if (!fill)
         track_change = OS_IF_CHANGE_ALL;
     else
@@ -335,7 +336,8 @@ static bool os_interface_info_to_object(hal_ifindex_t ifix, if_info_t& ifinfo, c
     return true;
 }
 
-static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal_ifindex_t ifix, bool get_all )
+static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal_ifindex_t ifix,
+                                                bool get_all, uint_t if_type )
 {
     INTERFACE *fill = os_get_if_db_hdlr();
 
@@ -361,7 +363,11 @@ static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal
             return cps_api_ret_code_ERR;
         }
     } else if (get_all) {
-        fill->for_each_mbr([&list](int idx, if_info_t& ifinfo) {
+        fill->for_each_mbr([if_type, &list](int idx, if_info_t& ifinfo) {
+            if(if_type != 0 && ifinfo.if_type != static_cast<BASE_CMN_INTERFACE_TYPE_t>(if_type)) {
+                return;
+            }
+
             EV_LOG(INFO,NAS_OS,3, "NET-MAIN", "Get all ifinfo for %d", idx);
 
             cps_api_object_t obj = cps_api_object_create();
@@ -385,9 +391,11 @@ static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal
     return cps_api_ret_code_ERR;
 }
 
-cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t ifix, bool get_all ) {
+cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t ifix,
+                                       bool get_all, uint_t if_type )
+{
 
-    if(_get_db_interface(&list, ifix, get_all) == cps_api_ret_code_OK)
+    if(_get_db_interface(&list, ifix, get_all, if_type) == cps_api_ret_code_OK)
         return cps_api_ret_code_OK;
 
     int if_sock = 0;

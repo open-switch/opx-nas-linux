@@ -98,7 +98,8 @@ extern "C" t_std_error nas_os_get_interface_obj(hal_ifindex_t ifix,cps_api_objec
     cps_api_object_list_guard lg(cps_api_object_list_create());
     if (lg.get()==NULL) return STD_ERR(NAS_OS,FAIL,0);
 
-    if (_get_interfaces(lg.get(),ifix,false)!=cps_api_ret_code_OK) {
+    if (_get_interfaces(lg.get(),ifix,false,0)
+            != cps_api_ret_code_OK) {
         return STD_ERR(NAS_OS,FAIL,0);
     }
 
@@ -111,12 +112,19 @@ extern "C" t_std_error nas_os_get_interface_obj(hal_ifindex_t ifix,cps_api_objec
 }
 
 extern "C" t_std_error nas_os_get_interface(cps_api_object_t filter,cps_api_object_list_t result) {
-    cps_api_object_attr_t ifix = cps_api_object_attr_get(filter, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
+    cps_api_object_attr_t ifix =
+                cps_api_object_attr_get(filter, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
     hal_ifindex_t ifindex = 0;
-    if (ifix!=NULL) {
+    cps_api_object_attr_t type_attr =
+                cps_api_object_attr_get(filter, BASE_IF_LINUX_IF_INTERFACES_INTERFACE_DELL_TYPE);
+    uint_t if_type = 0;
+    if (ifix != nullptr) {
         ifindex = cps_api_object_attr_data_u32(ifix);
+        type_attr = nullptr; // Won't consider if_type if ifindex is specified
+    } else if (type_attr != nullptr) {
+        if_type = cps_api_object_attr_data_u32(type_attr);
     }
-    _get_interfaces(result,ifindex, ifix==NULL);
+    _get_interfaces(result,ifindex, ifix==nullptr, if_type);
     return STD_ERR_OK;
 }
 

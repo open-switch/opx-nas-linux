@@ -37,15 +37,17 @@
 #include <unordered_map>
 #include <utility>
 
-
 bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context);
-cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t ifix, bool get_all );
+extern "C"
+cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t ifix, bool get_all,
+                                       uint_t if_type );
 
 typedef struct {
     bool admin;
     if_change_t ev_mask; // Mask interface netlink event publish
     int mtu;
-    std::string if_type; // Can be bond, bridge, vlan, dummy, tun
+    BASE_CMN_INTERFACE_TYPE_t if_type;
+    std::string os_link_type; // Can be bond, bridge, vlan, dummy, tun
     hal_mac_addr_t phy_addr;
 }if_info_t;
 
@@ -70,7 +72,7 @@ class INTERFACE {
     std_rw_lock_t rw_lock;
 
     enum {
-        PHY=0, LAG, VLAN, MACVLAN, STG, IP, MAX
+        PHY=0, LAG, VLAN, MACVLAN, STG, IP, DUMMY, MAX
     };
     bool (INTERFACE::*fptr[MAX]) (if_details *, cps_api_object_t);
 
@@ -80,6 +82,7 @@ class INTERFACE {
     bool os_interface_stg_attrs_handler(if_details *, cps_api_object_t obj);
     bool os_interface_macvlan_attrs_handler(if_details *, cps_api_object_t obj);
     bool os_interface_ip_attrs_handler(if_details *, cps_api_object_t obj) { return true; };
+    bool os_interface_dummy_attrs_handler(if_details *, cps_api_object_t obj);
 
 public:
 
@@ -90,6 +93,8 @@ public:
         fptr[MACVLAN] = &INTERFACE::os_interface_macvlan_attrs_handler;
         fptr[STG] = &INTERFACE::os_interface_stg_attrs_handler;
         fptr[IP] = &INTERFACE::os_interface_ip_attrs_handler;
+        // "DUMMY" type is used to handle loopback interfaces
+        fptr[DUMMY] = &INTERFACE::os_interface_dummy_attrs_handler;
 
         std_rw_lock_create_default(&rw_lock);
     }
@@ -104,7 +109,7 @@ public:
 
     int  if_info_update(hal_ifindex_t ifx, if_info_t& if_info);
     bool if_info_setmask(hal_ifindex_t ifx, if_change_t mask_val);
-    std::string if_info_get_type(hal_ifindex_t ifx);
+    BASE_CMN_INTERFACE_TYPE_t if_info_get_type(hal_ifindex_t ifx);
     if_change_t if_info_getmask(hal_ifindex_t ifx);
     void if_info_delete(hal_ifindex_t ifx);
     bool if_info_get(hal_ifindex_t ifx, if_info_t& if_info);

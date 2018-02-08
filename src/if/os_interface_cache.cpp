@@ -85,18 +85,17 @@ if_change_t INTERFACE::if_info_getmask(hal_ifindex_t ifx)
     }
 }
 
-std::string INTERFACE::if_info_get_type(hal_ifindex_t ifx)
+BASE_CMN_INTERFACE_TYPE_t INTERFACE::if_info_get_type(hal_ifindex_t ifx)
 {
     std_rw_lock_read_guard lg(&rw_lock);
 
     auto it = if_map_.find(ifx);
-    std::string str = "None";
 
     if(it == if_map_.end()) {
-        return str;
-    } else {
-        return (it->second.if_type);
+        return BASE_CMN_INTERFACE_TYPE_MAX;
     }
+
+    return (it->second.if_type);
 }
 
 bool INTERFACE::if_info_get_admin(hal_ifindex_t ifx, bool& admin)

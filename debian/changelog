@@ -1,3 +1,10 @@
+opx-nas-linux (5.11.0+opx1) unstable; urgency=medium
+
+  * Update: Add support for loopback interface get/set handler. 
+  * Update: Add comments to describe dummy interface.
+
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Wed, 31 Jan 2017 14:56:43 -0800
+
 opx-nas-linux (5.11.0) unstable; urgency=medium
 
   * Update: Handle mcast querier status change when port stp state is changed to forwarding

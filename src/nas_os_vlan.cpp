@@ -377,9 +377,9 @@ static bool nas_ck_if_lag_with_no_ports(hal_ifindex_t lag_id)
 
     if (!bond_hdlr || !fill) return false;
 
-    std::string intf_type = fill->if_info_get_type(lag_id);
+    BASE_CMN_INTERFACE_TYPE_t intf_type = fill->if_info_get_type(lag_id);
     /* Check if its a bond and has no members */
-    if (intf_type == "bond" && bond_hdlr->bond_mbr_list_chk_empty(lag_id)) {
+    if (intf_type == BASE_CMN_INTERFACE_TYPE_LAG && bond_hdlr->bond_mbr_list_chk_empty(lag_id)) {
         return true;
     }
     return false;
