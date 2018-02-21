@@ -81,9 +81,7 @@ bool nas_rt_is_reserved_intf(char *intf_name) {
 
 /*
  * This function validates the given interface index for following:
- * 1. Checks if its not management/eth0 or default lo interface
- * 2. Checks if its not management VLAN interface
- * 3. Checks if its not a linux sub interface (only if input flag is true).
+ * Checks if its not a linux sub interface (only if input flag is true).
  */
 bool nas_rt_is_reserved_intf_idx (unsigned int if_idx, bool sub_intf_check_required) {
     interface_ctrl_t intf_ctrl;
@@ -102,15 +100,6 @@ bool nas_rt_is_reserved_intf_idx (unsigned int if_idx, bool sub_intf_check_requi
                                               sizeof(intf_ctrl.if_name)) == NULL) {
             EV_LOGGING(NETLINK,DEBUG,"NAS-LINUX-INTERFACE", "Interface (%d) not found", if_idx);
             return false;
-        }
-        /* Skip eth0 interface */
-        if (strcmp(intf_ctrl.if_name, "eth") == 0)
-            return true;
-    } else {
-        if ((intf_ctrl.int_type == nas_int_type_MGMT) ||
-            ((intf_ctrl.int_type == nas_int_type_VLAN) &&
-             (intf_ctrl.int_sub_type == BASE_IF_VLAN_TYPE_MANAGEMENT))) {
-            return true;
         }
     }
     /* Skip linux sub interfaces if caller asked for it */

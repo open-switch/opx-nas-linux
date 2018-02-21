@@ -26,6 +26,7 @@ import logging
 import bytearray_utils as ba
 import threading
 import time
+import Queue
 
 iplink_cmd = '/sbin/ip'
 bridge_cmd = '/sbin/bridge'
@@ -92,7 +93,14 @@ _ip_link_cmd_params = {
                                     }
                     }
 
+# Factor used to convert from tick to second
 HZ = 100.0
+
+# Interval for polling multicast snooping group changes
+MCAST_SNOOP_POLLING_INTERVAL = 5
+
+# Maximum trying times to set mdb hash_max after enabling multicast snooping
+MAX_HASHMAX_CFG_TRY_COUNT = 50
 
 mcast_path_prefix = "/sys/devices/virtual/net/"
 
@@ -110,7 +118,7 @@ def _update_file_system(path, value):
         fd.write(str(value))
       log_debug("Updated file %s with value %s"%(path, str(value)))
     except Exception as e:
-      log_err(str(e))
+      log_err('File %s Exception %s' % (path, str(e)))
       return False
 
     return True
@@ -279,19 +287,7 @@ def _handle_mcast_snoop_configs_fs(data, vlan_name, igmp_events, op):
 
               # In case of igmp/mld enable, set the max groups as 16k and hash_elasticity as 8
               if k == 'mcast_snooping' and data[path] == 1:
-
-                  # File update might fail because kernel need some "grace period" to release old hash table after mdb rebuild
-                  # by multicast snooping enabling operation, and does not allow setting hash_max during the meantime. So we have
-                  # to wait and re-try
-                  max_wait_count = 10
-                  cnt = 0
-                  while not _update_file_system(_get_path_per_vlan_configs(vlan_name, "hash_max"), max_grps):
-                      time.sleep(0.5)
-                      cnt += 1
-                      if cnt > max_wait_count:
-                          ret = False
-                          break
-
+                  ret = ret and polling_thread.hashmax_cfg_to_queue(vlan_name, max_grps)
                   ret = ret and (_update_file_system(_get_path_per_vlan_configs(vlan_name, "hash_elasticity"),
                                                             def_mcast_hash_elasticity))
 
@@ -307,11 +303,6 @@ def _handle_mcast_snoop_configs_fs(data, vlan_name, igmp_events, op):
                   #As per RFC The Other Querier Present Interval value MUST be ((the Robustness Variable) times (the Query Interval)) plus (one half of one Query Response Interval)
                   val = ((data[path]*2)+((int(mcast_query_response_interval)/100)/2))*100
                   ret = ret and (_update_file_system(_get_path_per_vlan_configs(vlan_name, "multicast_querier_interval"), val))
-
-
-
-
-
     return ret
 
 def _handle_mcast_querier_functionality(op, vlan_name):
@@ -442,7 +433,7 @@ def handle_configs_fs(params):
         vlan_id_key = _keys['vlan_id_key']['mld']
         igmp_events = False
 
-
+    log_debug('Start config on file system for %s' % ('IGMP' if igmp_events else 'MLD'))
     # Get dell-base-if-cmn/if/interfaces/interface object for the given vlan id
     vlan_info_list = _get_vlan_info(data[vlan_id_key])
     if vlan_info_list is None or len(vlan_info_list) == 0:
@@ -450,8 +441,6 @@ def handle_configs_fs(params):
         return False
     vlan_info = vlan_info_list[0]
     vlan_name = vlan_info['cps/key_data']['if/interfaces/interface/name']
-
-    ret = ret and (_handle_mcast_snoop_configs_fs(data, vlan_name, igmp_events, params['operation']) )
 
     # Handle mcast querier functionality
     if _keys['mcast_querier_key']['igmp'] in data or _keys['mcast_querier_key']['mld'] in data:
@@ -462,7 +451,7 @@ def handle_configs_fs(params):
         ret = True
         for f in files:
             ret = ret and (_update_file_system(_get_path_per_vlan_configs(vlan_name, f), mcast_querier ))
-
+    ret = ret and (_handle_mcast_snoop_configs_fs(data, vlan_name, igmp_events, params['operation']) )
 
     #Handle static group programming
     if _keys['static_l2_mcast_grp_key']['igmp'] in data:
@@ -499,7 +488,7 @@ def handle_configs_fs(params):
                     polling_thread.update_static_mrouter_cache(McastRouterInfo(vlan_name, ifname))
             if params['operation'] == "delete":
                 polling_thread.clear_static_mrouter_cache(McastRouterInfo(vlan_name, ifname))
-
+    log_debug('Finish config on file system, ret=%d' % ret)
     return ret
 
 
@@ -881,8 +870,9 @@ class McastSnoopCacheMgr(threading.Thread):
         self.br_group_map = {}
         # Mapping from bridge name to VLAN ID
         self.vlan_map = {}
+        # Queue for hash_max configuration
+        self.hashmax_cfg_q = Queue.Queue()
 
-        self.polling_timeout = 5
         self.lock = threading.Lock()
 
     def get_vlan_id(self, br_name):
@@ -1020,13 +1010,53 @@ class McastSnoopCacheMgr(threading.Thread):
             if _update_file_system(file_path, mcast_router_val):
                 self.static_mrouter_set.discard(McastRouterInfo(dev_name, if_name))
 
+    def hashmax_cfg_to_queue(self, br_name, max_grps, try_count = 0):
+        try:
+            self.hashmax_cfg_q.put_nowait((br_name, max_grps, try_count))
+        except Queue.Full:
+            log_err('Failed to add hashmax cfg to queue, try_count=%d' % try_count)
+            return False
+        return True
+
     def run(self):
+        polling_timeout = MCAST_SNOOP_POLLING_INTERVAL
+        do_polling = True
         while True:
-            self.lock.acquire()
-            self.apply_static_mrouter_configs()
-            self.update_cache()
-            self.lock.release()
-            time.sleep(self.polling_timeout)
+            if do_polling:
+                self.lock.acquire()
+                self.apply_static_mrouter_configs()
+                self.update_cache()
+                self.lock.release()
+            try:
+                start_time = time.time()
+                br_name, max_grps, try_count = self.hashmax_cfg_q.get(True, polling_timeout)
+                wait_time = time.time() - start_time
+                polling_timeout -= wait_time
+                if polling_timeout > 0:
+                    do_polling = False
+                else:
+                    polling_timeout = MCAST_SNOOP_POLLING_INTERVAL
+                    do_polling = True
+            except Queue.Empty:
+                polling_timeout = MCAST_SNOOP_POLLING_INTERVAL
+                do_polling = True
+                continue
+            log_debug('Setting hash_max %d to bridge %s' % (max_grps, br_name))
+            if not _update_file_system(_get_path_per_vlan_configs(br_name, "hash_max"), max_grps):
+                # File update might fail because kernel need some "grace period" to release old hash table after mdb rebuild
+                # by multicast snooping enabling operation, and does not allow setting hash_max during the meantime. So we have
+                # to wait and re-try
+                try_count += 1
+                if try_count >= MAX_HASHMAX_CFG_TRY_COUNT:
+                    log_err('Failed to set hash_mas after re-trying %d times' % MAX_HASHMAX_CFG_TRY_COUNT)
+                else:
+                    if self.hashmax_cfg_to_queue(br_name, max_grps, try_count):
+                        continue
+                    else:
+                        log_err('Failed to set task for bridge %s back to queue' % br_name)
+            else:
+                log_debug('Successfully setting hash_max for bridge %s' % br_name)
+            self.hashmax_cfg_q.task_done()
 
 polling_thread = McastSnoopCacheMgr()
 polling_thread.daemon = True

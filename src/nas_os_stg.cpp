@@ -82,7 +82,11 @@ t_std_error nl_int_update_stp_state(cps_api_object_t obj){
             const char * intf_name = (const char *)cps_api_object_attr_data_bin(if_name_attr);
             char vlan_intf_name[HAL_IF_NAME_SZ+1];
             snprintf(vlan_intf_name,sizeof(vlan_intf_name)-1,"%s.%d",intf_name,vlan_id);
-            get_tagged_intf_index_from_name(vlan_intf_name,vlan_ifindex);
+            if(!get_tagged_intf_index_from_name(vlan_intf_name,vlan_ifindex)){
+                EV_LOGGING(NAS_OS,DEBUG,"NAS-OS","Don't update the untagged port state for %s",
+                            vlan_intf_name);
+                return STD_ERR_OK;
+            }
         }
     }
 

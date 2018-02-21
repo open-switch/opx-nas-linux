@@ -1,3 +1,13 @@
+opx-nas-linux (5.11.0+opx2) unstable; urgency=medium
+
+  * Update: Create and delete dummy interface using netlink msg
+  * Update: Add dummy interface to lag interface
+  * Update: Dummy interface down to avoid bringing up the bond oper state
+  * Update: Put hash_max configuration to work queue and let it be done by separate thread to avoid delay
+  * Update: Publish mgmt routes also to NAS-L3 for selective route publish based on event-filter
+
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Fri, 16 Feb 2018 14:56:43 -0800
+
 opx-nas-linux (5.11.0+opx1) unstable; urgency=medium
 
   * Update: Add support for loopback interface get/set handler. 
