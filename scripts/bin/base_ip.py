@@ -331,20 +331,24 @@ def trans_cb(methods, params):
         if params['operation'] == 'create' and obj.get_key() == _keys['base-ip/' + af + '/address']:
             addr = _create_ip_and_prefix_from_obj(obj, af)
 
-            print "Attempting to add address ", addr, name
+            log_msg = 'Attempting to add address:' + addr + name
+            log_info(log_msg)
             if dn_base_ip_tool.add_ip_addr(addr, name):
                 return True
-            print "Failed to execute request..."
+            log_msg = log_msg + ' failed!'
+            log_err(log_msg)
 
         if params['operation'] == 'delete' and obj.get_key() == _keys['base-ip/' + af + '/address']:
             addr = _create_ip_and_prefix_from_obj(obj, af)
-            print "Attempting to delete address ", addr, name
+            log_msg = 'Attempting to delete address:' + addr + name
+            log_info(log_msg)
             if dn_base_ip_tool.del_ip_addr(addr, name):
                 return True
-            print "Failed to execute request..."
+            log_msg = log_msg + ' failed!'
+            log_err(log_msg)
     except Exception as e:
-        print "Faild to commit operation.", e
-        print params
+        log_msg = 'Faild to commit operation' + e + params
+        log_err(log_msg)
 
     return False
 
