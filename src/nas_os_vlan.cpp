@@ -344,6 +344,78 @@ static t_std_error nas_os_add_t_port_to_os(int vlan_id, const char *vlan_name, i
     return STD_ERR_OK;
 }
 
+static t_std_error nas_add_del_dummy_to_lag(hal_ifindex_t if_index, bool add) {
+
+     char buff[MAX_CPS_MSG_BUFF];
+     hal_ifindex_t ifix = cps_api_interface_name_to_if_index("dummy0");
+     cps_api_object_t name_obj = cps_api_object_init(buff, sizeof(buff));
+
+     cps_api_object_attr_add_u32(name_obj,DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX, if_index);
+     cps_api_object_attr_add_u32(name_obj,DELL_IF_IF_INTERFACES_INTERFACE_MEMBER_PORTS, ifix);
+
+    if (add && (nas_os_add_port_to_lag(name_obj) != STD_ERR_OK)) {
+        EV_LOGGING(INTERFACE, ERR, "NAS-OS",
+               "Error adding dummy port %d to lag %d in the Kernel", ifix, if_index);
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+    if (!add && (nas_os_delete_port_from_lag(name_obj) != STD_ERR_OK)) {
+        EV_LOGGING(INTERFACE, ERR, "NAS-OS",
+               "Error deleting  dummy port %d from lag %d in the Kernel", ifix, if_index);
+        return (STD_ERR(NAS_OS, FAIL, 0));
+
+    }
+    return STD_ERR_OK;
+
+}
+
+static bool nas_ck_if_lag_with_no_ports(hal_ifindex_t lag_id)
+
+{
+
+    if_bond *bond_hdlr = os_get_bond_db_hdlr();
+    INTERFACE *fill = os_get_if_db_hdlr();
+
+    if (!bond_hdlr || !fill) return false;
+
+    BASE_CMN_INTERFACE_TYPE_t intf_type = fill->if_info_get_type(lag_id);
+    /* Check if its a bond and has no members */
+    if (intf_type == BASE_CMN_INTERFACE_TYPE_LAG && bond_hdlr->bond_mbr_list_chk_empty(lag_id)) {
+        return true;
+    }
+    return false;
+
+
+}
+
+static t_std_error
+nas_handle_no_mem_tagged_bond (int vlan_id, const char *vlan_name, int port_index, int *vlan_index) {
+
+   t_std_error ret = (STD_ERR(NAS_OS, FAIL, 0));
+
+   bool if_lag =  nas_ck_if_lag_with_no_ports(port_index);
+
+   do {
+       if (!if_lag) {
+           EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failed: Not a bond or bond has members %d", port_index);
+           break;
+       }
+       if (nas_add_del_dummy_to_lag(port_index, true) != STD_ERR_OK) {
+           EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "Failed to add dummy intf to %d in kernel", port_index);
+           break;
+       }
+       ret = nas_os_add_t_port_to_os(vlan_id, vlan_name,
+               port_index, vlan_index);
+       /* del tagged bond to the kernel*/
+       if (nas_add_del_dummy_to_lag(port_index, false) != STD_ERR_OK) {
+           EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "Failed to del dummy intf to %d in kernel", port_index);
+           ret = (STD_ERR(NAS_OS, FAIL, 0));
+       }
+   } while (0);
+
+   return ret;
+}
+
+
 t_std_error nas_os_t_port_to_vlan(int vlan_id, const char *vlan_name, int port_index, int br_index, int *vlan_index) {
 
 
@@ -352,8 +424,11 @@ t_std_error nas_os_t_port_to_vlan(int vlan_id, const char *vlan_name, int port_i
         /* Adding tagged bond interface with no member fails in kernel.
          * Handle such case.
          */
-        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failed: Failed to add vlan member %d to %s", port_index, vlan_name);
-        return (STD_ERR(NAS_OS,FAIL, 0));
+        if (nas_handle_no_mem_tagged_bond(vlan_id, vlan_name, port_index,
+                                             vlan_index) != STD_ERR_OK) {
+            return (STD_ERR(NAS_OS,FAIL, 0));
+
+        }
     }
 
     _update_intf_to_tagged_intf_map(port_index,*vlan_index,true);

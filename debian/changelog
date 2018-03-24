@@ -1,3 +1,9 @@
+opx-nas-linux (5.11.0+opx4) unstable; urgency=medium
+
+  * Bugfix: LAG configuration issue by removing dummy interface optimizations
+
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Fri, 23 Mar 2018 19:25:43 -0800
+
 opx-nas-linux (5.11.0+opx3) unstable; urgency=medium
 
   * Bugfix: CPS gets into a state where IP addresses cannot be configured (opx-cps-66). Prevent EPIPE to happen in random fashion.
