@@ -1,3 +1,9 @@
+opx-nas-linux (5.11.0+opx5) unstable; urgency=medium
+
+  * Update: Add compiler/linker hardening flags
+
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Thu, 17 May 2018 19:25:43 -0800
+
 opx-nas-linux (5.11.0+opx4) unstable; urgency=medium
 
   * Bugfix: LAG configuration issue by removing dummy interface optimizations
