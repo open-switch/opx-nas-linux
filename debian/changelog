@@ -6,9 +6,9 @@ opx-nas-linux (5.19.0) unstable; urgency=medium
   * Feature: Proxy ARP support
   * Feature: Data VRF support
   * Bugfix: Ping to VRRP virtual address fails
-  * Bugfix: Allow MAC-VLAn interface delete publish to delete the interface
+  * Bugfix: Allow MAC-VLAN interface delete publish to delete the interface
             from NAS-cmn DB.
-  * Bugfix: Fix logging issue for ever VRF configuration
+  * Bugfix: Fix logging issue for VRF configuration
   * Bugfix: Fix false netlink event for member addition during member deletion time.
 
  -- Dell EMC <ops-dev@lists.openswitch.net>  Mon, 18 Jun 2018 19:25:43 -0800
