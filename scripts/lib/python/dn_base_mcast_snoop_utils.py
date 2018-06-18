@@ -208,6 +208,21 @@ def _get_if_name(vlan_info, if_name, vlan_id):
         log_err(str(e))
         return False
 
+def is_intf_vlan_member(vlan_info, if_name, vlan_id):
+    try:
+        # check given interface is part of the VLAN, present in tagged or untagged list.
+        if untagged_ports_key in vlan_info and if_name in vlan_info[untagged_ports_key]:
+           return True
+        elif tagged_ports_key in vlan_info and if_name in vlan_info[tagged_ports_key]:
+           return True
+        else:
+           log_err("Interface %s not VLAN %d member" %(if_name,vlan_id))
+           return False
+
+    except Exception as e:
+        log_err(str(e))
+        return False
+
 
 def _handle_mcast_snoop_configs(cmd, data, vlan_name, igmp_events, op, snoop_cfg_flags):
     if op == "delete":

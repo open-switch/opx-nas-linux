@@ -30,7 +30,7 @@
 extern "C" {
 #endif
 
-bool nl_to_mcast_snoop_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t data, void *context);
+bool nl_to_mcast_snoop_info(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *context);
 
 bool nas_os_refresh_mcast_querier_status(hal_vlan_id_t vlan_id);
 

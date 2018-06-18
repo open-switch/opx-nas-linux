@@ -127,10 +127,10 @@ void cps_obj_to_route(cps_api_object_t obj, db_route_t *r) {
     }
 }
 
-bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data) {
+bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data, uint32_t vrf_id) {
     cps_api_object_t obj = cps_api_object_create();
 
-    if (nl_to_route_info(rt_msg_type,hdr, obj, data)) {
+    if (nl_to_route_info(rt_msg_type,hdr, obj, data, 0)) {
         db_route_t r;
         cps_obj_to_route(obj,&r);
     }
@@ -154,7 +154,7 @@ bool test_netlink() {
         char buf[atoi(len)];
 
         return netlink_tools_process_socket(sock,get_netlink_data,
-                NULL,buf,sizeof(buf),&RANDOM_REQ_ID,NULL);
+                NULL,buf,sizeof(buf),&RANDOM_REQ_ID,NULL, NL_DEFAULT_VRF_ID);
     }
     return false;
 }

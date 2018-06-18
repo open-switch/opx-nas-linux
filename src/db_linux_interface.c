@@ -195,8 +195,8 @@ bool nl_get_if_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj
 
                  if(ifmsg->ifi_flags & IFF_SLAVE)
                  {
-                     EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Received tun %d and state IFF_UP",
-                             ifindex,ifmsg->ifi_flags);
+                     EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Received tun %d and Flag IFF_SLAVE",
+                            ifindex);
                      _type = DB_IF_TYPE_LAG_INTER;
                  }
             }
@@ -246,7 +246,7 @@ bool nl_get_if_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj
     return true;
 }
 
-bool nl_interface_get_request(int sock, int req_id) {
+bool nl_interface_get_request(int sock, int req_id, char *vrf_name, uint32_t vrf_id) {
 
     return nl_route_send_get_all(sock,RTM_GETLINK,AF_PACKET,req_id);
 }
@@ -287,7 +287,7 @@ static cps_api_return_code_t get_interface(
     return cps_api_ret_code_OK;
 }
 
-static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data) {
+static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data, uint32_t vrf_id) {
     if (rt_msg_type <= RTM_SETLINK) {
         cps_api_object_list_t * list = (cps_api_object_list_t*)data;
         cps_api_object_t obj = cps_api_object_create();
@@ -315,10 +315,10 @@ cps_api_return_code_t get_all_interfaces( cps_api_object_list_t list ) {
     }
     int RANDOM_REQ_ID = 0xee00;
 
-    if (nl_interface_get_request(if_sock,RANDOM_REQ_ID)) {
+    if (nl_interface_get_request(if_sock,RANDOM_REQ_ID, NL_DEFAULT_VRF_NAME, NL_DEFAULT_VRF_ID)) {
         netlink_tools_process_socket(if_sock,get_netlink_data,
                 &list,buff,DEF_BUFF_LEN,
-            &RANDOM_REQ_ID,NULL);
+            &RANDOM_REQ_ID,NULL, NL_DEFAULT_VRF_ID);
     }
     close(if_sock);
     free(buff);

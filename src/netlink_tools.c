@@ -85,7 +85,7 @@ int nl_sock_create(const char *vrf_name, int ln_groups, int type,bool include_bi
 
 
 void netlink_tools_receive_event(int sock, fun_process_nl_message handlers,
-        void * context, char * scratch_buff, size_t scratch_buff_len,int *error_code) {
+        void * context, char * scratch_buff, size_t scratch_buff_len,int *error_code, uint32_t vrf_id) {
     int len = 0;
     struct nlmsghdr * nh = NULL;
     int _error_code = 0;
@@ -96,6 +96,13 @@ void netlink_tools_receive_event(int sock, fun_process_nl_message handlers,
         struct sockaddr_nl snl;
         struct msghdr msg = { (void *) &snl, sizeof snl, &iov, 1, NULL, 0, 0 };
 
+        char   cmsgbuf[32];
+        if (vrf_id == NL_DEFAULT_VRF_ID) {
+            /* Read control message from socket */
+            msg.msg_control = &cmsgbuf;
+            msg.msg_controllen = sizeof(cmsgbuf);
+        }
+
         len = recvmsg(sock, &msg,MSG_TRUNC);
         if ((len==-1) && (errno==EINTR || errno==EAGAIN)) continue;
         if (len==-1) {
@@ -104,10 +111,28 @@ void netlink_tools_receive_event(int sock, fun_process_nl_message handlers,
         }
         if (len==-1) { *error_code = errno; return ; }
         if (msg.msg_flags & MSG_TRUNC) {
-            EV_LOGGING(NETLINK,ERR,"READ/ERR","Truncated message %d (type:%d)",msg.msg_iovlen,
-                    nh->nlmsg_type);
+            EV_LOGGING(NETLINK,ERR,"READ/ERR","Truncated message %lu (type:%d)",msg.msg_iovlen,
+                       nh->nlmsg_type);
             return ;
         }
+        if (vrf_id == NL_DEFAULT_VRF_ID) {
+            /* Read VRF-id (NSID) from control message */
+            struct cmsghdr *cmsg;
+            for (cmsg = CMSG_FIRSTHDR(&msg); cmsg;
+                 cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+                if (cmsg->cmsg_level == SOL_NETLINK &&
+                    cmsg->cmsg_type == NETLINK_LISTEN_ALL_NSID &&
+                    cmsg->cmsg_len == CMSG_LEN(sizeof(int))) {
+                    int *data = (int *)CMSG_DATA(cmsg);
+                    if (*data != -1) {
+                        EV_LOGGING(NETLINK, DEBUG,"VRF-INFO","sock %d, msg len %d, msg type %d vrf-id:%d",
+                                   sock, len, nh->nlmsg_type, *data);
+                        vrf_id = *data;
+                    }
+                }
+            }
+        }
+
         break;
     }
     size_t msg_count = 0;
@@ -136,7 +161,7 @@ void netlink_tools_receive_event(int sock, fun_process_nl_message handlers,
 
         if (nh->nlmsg_type == NLMSG_ERROR) {
             struct nlmsgerr *err = (struct nlmsgerr *) NLMSG_DATA (nh);
-            EV_LOGGING(NETLINK,INFO,"ACK/ERR","Received response errid:%d msg:%d",err->error,err->msg);
+            EV_LOGGING(NETLINK,INFO,"ACK/ERR","Received response errid:%d msg_type :%d",err->error,err->msg.nlmsg_type);
             if (err->error==0) {
                 continue;
             }
@@ -149,7 +174,7 @@ void netlink_tools_receive_event(int sock, fun_process_nl_message handlers,
         }
 
         msg_count++; //track statistics
-        if (!handlers(sock, nh->nlmsg_type,nh,context)) { //assume function will log an error
+        if (!handlers(sock, nh->nlmsg_type,nh,context, vrf_id)) { //assume function will log an error
             return ;
         }
     }
@@ -159,7 +184,7 @@ void netlink_tools_receive_event(int sock, fun_process_nl_message handlers,
 bool netlink_tools_process_socket(int sock,
             fun_process_nl_message func,
             void * context, char * scratch_buff, size_t scratch_buff_len,
-            const int * seq, int *error_code) {
+            const int * seq, int *error_code, uint32_t vrf_id) {
 
     struct timeval tv = {0, 1000};
     int error_rc ;//will init below...
@@ -209,11 +234,10 @@ bool netlink_tools_process_socket(int sock,
          * message - likely only the case when people are querying with less then 1024 bytes
          * */
         if (iov.iov_len > scratch_buff_len) {
-            EV_LOGGING(NETLINK, INFO ,"ACK/ERR","iov len %d greater than scratch buff len", iov.iov_len);
+            EV_LOGGING(NETLINK, INFO ,"ACK/ERR","iov len %lu greater than scratch buff len", iov.iov_len);
             iov.iov_len =  nh->nlmsg_len < scratch_buff_len ?
                     nh->nlmsg_len : scratch_buff_len;
         }
-
         len = recvmsg (sock, &msg, 0);
 
         if (len<0) {
@@ -227,15 +251,14 @@ bool netlink_tools_process_socket(int sock,
         uint32_t msg_count = 0;
 
         EV_LOGGING(NETLINK, DEBUG ,"ACK/ERR","sock %d, msg len %d, msg type %d", sock, len, nlmsg_type);
-
         for(nh = (struct nlmsghdr *) scratch_buff; NLMSG_OK (nh, len);
-                nh = NLMSG_NEXT (nh, len)) {
+            nh = NLMSG_NEXT (nh, len)) {
 
             nlmsg_type = nh->nlmsg_type;
 
             if ((seq!=NULL) && ((*seq)!=nh->nlmsg_seq)) {
                 EV_LOGGING(NETLINK,INFO,"ACK/ERR","sock %d, out of sequence, msg_type %d",
-                       sock, nlmsg_type);
+                           sock, nlmsg_type);
                 continue;
             }
 
@@ -263,7 +286,7 @@ bool netlink_tools_process_socket(int sock,
 
             if (nh->nlmsg_type == NLMSG_ERROR) {
                 struct nlmsgerr *err = (struct nlmsgerr *) NLMSG_DATA (nh);
-                EV_LOGGING(NETLINK,INFO,"ACK/ERR","Received response errid:%d msg:%d",err->error,err->msg);
+                EV_LOGGING(NETLINK,INFO,"ACK/ERR","Received response errid:%d msg_type:%d",err->error,err->msg.nlmsg_type);
                 if (err->error==0) {
                     rc = true;
                     continue;
@@ -277,7 +300,7 @@ bool netlink_tools_process_socket(int sock,
             }
 
             msg_count++; //track statistics
-            if (!func(sock, nh->nlmsg_type,nh,context)) {
+            if (!func(sock, nh->nlmsg_type,nh,context, vrf_id)) {
                 return false;
             } else {
                 rc = true;
@@ -287,7 +310,7 @@ bool netlink_tools_process_socket(int sock,
         EV_LOGGING(NETLINK, DEBUG ,"ACK/ERR","sock %d, rc %d", sock, rc);
 
         if (msg.msg_flags & MSG_TRUNC) {
-            EV_LOGGING(NETLINK,INFO,"ACK/ERR","Truncated message %d (type:%d)",msg.msg_iovlen,
+            EV_LOGGING(NETLINK,INFO,"ACK/ERR","Truncated message %lu (type:%d)",msg.msg_iovlen,
                     nlmsg_type);
             return false;
         }
@@ -374,10 +397,11 @@ int nlmsg_add_attr(struct nlmsghdr * m, int maxlen, int type, const void * data,
     return m->nlmsg_len;
 }
 
-bool _process_set_fun(int sock, int rt_msg_type, struct nlmsghdr *hdr, void * context) {
+bool _process_set_fun(int sock, int rt_msg_type, struct nlmsghdr *hdr, void * context, uint32_t vrf_id) {
     return true;
 }
-t_std_error nl_do_set_request(const char *vrf_name, nas_nl_sock_TYPES type,struct nlmsghdr *m, void *buff, size_t bufflen) {
+t_std_error nl_do_set_request(const char *vrf_name, nas_nl_sock_TYPES type,struct nlmsghdr *m, void *buff,
+                              size_t bufflen) {
     int error = 0;
     int sock = nas_nl_sock_create(vrf_name, type,false);
     if (sock==-1) return STD_ERR(ROUTE,FAIL,errno);
@@ -387,8 +411,10 @@ t_std_error nl_do_set_request(const char *vrf_name, nas_nl_sock_TYPES type,struc
         if (!nl_send_nlmsg(sock,m)) {
             break;
         }
+        /* Default VRF-id is used here since it's not required for any operations,
+         * if required in the future, pass the vrf-id associated with the vrf-name */
         if (type == nas_nl_sock_T_ROUTE &&
-            !netlink_tools_process_socket(sock,_process_set_fun,NULL,buff,bufflen,&seq, &error)) {
+            !netlink_tools_process_socket(sock,_process_set_fun,(char*)vrf_name,buff,bufflen,&seq, &error, NL_DEFAULT_VRF_ID)) {
             break;
         }
         close(sock);
@@ -400,18 +426,51 @@ t_std_error nl_do_set_request(const char *vrf_name, nas_nl_sock_TYPES type,struc
 }
 
 static int create_intf_socket(const char *vrf_name, bool include_bind) {
-    return nl_sock_create(vrf_name, RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR,
-                          NETLINK_ROUTE,include_bind, NL_INTF_SOCKET_BUFFER_LEN);
+    int sock = nl_sock_create(vrf_name, RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR,
+                              NETLINK_ROUTE,include_bind, NL_INTF_SOCKET_BUFFER_LEN);
+    if ((sock != -1) && include_bind) {
+        unsigned int on = 1;
+        int err = setsockopt(sock, SOL_NETLINK, NETLINK_LISTEN_ALL_NSID,
+                             &on, sizeof(on));
+        if (err) {
+            EV_LOGGING(NETLINK, ERR,"NETLINK","Intf msg listening from all NSID failed!");
+            close(sock);
+            return -1;
+        }
+    }
+    return sock;
 }
 
 static int create_route_socket(const char *vrf_name, bool include_bind) {
-    return nl_sock_create(vrf_name, RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE,
+    int sock = nl_sock_create(vrf_name, RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE,
                           NETLINK_ROUTE,include_bind, NL_ROUTE_SOCKET_BUFFER_LEN);
+    if ((sock != -1) && include_bind) {
+        unsigned int on = 1;
+        int err = setsockopt(sock, SOL_NETLINK, NETLINK_LISTEN_ALL_NSID,
+                             &on, sizeof(on));
+        if (err) {
+            EV_LOGGING(NETLINK, ERR,"NETLINK","Route msg listening from all NSID failed!");
+            close(sock);
+            return -1;
+        }
+    }
+    return sock;
 }
 
 static int create_neigh_socket(const char *vrf_name, bool include_bind) {
-    return nl_sock_create(vrf_name, RTMGRP_NEIGH,NETLINK_ROUTE,include_bind,
-                          NL_NEIGH_SOCKET_BUFFER_LEN);
+    int sock = nl_sock_create(vrf_name, RTMGRP_NEIGH,NETLINK_ROUTE,include_bind,
+                              NL_NEIGH_SOCKET_BUFFER_LEN);
+    if ((sock != -1) && include_bind) {
+        unsigned int on = 1;
+        int err = setsockopt(sock, SOL_NETLINK, NETLINK_LISTEN_ALL_NSID,
+                             &on, sizeof(on));
+        if (err) {
+            EV_LOGGING(NETLINK, ERR,"NETLINK","Neighbor msg listening from all NSID failed!");
+            close(sock);
+            return -1;
+        }
+    }
+    return sock;
 }
 
 static int create_mcast_snoop_socket(const char *vrf_name, bool include_bind) {
@@ -420,10 +479,18 @@ static int create_mcast_snoop_socket(const char *vrf_name, bool include_bind) {
     if ((sock != -1) && include_bind) {
         int mc_group = RTNLGRP_MDB;
         int err = setsockopt(sock, NL_SOL_NETLINK, NETLINK_ADD_MEMBERSHIP,
-                         &mc_group, sizeof(mc_group));
+                             &mc_group, sizeof(mc_group));
         if (err) {
             close(sock);
             EV_LOGGING(NETLINK_MCAST_SNOOP, ERR,"NETLINK","MDB Subscription failed!");
+            return -1;
+        }
+        unsigned int on = 1;
+        err = setsockopt(sock, SOL_NETLINK, NETLINK_LISTEN_ALL_NSID,
+                         &on, sizeof(on));
+        if (err) {
+            EV_LOGGING(NETLINK_MCAST_SNOOP, ERR,"NETLINK","Listening from all NSID failed!");
+            close(sock);
             return -1;
         }
     }
@@ -441,6 +508,7 @@ static int create_netconf_socket(const char *vrf_name, bool include_bind) {
         int err = setsockopt(sock, NL_SOL_NETLINK, NETLINK_ADD_MEMBERSHIP,
                              &mc_group, sizeof(mc_group));
         if (err) {
+            close(sock);
             EV_LOGGING(NETLINK, ERR,"NETLINK","NETCONF IPv4 subscription failed!");
             return -1;
         }
@@ -450,6 +518,14 @@ static int create_netconf_socket(const char *vrf_name, bool include_bind) {
         if (err) {
             close(sock);
             EV_LOGGING(NETLINK, ERR,"NETLINK","NETCONF IPv6 subscription failed!");
+            return -1;
+        }
+        unsigned int on = 1;
+        err = setsockopt(sock, SOL_NETLINK, NETLINK_LISTEN_ALL_NSID,
+                         &on, sizeof(on));
+        if (err) {
+            EV_LOGGING(NETLINK, ERR,"NETLINK","Listening from all NSID failed!");
+            close(sock);
             return -1;
         }
     }
@@ -649,7 +725,7 @@ int nas_os_bind_nf_sub(int fd, int family, int type, int queue_num)
 
     nl_send_nlmsg (fd, nl_hdr);
     /* read the response */
-    netlink_tools_process_socket(fd,_process_set_fun,NULL,buf,512,&seq_no, &error);
+    netlink_tools_process_socket(fd,_process_set_fun,NULL,buf,512,&seq_no, &error, NL_DEFAULT_VRF_ID);
 
     seq_no++;
 
@@ -667,7 +743,7 @@ int nas_os_bind_nf_sub(int fd, int family, int type, int queue_num)
 
     nl_send_nlmsg (fd, nl_hdr);
     /* read the response */
-    netlink_tools_process_socket(fd,_process_set_fun,NULL,buf,512,&seq_no, &error);
+    netlink_tools_process_socket(fd,_process_set_fun,NULL,buf,512,&seq_no, &error, NL_DEFAULT_VRF_ID);
 
     seq_no++;
     return 0;

@@ -24,6 +24,7 @@
 
 #include "ds_common_types.h"
 #include <stdbool.h>
+#include "std_error_codes.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,6 +36,10 @@ void nas_os_get_vlan_if_name(char *if_name, int len, hal_vlan_id_t vlan_id, char
 bool nas_os_physical_to_vlan_ifindex(hal_ifindex_t intf_index, hal_vlan_id_t vlan_id,
                                             bool to_vlan,hal_ifindex_t * index);
 bool nas_os_sub_intf_name_to_intf_ifindex(char *sub_intf_name, hal_ifindex_t * index);
+
+bool nas_os_is_port_part_of_vlan(hal_ifindex_t vlan_ifindex, hal_ifindex_t port_ifindex);
+t_std_error nas_os_handle_static_mac_port_chg(char *vlan_name, char *mac_str, hal_mac_addr_t *mac,
+                                              uint32_t mbr_if_index);
 
 #ifdef __cplusplus
 }

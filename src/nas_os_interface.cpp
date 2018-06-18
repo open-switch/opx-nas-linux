@@ -33,6 +33,7 @@
 #include "nas_os_interface.h"
 #include "nas_os_if_priv.h"
 #include "nas_os_int_utils.h"
+#include "hal_if_mapping.h"
 
 #include "nas_nlmsg_object_utils.h"
 #include "ds_api_linux_interface.h"
@@ -174,15 +175,10 @@ static void _set_admin(cps_api_object_t obj, struct nlmsghdr *nlh, struct ifinfo
     }
 }
 
-extern "C" t_std_error nas_os_interface_set_attribute(cps_api_object_t obj,cps_api_attr_id_t id) {
+static t_std_error _set_intf_attribute (const char *vrf_name, hal_ifindex_t if_index,
+                                        cps_api_object_t obj,cps_api_attr_id_t id) {
     char buff[NL_MSG_INTF_BUFF_LEN];
     memset(buff,0,sizeof(buff));
-
-    cps_api_object_attr_t _ifix = cps_api_object_attr_get(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
-    if (_ifix==NULL) return (STD_ERR(NAS_OS,FAIL, 0));
-
-    hal_ifindex_t if_index = cps_api_object_attr_data_uint(_ifix);
-    if (if_index==0) return STD_ERR(NAS_OS,FAIL, 0);
 
     struct nlmsghdr *nlh = (struct nlmsghdr *) nlmsg_reserve((struct nlmsghdr *)buff,sizeof(buff),sizeof(struct nlmsghdr));
     struct ifinfomsg *ifmsg = (struct ifinfomsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct ifinfomsg));
@@ -191,13 +187,15 @@ extern "C" t_std_error nas_os_interface_set_attribute(cps_api_object_t obj,cps_a
     nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, 0, if_index);
 
     char if_name[HAL_IF_NAME_SZ+1];
-    if(cps_api_interface_if_index_to_name(if_index, if_name, sizeof(if_name)) == NULL) {
-        EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Failure getting interface name for %d", if_index);
+    memset(if_name, 0, sizeof(if_name));
+    if (nas_os_util_int_if_name_get(vrf_name, if_index, if_name) != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failure getting interface for VRF:%s %d",
+                   vrf_name, if_index);
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
 
     unsigned flags = 0;
-    if(nas_os_util_int_flags_get(if_name, &flags) == STD_ERR_OK) {
+    if(nas_os_util_int_flags_get(vrf_name, if_name, &flags) == STD_ERR_OK) {
         ifmsg->ifi_flags = flags;
     }
 
@@ -208,17 +206,88 @@ extern "C" t_std_error nas_os_interface_set_attribute(cps_api_object_t obj,cps_a
             {IF_INTERFACES_INTERFACE_ENABLED, _set_admin},
             {NAS_OS_IF_ALIAS, _set_ifalias },
             {DELL_IF_IF_INTERFACES_INTERFACE_PHYS_ADDRESS, _set_mac},
-
     };
 
     auto it =_funcs.find(id);
     if (it==_funcs.end()) return STD_ERR_OK;
     it->second(obj,nlh,ifmsg,sizeof(buff));
 
-    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT, nlh, buff,sizeof(buff)) != STD_ERR_OK) {
+    if(nl_do_set_request(vrf_name, nas_nl_sock_T_INT, nlh, buff,sizeof(buff)) != STD_ERR_OK) {
         EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Failure updating interface in kernel");
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
+    return STD_ERR_OK;
+}
+
+static t_std_error _set_router_intf_attribute (hal_ifindex_t if_index,
+                                               cps_api_object_t obj,cps_api_attr_id_t id) {
+    t_std_error rc = STD_ERR_OK;
+    interface_ctrl_t intf_ctrl;
+
+    if ((id != DELL_IF_IF_INTERFACES_INTERFACE_MTU) && (id != IF_INTERFACES_INTERFACE_ENABLED)) {
+        return STD_ERR_OK;
+    }
+    memset(&intf_ctrl, 0, sizeof(interface_ctrl_t));
+    intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
+    intf_ctrl.vrf_id = NAS_DEFAULT_VRF_ID;
+    intf_ctrl.if_index = if_index;
+
+    if ((dn_hal_get_interface_info(&intf_ctrl)) != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, INFO, "NAS-OS", "Failure getting interface for VRF:%u %d",
+                   intf_ctrl.vrf_id, intf_ctrl.if_index);
+        return STD_ERR_OK;
+    }
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS", "Intf attribute id:%lu success for VRF:%u intf:%d",
+               id, intf_ctrl.l3_intf_info.vrf_id, intf_ctrl.l3_intf_info.if_index);
+    if (intf_ctrl.l3_intf_info.if_index) {
+        /* Update the MTU and admin status on router interface as well when there is
+         * an update on the lower layer interface */
+        interface_ctrl_t router_intf_ctrl;
+        memset(&router_intf_ctrl, 0, sizeof(router_intf_ctrl));
+        router_intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
+        router_intf_ctrl.vrf_id = intf_ctrl.l3_intf_info.vrf_id;
+        router_intf_ctrl.if_index = intf_ctrl.l3_intf_info.if_index;
+
+        if ((dn_hal_get_interface_info(&router_intf_ctrl)) != STD_ERR_OK) {
+            EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failure getting interface for VRF:%u %d",
+                       router_intf_ctrl.vrf_id, router_intf_ctrl.if_index);
+            return (STD_ERR(NAS_OS,FAIL, 0));
+        }
+
+        rc = _set_intf_attribute(router_intf_ctrl.vrf_name, router_intf_ctrl.if_index, obj, id);
+        if (rc != STD_ERR_OK) {
+            EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failure updating interface:%d id:%lu in kernel",
+                       router_intf_ctrl.if_index, id);
+            return (STD_ERR(NAS_OS,FAIL, 0));
+        }
+        EV_LOGGING(NAS_OS, INFO, "NAS-OS", "Intf attribute id:%lu success for VRF:%s intf:%d(%s)",
+                   id, router_intf_ctrl.vrf_name, router_intf_ctrl.if_index, router_intf_ctrl.if_name);
+    }
+    return STD_ERR_OK;
+}
+
+extern "C" t_std_error nas_os_interface_set_attribute(cps_api_object_t obj,cps_api_attr_id_t id) {
+    t_std_error rc = STD_ERR_OK;
+
+    cps_api_object_attr_t _ifix = cps_api_object_attr_get(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
+    if (_ifix==NULL) return (STD_ERR(NAS_OS,FAIL, 0));
+
+    hal_ifindex_t if_index = cps_api_object_attr_data_uint(_ifix);
+    if (if_index==0) return STD_ERR(NAS_OS,FAIL, 0);
+
+    rc = _set_intf_attribute(NL_DEFAULT_VRF_NAME, if_index, obj, id);
+    if (rc != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failure updating interface:%d id:%lu in kernel", if_index, id);
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    rc = _set_router_intf_attribute(if_index, obj, id);
+    if (rc != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failure updating router interface:%d id:%lu in kernel",
+                   if_index, id);
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
     return STD_ERR_OK;
 }
 

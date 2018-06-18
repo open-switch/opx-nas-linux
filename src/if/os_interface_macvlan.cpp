@@ -35,7 +35,7 @@ bool INTERFACE::os_interface_macvlan_attrs_handler(if_details *details, cps_api_
 
     if (!strncmp(details->_info_kind, "macvlan", MV_LEN)) {
         details->_type = BASE_CMN_INTERFACE_TYPE_MACVLAN;
-        EV_LOGGING(NAS_OS,DEBUG,"NAS-LINUX-INTERFACE"," In IFLA_INFO_KIND macvlan set for %s index %d name:%s",
+        EV_LOGGING(NAS_OS,INFO,"NAS-LINUX-INTERFACE"," In IFLA_INFO_KIND macvlan set for %s index %d name:%s",
             details->_info_kind, details->_ifindex, details->if_name.c_str());
 
     }

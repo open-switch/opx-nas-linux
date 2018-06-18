@@ -32,6 +32,7 @@ extern "C" {
 Send an event using the event dispatchers socket API - decoupling the thread of netlink from event service
 */
 cps_api_return_code_t net_publish_event(cps_api_object_t obj);
+cps_api_return_code_t nas_os_publish_event(cps_api_object_t obj);
 
 #ifdef __cplusplus
 }

@@ -138,6 +138,24 @@ t_std_error nas_os_set_vrf (cps_api_object_t obj);
 t_std_error nas_os_del_vrf (cps_api_object_t obj);
 
 /**
+ * @brief : This binds the mgmt VRF with L3 interface in the kernel
+ *
+ * @param obj : CPS API object which contains VRF name and if name
+ *
+ * @return : STD_ERR_OK if successful, otherwise different error code
+ */
+t_std_error nas_os_bind_if_name_to_mgmt_vrf (cps_api_object_t obj);
+
+/**
+ * @brief : This unbinds the L3 interface from mgmt VRF in the kernel
+ *
+ * @param obj : CPS API object which contains VRF name and if name
+ *
+ * @return : STD_ERR_OK if successful, otherwise different error code
+ */
+t_std_error nas_os_unbind_if_name_from_mgmt_vrf (cps_api_object_t obj);
+
+/**
  * @brief : This binds the VRF with L3 interface in the kernel
  *
  * @param obj : CPS API object which contains VRF name and if name
@@ -154,6 +172,7 @@ t_std_error nas_os_bind_if_name_to_vrf (cps_api_object_t obj);
  * @return : STD_ERR_OK if successful, otherwise different error code
  */
 t_std_error nas_os_unbind_if_name_from_vrf (cps_api_object_t obj);
+
 
 #ifdef __cplusplus
 }

@@ -25,6 +25,9 @@ import ifindex_utils
 import dn_base_ip_tool
 import systemd.daemon
 import event_log as ev
+import dn_base_ip_tbl_tool
+import dn_base_ipsec_utils
+import threading
 
 iplink_cmd = '/sbin/ip'
 
@@ -40,6 +43,16 @@ _keys = {
     cps.key_from_name('target', 'base-ip/ipv4/address'): 'base-ip/ipv4/address',
     cps.key_from_name('target', 'base-ip/ipv6/address'): 'base-ip/ipv6/address',
 }
+
+_ip_unreach_key = cps.key_from_name('target', 'os-icmp-cfg/ip-unreachables-config')
+_proxy_arp_key = cps.key_from_name('target', 'base-route/proxy-arp-config')
+_ip_af = {
+    2 : 'ipv4',
+    10 : 'ipv6',
+}
+
+_ip_neigh_flush_key = cps.key_from_name('target', 'base-neighbor/flush')
+_ipv6_enable_status = {}
 
 def log_err(msg):
     ev.logging("BASE_IP",ev.ERR,"IP-CONFIG","","",0,msg)
@@ -77,6 +90,9 @@ def _get_proc_disable_ipv6_entry(dev):
 
 def _get_proc_ipv6_autoconf_entry(dev):
     return ['proc', 'sys', 'net', 'ipv6', 'conf', dev, 'autoconf']
+
+def _get_proc_ipv6_accept_dad_entry(dev):
+    return ['proc', 'sys', 'net', 'ipv6', 'conf', dev, 'accept_dad']
 
 def _get_proc_variable(path):
     try:
@@ -205,17 +221,25 @@ def _get_ip_objs(filt, resp):
         o.add_attr('base-ip/' + af + '/forwarding', fwd)
 
         if af == 'ipv6':
-            enabled = 1
-            disable_ipv6 = _get_proc_variable(_get_proc_disable_ipv6_entry(name))
-            if disable_ipv6 == -1 or disable_ipv6 == 1:
-                enabled = 0
+            enabled = _ipv6_enable_status.get(name, None)
+            log_msg = 'IPv6 intf-name:' + name + ' enabled status in DB:' + str(enabled)
+            log_info(log_msg)
+            if enabled is None:
+                enabled = 1
+                disable_ipv6 = _get_proc_variable(_get_proc_disable_ipv6_entry(name))
+                if disable_ipv6 == -1 or disable_ipv6 == 1:
+                    enabled = 0
             o.add_attr('base-ip/' + af + '/enabled', enabled)
             autoconf = _get_proc_variable(_get_proc_ipv6_autoconf_entry(name))
             if autoconf == -1 or autoconf == 0:
                 autoconf = 0
             o.add_attr('base-ip/' + af + '/autoconf', autoconf)
+            accept_dad = _get_proc_variable(_get_proc_ipv6_accept_dad_entry(name))
+            if accept_dad != 1 and accept_dad != -1:
+                o.add_attr('base-ip/' + af + '/accept-dad', accept_dad + 1)
+
             log_msg = 'IPv6 intf-name:' + name + ' fwd status:' + str(fwd) + ' ipv6 status:' \
-                       + str(enabled) + 'auto conf:' + str(autoconf)
+                       + str(enabled) + 'auto conf:' + str(autoconf) + 'accept_dad:' + str(accept_dad)
             log_info(log_msg)
         else:
             log_msg = 'IPv4 intf-name:' + name + ' fwd status:' + str(fwd)
@@ -289,6 +313,13 @@ def trans_cb(methods, params):
         print "Missing keys for request ", obj
         return False
 
+    vrf_name = 'default'
+    try:
+       vrf_name = obj.get_attr_data('base-ip/' + af + '/vrf-name')
+    except:
+       # VRF-name is optional attribute.
+       pass
+
     addr = ""
 
     try:
@@ -300,8 +331,15 @@ def trans_cb(methods, params):
                         disable_ipv6 = 0
                     else:
                         disable_ipv6 = 1
-                    ret_val = _set_proc_variable(_get_proc_disable_ipv6_entry(name), str(disable_ipv6))
-                    log_msg = 'CPS set for intf-name:' + name + ' ipv6 status:' + str(enabled) + 'ret_val:' + str(ret_val)
+                    _ipv6_enable_status[name] = enabled
+                    if vrf_name == 'default':
+                        ret_val = _set_proc_variable(_get_proc_disable_ipv6_entry(name),\
+                                                     str(disable_ipv6))
+                    else:
+                        ret_val = dn_base_ip_tool.disable_ipv6_config(name, str(disable_ipv6), vrf_name)
+
+                    log_msg = 'CPS set for VRF:' + vrf_name + 'intf-name:' + name + ' ipv6 status:' +\
+                               str(enabled) + 'ret_val:' + str(ret_val)
                     log_info(log_msg)
                     if ret_val == -1:
                         return False
@@ -309,8 +347,30 @@ def trans_cb(methods, params):
                     pass
                 try:
                     autoconf = obj.get_attr_data('base-ip/' + af + '/autoconf')
-                    ret_val = _set_proc_variable(_get_proc_ipv6_autoconf_entry(name), str(autoconf))
-                    log_msg = 'CPS set for intf-name:' + name + ' ipv6 auto conf status:' + str(autoconf) + 'ret_val:' + str(ret_val)
+                    if vrf_name == 'default':
+                        ret_val = _set_proc_variable(_get_proc_ipv6_autoconf_entry(name), str(autoconf))
+                    else:
+                        ret_val = dn_base_ip_tool.ipv6_autoconf_config(name, autoconf, vrf_name)
+                    log_msg = 'CPS set for VRF:' + vrf_name + 'intf-name:' + name + ' ipv6 auto conf status:'\
+                              + str(autoconf) + 'ret_val:' + str(ret_val)
+                    log_info(log_msg)
+                    if ret_val == -1:
+                        return False
+                except:
+                    pass
+                try:
+                    accept_dad = obj.get_attr_data('base-ip/' + af + '/accept-dad')
+                    # Check the valid enum values
+                    if accept_dad not in [1,2,3]:
+                        return False
+                    # CPS enum starts from 1 but kernel enum starts from 0
+                    accept_dad = accept_dad - 1
+                    if vrf_name == 'default':
+                        ret_val = _set_proc_variable(_get_proc_ipv6_accept_dad_entry(name), str(accept_dad))
+                    else:
+                        ret_val = dn_base_ip_tool.ipv6_accept_dad_config(name, str(accept_dad), vrf_name)
+                    log_msg = 'CPS set for VRF:' + vrf_name + 'intf-name:' + name + ' ipv6 accept DAD status:'\
+                              + str(accept_dad) + 'ret_val:' + str(ret_val)
                     log_info(log_msg)
                     if ret_val == -1:
                         return False
@@ -319,8 +379,12 @@ def trans_cb(methods, params):
 
             try:
                 fwd = obj.get_attr_data('base-ip/' + af + '/forwarding')
-                ret_val = _set_proc_variable(_get_proc_fwd_entry(name, af), str(fwd))
-                log_msg = 'CPS set for intf-name:' + name + ' fwd status:' + str(fwd) + 'ret_val:' + str(ret_val)
+                if vrf_name == 'default':
+                    ret_val = _set_proc_variable(_get_proc_fwd_entry(name, af), str(fwd))
+                else:
+                    ret_val = dn_base_ip_tool.ip_forwarding_config(af, name, str(fwd), vrf_name)
+                log_msg = 'CPS set for VRF:' + vrf_name + 'intf-name:' + name + ' fwd status:' + str(fwd)\
+                          + 'ret_val:' + str(ret_val)
                 log_info(log_msg)
                 if ret_val == -1:
                     return False
@@ -330,34 +394,195 @@ def trans_cb(methods, params):
 
         if params['operation'] == 'create' and obj.get_key() == _keys['base-ip/' + af + '/address']:
             addr = _create_ip_and_prefix_from_obj(obj, af)
-
-            log_msg = 'Attempting to add address:' + addr + name
-            log_info(log_msg)
-            if dn_base_ip_tool.add_ip_addr(addr, name):
+            log_info("Attempting to add address:%s intf:%s vrf:%s"% (addr, name, vrf_name))
+            if dn_base_ip_tool.add_ip_addr(addr, name, vrf_name):
                 return True
-            log_msg = log_msg + ' failed!'
-            log_err(log_msg)
+            log_err("Attempting to add address:%s intf:%s vrf:%s failed"% (addr, name, vrf_name))
 
         if params['operation'] == 'delete' and obj.get_key() == _keys['base-ip/' + af + '/address']:
             addr = _create_ip_and_prefix_from_obj(obj, af)
-            log_msg = 'Attempting to delete address:' + addr + name
-            log_info(log_msg)
-            if dn_base_ip_tool.del_ip_addr(addr, name):
+            log_info("Attempting to del address:%s intf:%s vrf:%s"% (addr, name, vrf_name))
+            if dn_base_ip_tool.del_ip_addr(addr, name, vrf_name):
                 return True
-            log_msg = log_msg + ' failed!'
-            log_err(log_msg)
+            log_err("Attempting to del address:%s intf:%s vrf:%s failed"% (addr, name, vrf_name))
     except Exception as e:
-        log_msg = 'Faild to commit operation' + e + params
-        log_err(log_msg)
+        log_err("Faild to commit operation exception:%s params:%s"% (e, params))
 
     return False
+
+def ip_unreach_attr(t):
+    return 'os-icmp-cfg/ip-unreachables-config/input/' + t
+
+def set_ip_unreach_cb(methods, params):
+    obj = cps_object.CPSObject(obj=params['change'])
+
+    if params['operation'] != 'rpc':
+        log_err('oper is not RPC')
+        return False
+
+    operation = ip_unreach_attr('operation')
+    enable = ip_unreach_attr('enable')
+    af = ip_unreach_attr('af')
+    ifname = ip_unreach_attr('ifname')
+
+    dev = None
+
+    try:
+        operation = obj.get_attr_data(operation)
+        af = obj.get_attr_data(af)
+        enable = obj.get_attr_data(enable)
+    except ValueError as e:
+        log_msg = 'Missing mandatory attribute ' + e.args[0]
+        log_err(log_msg)
+        return False
+
+    # Operation types
+    #BASE_CMN_OPERATION_TYPE_CREATE=1
+    #BASE_CMN_OPERATION_TYPE_DELETE=2
+    #BASE_CMN_OPERATION_TYPE_UPDATE=3
+    is_add = True;
+    if operation == 3:
+        log_msg = 'Update operation is not supported!'
+        log_err(log_msg)
+        return False
+    elif operation == 2:
+       is_add = False;
+
+    if af != socket.AF_INET and af != socket.AF_INET6:
+        log_msg = 'Invalid address family' + str(af)
+        log_err(log_msg)
+        return False
+
+    try:
+        dev = obj.get_attr_data(ifname)
+    except:
+        pass
+        log_info('Ifname is not present in the object')
+
+    if dn_base_ip_tbl_tool.ip_tables_unreach_rule(is_add, enable, af, dev):
+        return True
+    log_msg = 'Failed to execute IP unreachable request ' + str(is_add) + str(af) \
+              + 'enable' + str(enable) + 'ifname' + ifname
+    log_err(log_msg)
+
+    return False
+
+def ip_neigh_flush_attr(t):
+    return 'base-neighbor/flush/input/' + t
+
+def _create_neigh_flush_ip_and_prefix_from_attr(ip_addr, prefix_len, af):
+    addr = binascii.unhexlify(ip_addr)
+    addr = socket.inet_ntop(af, addr)
+    if prefix_len is not None:
+        addr = addr + '/' + str(prefix_len)
+    return addr
+
+def flush_ip_neigh_cb(methods, params):
+    obj = cps_object.CPSObject(obj=params['change'])
+
+    if params['operation'] != 'rpc':
+        log_err('oper is not RPC')
+        return False
+
+    vrf_name = ip_neigh_flush_attr('vrf-name')
+    af = ip_neigh_flush_attr('af')
+    ifname = ip_neigh_flush_attr('ifname')
+    ip_addr = ip_neigh_flush_attr('ip')
+    prefix_len = ip_neigh_flush_attr('prefix-len')
+
+    dev = None
+
+    try:
+        vrf_name = obj.get_attr_data(vrf_name)
+    except ValueError as e:
+        log_msg = 'Missing mandatory attribute ' + e.args[0]
+        log_err(log_msg)
+        return False
+
+    try:
+        af = obj.get_attr_data(af)
+    except:
+        pass
+        af = socket.AF_INET
+        log_info('Address family is not present in the object')
+
+    if af != socket.AF_INET and af != socket.AF_INET6:
+        log_msg = 'Invalid address family' + str(af)
+        log_err(log_msg)
+        return False
+
+    try:
+        dev = obj.get_attr_data(ifname)
+    except:
+        pass
+        dev = None
+        log_info('Ifname is not present in the object')
+
+    try:
+        ip_addr = obj.get_attr_data(ip_addr)
+    except:
+        pass
+        ip_addr = None
+
+    try:
+        prefix_len = obj.get_attr_data(prefix_len)
+    except:
+        pass
+        prefix_len = None
+
+    addr = None
+    if ip_addr is not None:
+        addr = _create_neigh_flush_ip_and_prefix_from_attr(ip_addr, prefix_len, af)
+
+    if dn_base_ip_tool.flush_ip_neigh(_ip_af[af], dev, addr, str(vrf_name)):
+        return True
+    log_msg = 'Failed to execute IP neigh flush request vrf-name:' + str(vrf_name)\
+              + ' af:' + str(af) + ' ifname:' + str(dev)\
+              + ' to addr:' + str(addr)
+    log_err(log_msg)
+
+    return False
+
+def proxy_arp_attr(t):
+    return 'base-route/proxy-arp-config/' + t
+
+def set_proxy_arp_cb(methods, params):
+    obj = cps_object.CPSObject(obj=params['change'])
+
+    vrf_name = proxy_arp_attr('vrf-name')
+    ifname = proxy_arp_attr('ifname')
+
+    vrf = None
+    dev = None
+
+    try:
+        vrf = obj.get_attr_data(vrf_name)
+        dev = obj.get_attr_data(ifname)
+    except ValueError as e:
+        log_msg = 'Missing mandatory attribute ' + e.args[0]
+        log_err(log_msg)
+        return False
+
+    log_info("Proxy ARP configuration on VRF:%s intf:%s operation:%s"% (vrf, dev, params['operation']))
+    try:
+        if params['operation'] == 'create':
+            if dn_base_ip_tool.proxy_arp_config(dev, 1, vrf):
+                return True
+        if params['operation'] == 'delete':
+            if dn_base_ip_tool.proxy_arp_config(dev, 0, vrf):
+                return True
+    except Exception as e:
+        log_err("Faild to commit operation exception:%s params:%s"% (e, params))
+
+    log_err("Proxy ARP configuration failed on VRF:%s intf:%s operation:%s"% (vrf, dev, params['operation']))
+    return False
+
 
 def sigterm_hdlr(signum, frame):
     global shutdown
     shutdown = True
 
 if __name__ == '__main__':
-
     shutdown = False
 
     # Install signal handlers.
@@ -380,6 +605,39 @@ if __name__ == '__main__':
         if i.find('base-ip') == -1:
             continue
         cps.obj_register(handle, _keys[i], d)
+
+    # IPSec Object registration
+    dn_base_ipsec_utils.obj_reg()
+
+    # Set IPSec Authentication and Encryption keys type as string
+    dn_base_ipsec_utils.add_attr_type()
+
+    d = {}
+    d['transaction'] = set_ip_unreach_cb
+    cps.obj_register(handle, _ip_unreach_key, d)
+
+    log_msg = 'CPS IP unreachable registration done'
+    log_info(log_msg)
+
+    d = {}
+    d['transaction'] = flush_ip_neigh_cb
+    cps.obj_register(handle, _ip_neigh_flush_key, d)
+
+    log_msg = 'CPS IP neighbor flush registration done'
+    log_info(log_msg)
+
+    d = {}
+    d['transaction'] = set_proxy_arp_cb
+    cps.obj_register(handle, _proxy_arp_key, d)
+
+    log_msg = 'CPS Proxy ARP registration done'
+    log_info(log_msg)
+
+    #Start interface event handle thread to program LLA into the kernel.
+    lla_cfg_thread = threading.Thread(target=dn_base_ip_tool.handle_interface_event_for_lla_cfg,\
+                                      name="IPv6_Intf_LLA_Cfg")
+    lla_cfg_thread.setDaemon(True)
+    lla_cfg_thread.start()
 
     # Notify systemd: Daemon is ready
     systemd.daemon.notify("READY=1")

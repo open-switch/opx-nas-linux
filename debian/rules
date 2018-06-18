@@ -1,5 +1,5 @@
 #!/usr/bin/make -f
 
 %:
-	dh $@  --with autoreconf,systemd --parallel
+	DH_VERBOSE=1 dh $@  --with autoreconf,systemd --parallel
 

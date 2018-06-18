@@ -52,7 +52,7 @@ t_std_error nas_os_util_int_mtu_get(const char *name, unsigned int *mtu);
 
 t_std_error nas_os_util_int_get_if(cps_api_object_t obj, hal_ifindex_t ifix);
 
-t_std_error nas_os_util_int_flags_get(const char *name, unsigned *flags);
+t_std_error nas_os_util_int_flags_get(const char *vrf_name, const char *name, unsigned *flags);
 
 t_std_error nas_os_util_int_get_if_details(const char *name, cps_api_object_t obj);
 

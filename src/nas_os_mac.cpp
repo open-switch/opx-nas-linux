@@ -41,8 +41,10 @@
 #define NL_MSG_BUFF_LEN 4096
 #define MAC_STRING_LEN 20
 
+static std_rw_lock_t static_mac_lock = PTHREAD_RWLOCK_INITIALIZER;
 static std::mutex _mac_ls_mutex;
 static auto _if_mac_learn_state = new std::unordered_map<hal_ifindex_t, bool> ;
+static auto _static_mac_list = *new std::unordered_map<std::string, uint32_t>;
 
 static bool nas_os_update_mac_learning(hal_ifindex_t ifindex, bool enable){
     char buff[NL_MSG_BUFF_LEN];
@@ -86,9 +88,60 @@ bool nas_os_update_tagged_intf_mac_learning(hal_ifindex_t ifindex, hal_ifindex_t
     }
     return false;
 }
-
+void nas_os_dump_static_macs() {
+    for(auto& itr : _static_mac_list)
+        EV_LOGGING(NAS_OS,ERR,"L2-MAC-DUMP","Key:%s mbr:%d", itr.first.c_str(), itr.second);
+}
 
 extern "C"{
+
+t_std_error nas_os_handle_static_mac_port_chg(char *vlan_name, char *mac_str, hal_mac_addr_t *mac,
+                                              uint32_t mbr_if_index) {
+    std::string key = std::string(vlan_name)+std::string(mac_str);
+    uint32_t cfg_mbr_if_index = 0;
+    std_rw_lock_read_guard l(&static_mac_lock);
+    auto itr = _static_mac_list.find(key);
+    if (itr == _static_mac_list.end()) {
+        EV_LOGGING(NAS_OS,INFO,"L2-MAC-CHG", "Static MAC doesnt exist - MAC VLAN:%s MAC:%s mbr:%d",
+                   vlan_name, mac_str, mbr_if_index);
+        return STD_ERR_OK;
+    }
+    if (itr->second == mbr_if_index) {
+        EV_LOGGING(NAS_OS,INFO,"L2-MAC-CHG", "Static MAC exists but port doesnt change - MAC VLAN:%s MAC:%s mbr:%d",
+                   vlan_name, mac_str, mbr_if_index);
+        return STD_ERR_OK;
+    }
+    EV_LOGGING(NAS_OS,INFO,"L2-MAC-CHG", "Port-chg for MAC VLAN:%s MAC:%s cfg-mbr:%d chg-mbr:%d",
+               vlan_name, mac_str, itr->second, mbr_if_index);
+    cfg_mbr_if_index = itr->second;;
+
+    char buff[NL_MSG_BUFF_LEN];
+    memset(buff,0,sizeof(nlmsghdr));
+
+    struct nlmsghdr *nlh = (struct nlmsghdr *) nlmsg_reserve((struct nlmsghdr *)buff,sizeof(buff),sizeof(struct nlmsghdr));
+    struct ndmsg *req = (struct ndmsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct ndmsg));
+    memset(req, 0, sizeof(struct ndmsg));
+
+    req->ndm_family = PF_BRIDGE;
+    req->ndm_state =  NUD_REACHABLE | NUD_NOARP;
+
+    req->ndm_flags = NTF_MASTER;
+
+    req->ndm_ifindex = cfg_mbr_if_index;
+
+    nlh->nlmsg_flags = NLM_F_REQUEST;
+
+    nlh->nlmsg_flags |= NLM_F_CREATE | NLM_F_APPEND;
+    nlh->nlmsg_type = RTM_NEWNEIGH;
+
+    nlmsg_add_attr(nlh,sizeof(buff), NDA_LLADDR, mac, sizeof(hal_mac_addr_t));
+
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_NEI,nlh, buff, sizeof(buff)) != STD_ERR_OK){
+        EV_LOGGING(NAS_OS,ERR,"L2-MAC-CHG", "FAILED Port-chg for MAC VLAN:%s MAC:%s cfg:%d chg-mbr:%d",
+                   vlan_name, mac_str, cfg_mbr_if_index, mbr_if_index);
+    }
+    return STD_ERR_OK;
+}
 
 t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
 
@@ -158,6 +211,23 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
     nlmsg_add_attr(nlh,sizeof(buff),NDA_LLADDR,(void *)cps_api_object_attr_data_bin(mac_attr),sizeof(hal_mac_addr_t));
     hal_mac_addr_t *mac_addr = (hal_mac_addr_t*)cps_api_object_attr_data_bin(mac_attr);
     char mac_buff[MAC_STRING_LEN];
+    if (is_static) {
+        std_rw_lock_write_guard l(&static_mac_lock);
+        char vlan_name[HAL_IF_NAME_SZ+1];
+        snprintf(vlan_name, HAL_IF_NAME_SZ, "br%d", vid);
+        std_mac_to_string(mac_addr,mac_buff,sizeof(mac_buff));
+        std::string key = std::string(vlan_name)+std::string(mac_buff);
+        EV_LOGGING(NAS_OS,INFO,"NAS-L2-MAC","Op:%s MAC:%s VLAN:%s Key:%s mbr:%d",
+                   ((op == cps_api_oper_DELETE) ? "Del" : "Add/Set"), mac_buff, vlan_name, key.c_str(), ifindex);
+        if(op == cps_api_oper_DELETE) {
+            auto itr = _static_mac_list.find(key);
+            if (itr != _static_mac_list.end()) {
+                _static_mac_list.erase(itr);
+            }
+        } else {
+            _static_mac_list[key] = ifindex;
+        }
+    }
 
     if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_NEI,nlh, buff, sizeof(buff)) != STD_ERR_OK){
         EV_LOG(ERR,NAS_OS,0,"NAS-L2-MAC","Failed to %s mac address entry %s for Interface %d "

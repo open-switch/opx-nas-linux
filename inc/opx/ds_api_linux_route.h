@@ -35,7 +35,7 @@ extern "C" {
  */
 t_std_error ds_api_linux_route_init(cps_api_operation_handle_t handle);
 
-bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t data, void *context);
+bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t data, void *context, uint32_t vrf_id);
 
 bool nl_request_existing_routes(int sock, int family, int req_id);
 

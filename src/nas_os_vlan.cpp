@@ -36,6 +36,7 @@
 #include "nas_os_lag.h"
 #include "os_if_utils.h"
 #include "nas_os_if_conversion_utils.h"
+#include "nas_os_l3_utils.h"
 
 #include <sys/socket.h>
 #include <stdio.h>
@@ -244,6 +245,11 @@ t_std_error nas_os_del_vlan(cps_api_object_t obj)
         }
     }
     EV_LOG(INFO, NAS_OS, ev_log_s_MINOR, "NAS-OS", "DEL Bridge name %s index %d", br_name, if_index);
+    /* Remove the VRF association if exists before deleting the VLAN interface */
+    if (nas_remove_intf_to_vrf_binding(if_index) != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS-LAG", "Error deleting VRF association from VLAN if-index:%d",
+                   if_index);
+    }
 
     return nas_os_del_interface(if_index);
 }
@@ -338,7 +344,7 @@ static t_std_error nas_os_add_t_port_to_os(int vlan_id, const char *vlan_name, i
 
     if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK ||
         (*vlan_index = cps_api_interface_name_to_if_index(vlan_name)) == 0) {
-        EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "Failed to add tagged intf %d in kernel", vlan_name);
+        EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "Failed to add tagged intf %s in kernel", vlan_name);
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
     return STD_ERR_OK;

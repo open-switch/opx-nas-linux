@@ -34,7 +34,10 @@ typedef enum _nas_rt_msg_type {
 }nas_rt_msg_type;
 
 t_std_error nas_os_update_vrf(cps_api_object_t obj, nas_rt_msg_type m_type);
+t_std_error nas_os_handle_intf_to_mgmt_vrf(cps_api_object_t obj, nas_rt_msg_type m_type);
 t_std_error nas_os_handle_intf_to_vrf(cps_api_object_t obj, nas_rt_msg_type m_type);
+const char* nas_os_get_vrf_name(uint32_t vrf_id);
+t_std_error nas_remove_intf_to_vrf_binding(uint32_t if_index);
 #ifdef __cplusplus
 }
 #endif

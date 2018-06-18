@@ -16,6 +16,8 @@
 import subprocess
 import re
 import os
+import cps
+import cps_object
 
 iplink_cmd = '/sbin/ip'
 VXLAN_PORT = '4789'
@@ -360,15 +362,21 @@ def ipv6_accept_dad_config(if_name, accept_dad, vrf_name='default'):
         return True
     return False
 
-def flush_ip_neigh(af, dev, vrf_name='default'):
+def flush_ip_neigh(af, dev, addr=None, vrf_name='default'):
     res = []
     neigh_af = '-4'
     if af == 'ipv6':
         neigh_af = '-6'
 
     if vrf_name == 'default':
-        if dev is not None:
+        if addr is not None and dev is not None:
+            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'to', str(addr), 'dev', dev], res) == 0:
+                return True
+        elif dev is not None:
             if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'dev', dev], res) == 0:
+                return True
+        elif addr is not None:
+            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'to', str(addr)], res) == 0:
                 return True
         else:
             if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'all'], res) == 0:
@@ -377,14 +385,77 @@ def flush_ip_neigh(af, dev, vrf_name='default'):
         return False
 
     # Flush the neighbors present in the non-default VRF
-    if dev is not None:
+    if addr is not None and dev is not None:
+        if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
+                   'neigh', 'flush', 'to', str(addr), 'dev', dev], res) == 0:
+            return True
+    elif dev is not None:
         if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
                    'neigh', 'flush', 'dev', dev], res) == 0:
+            return True
+    elif addr is not None:
+        if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
+                   'neigh', 'flush', 'to', str(addr)], res) == 0:
             return True
     else:
         if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
                    'neigh', 'flush', 'all'], res) == 0:
             return True
     return False
+
+def proxy_arp_config(if_name, proxy_arp_val, vrf_name='default'):
+    res = []
+    if vrf_name == 'default':
+        if run_command(['sysctl', '-w', 'net.ipv4.conf.'+if_name+'.proxy_arp='+str(proxy_arp_val)], res) == 0:
+            return True
+        return False
+
+    if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'sysctl', '-w',\
+                   'net.ipv4.conf.'+if_name+'.proxy_arp='+str(proxy_arp_val)], res) == 0:
+        return True
+    return False
+
+_linux_intf_key = cps.key_from_name('observed', 'base-if-linux/if/interfaces/interface')
+def handle_interface_event_for_lla_cfg():
+    _intf_evt_handle = cps.event_connect()
+    cps.event_register(_intf_evt_handle, _linux_intf_key)
+
+    while True:
+        intf_evt = cps.event_wait(_intf_evt_handle)
+        obj = cps_object.CPSObject(obj=intf_evt)
+        if obj is None:
+            continue
+
+        if not 'operation' in intf_evt.keys():
+            continue
+        if (intf_evt['operation'] != 'create'):
+            continue
+
+        vrf_name = None
+        intf_name = None
+        intf_mac = None
+        intf_admin_status = 0
+
+        try:
+            vrf_name = obj.get_attr_data('ni/if/interfaces/interface/bind-ni-name')
+            intf_name = obj.get_attr_data('if/interfaces/interface/name')
+            intf_mac = obj.get_attr_data('dell-if/if/interfaces/interface/phys-address')
+            intf_admin_status = obj.get_attr_data('if/interfaces/interface/enabled')
+            # if admin status is not enabled, ignore the interface event
+            if intf_admin_status != 1:
+                continue
+        except ValueError as e:
+            continue
+
+        mac_list= intf_mac.split(':')
+        # Create the LLA
+        lla_addr = 'fe80::'+hex(int(mac_list[0],16)^2)[2:]+mac_list[1]+':'+mac_list[2]+\
+                   'ff:fe'+mac_list[3]+':'+mac_list[4]+mac_list[5]
+        lla_addr_with_prefix_len = lla_addr + '/64'
+        # Configuring the LLA on the L2 intf will lead to error, pass the exception
+        try:
+            add_ip_addr(lla_addr_with_prefix_len, intf_name,vrf_name)
+        except:
+            pass
 
 

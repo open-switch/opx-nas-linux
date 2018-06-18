@@ -36,6 +36,8 @@
 #include "dell-base-routing.h"
 #include "os-routing-events.h"
 #include "cps_class_map.h"
+#include "nas_os_l3_utils.h"
+#include "hal_if_mapping.h"
 
 #include <sys/socket.h>
 #include <stdbool.h>
@@ -78,13 +80,14 @@ bool nl_neigh_get_all_request(int sock, int family,int req_id) {
             req_id,&ifm,sizeof(ifm));
 }
 
-bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context) {
+bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context, uint32_t vrf_id) {
     struct ndmsg    *ndmsg = (struct ndmsg *)NLMSG_DATA(hdr);
     struct rtattr   *rtatp = NULL;
     unsigned int     attrlen;
     char             addr_str[INET6_ADDRSTRLEN];
     bool             is_bridge = false, admin_status = false;
     t_std_error      rc = STD_ERR_OK;
+    char if_name[HAL_IF_NAME_SZ+1];
 
     if(hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*ndmsg)))
         return false;
@@ -93,6 +96,12 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         (ndmsg->ndm_family != AF_BRIDGE)) {
         return false;
     }
+    /* Ignore the FDB netlink events with bridge from non-default VRF, since non-default VRFs
+     * are used only for L3 operations. */
+    if ((vrf_id != NAS_DEFAULT_VRF_ID) && (ndmsg->ndm_family == AF_BRIDGE)) {
+        return false;
+    }
+
     char intf_name[HAL_IF_NAME_SZ+1];
     if(cps_api_interface_if_index_to_name(ndmsg->ndm_ifindex, intf_name,
                                           sizeof(intf_name))!=NULL) {
@@ -123,17 +132,20 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         return false;
     }
 
-    if (context) {
-        cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_VRF_NAME, (char*)context,
-                                strlen((char*)context)+1);
+    /* Get VRF name from VRF id */
+    const char *vrf_name = nas_os_get_vrf_name(vrf_id);
+    if (vrf_name == NULL) {
+        return false;
     }
+    cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_VRF_NAME, vrf_name, strlen(vrf_name)+1);
+    cps_api_object_attr_add_u32(obj, OS_RE_BASE_ROUTE_OBJ_NBR_VRF_ID, vrf_id);
     cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_NBR_FLAGS,ndmsg->ndm_flags);
     cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_NBR_STATE,ndmsg->ndm_state);
     cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_NBR_AF,ndmsg->ndm_family);
 
-    EV_LOGGING(NETLINK, INFO,"NH-EVENT","Op:%s fly:%s(%d) flags:0x%x state:%s(%d) ifx:%d",
+    EV_LOGGING(NETLINK, INFO,"NH-EVENT","Op:%s VRF: %s(%d) family:%s(%d) flags:0x%x state:%s(%d) ifx:%d",
            ((rt_msg_type == RTM_NEWNEIGH) ? "Add-NH" :
-            ((rt_msg_type == RTM_DELNEIGH) ? "Del-NH" : "Get-NH")),
+            ((rt_msg_type == RTM_DELNEIGH) ? "Del-NH" : "Get-NH")), vrf_name, vrf_id,
            ((ndmsg->ndm_family == AF_INET) ? "IPv4" : "IPv6"), ndmsg->ndm_family,
            ndmsg->ndm_flags, nl_neigh_state_to_str(ndmsg->ndm_state), ndmsg->ndm_state,
            ndmsg->ndm_ifindex);
@@ -145,6 +157,7 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
 
     hal_mac_addr_t *mac_addr=NULL;
     int ifix;
+    char mac_buff[MAC_STRING_LEN];
     for (; RTA_OK(rtatp, attrlen); rtatp = RTA_NEXT (rtatp, attrlen)) {
 
         if(rtatp->rta_type == NDA_DST) {
@@ -162,14 +175,12 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
 
         if(rtatp->rta_type == NDA_LLADDR) {
             mac_addr = (hal_mac_addr_t *) nla_data((struct nlattr*)rtatp);
-            char mac_buff[MAC_STRING_LEN];
             memset(mac_buff, '\0', sizeof(mac_buff));
             std_mac_to_string((const hal_mac_addr_t *)mac_addr ,mac_buff,sizeof(mac_buff));
             cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_NBR_MAC_ADDR, mac_buff, strlen(mac_buff)+1);
             EV_LOGGING(NETLINK, INFO,"NH-EVENT","NextHop MAC:%s", mac_buff);
         }
         if(rtatp->rta_type == NDA_MASTER) {
-            char if_name[HAL_IF_NAME_SZ+1];
             ifix = *(int *)nla_data((struct nlattr*)rtatp);
             cps_api_interface_if_index_to_name(ifix,if_name,  sizeof(if_name));
 
@@ -183,19 +194,44 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
             if(nas_os_mac_get_learning(ndmsg->ndm_ifindex))
                 cps_api_object_attr_add_u32(obj,OS_RE_BASE_ROUTE_OBJ_NBR_MBR_IFINDEX,mbr_ifindex);
             is_bridge = true;
-            EV_LOGGING(NETLINK, INFO,"NH-EVENT","VLAN:%s(%d) mbr:%s(%d)", if_name, ifix, mbr_name, mbr_ifindex);
+            EV_LOGGING(NETLINK, INFO,"NH-EVENT","VLAN:%s(%d) mbr:%s(%d) tag-intf:%d",
+                       if_name, ifix, mbr_name, mbr_ifindex, ndmsg->ndm_ifindex);
         }
     }
     /* Incase of the bridge FDB(L2 FDB Nbr), the VLAN and port information have been added into
      * the CPS object above and for non-bridge case(IP nbr), add the L3 out intf below. */
-    if (is_bridge == false)
+    if (is_bridge == false) {
         cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_NBR_IFINDEX,ndmsg->ndm_ifindex);
-    else {
+        uint32_t lower_layer_intf = 0;
+        if (vrf_id == NAS_DEFAULT_VRF_ID) {
+            lower_layer_intf = ndmsg->ndm_ifindex;
+        } else {
+            interface_ctrl_t intf_ctrl;
+            memset(&intf_ctrl, 0, sizeof(interface_ctrl_t));
+            intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
+            intf_ctrl.vrf_id = vrf_id;
+            intf_ctrl.if_index = ndmsg->ndm_ifindex;
+
+            if ((dn_hal_get_interface_info(&intf_ctrl)) != STD_ERR_OK) {
+                EV_LOGGING(NETLINK, ERR,"NH-NBR-EVENT", "VRF-id:%d if-index:%d not present in intf DB",
+                           vrf_id, ndmsg->ndm_ifindex);
+                return false;
+            }
+            if(intf_ctrl.int_type == nas_int_type_MACVLAN) {
+                lower_layer_intf = intf_ctrl.l3_intf_info.if_index;
+            }
+        }
+        cps_api_object_attr_add_u32(obj, OS_RE_BASE_ROUTE_OBJ_NBR_LOWER_LAYER_IF, lower_layer_intf);
+    } else {
         // Ignore self-mac address during FDB learning.
         if(ndmsg->ndm_family == AF_BRIDGE) {
+            if ((ndmsg->ndm_state == NUD_NOARP) && (rt_msg_type != RTM_DELNEIGH)) {
+                nas_os_handle_static_mac_port_chg(if_name, mac_buff, mac_addr, ndmsg->ndm_ifindex);
+            }
+
             hal_mac_addr_t self_mac;
             if(mac_addr && os_intf_mac_addr_get(ifix, self_mac) == STD_ERR_OK) {
-                  if(!memcmp(mac_addr,self_mac, HAL_MAC_ADDR_LEN)) {
+                if(!memcmp(mac_addr,self_mac, HAL_MAC_ADDR_LEN)) {
                     EV_LOGGING(NETLINK, INFO,"NH-EVENT","Self mac learn on %d, ignore", ifix);
                     return false;
                 }
@@ -209,20 +245,20 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     return true;
 }
 
-static bool process_neigh_and_add_to_list(int sock, int rt_msg_type, struct nlmsghdr *nh, void *context) {
+static bool process_neigh_and_add_to_list(int sock, int rt_msg_type, struct nlmsghdr *nh, void *context, uint32_t vrf_id) {
     cps_api_object_list_t *list = (cps_api_object_list_t*) context;
     cps_api_object_t obj=cps_api_object_create();
     if (!cps_api_object_list_append(*list,obj)) {
         cps_api_object_delete(obj);
         return false;
     }
-    if (!nl_to_neigh_info(nh->nlmsg_type,nh,obj,context)) {
+    if (!nl_to_neigh_info(nh->nlmsg_type,nh,obj,context, vrf_id)) {
         return false;
     }
     return true;
 }
 
-static bool read_all_neighbours(cps_api_object_list_t list) {
+static bool read_all_neighbours(cps_api_object_list_t list, uint32_t vrf_id) {
     int sock = nas_nl_sock_create(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_NEI,false);
     if (sock<0) return false;
 
@@ -232,14 +268,14 @@ static bool read_all_neighbours(cps_api_object_list_t list) {
         char buff[1024];
         rc = netlink_tools_process_socket(sock,
                 process_neigh_and_add_to_list,&list,
-                buff,sizeof(buff),&RANDOM_ID,NULL);
+                buff,sizeof(buff),&RANDOM_ID,NULL, vrf_id);
     }
 
     if (rc && nl_neigh_get_all_request(sock,AF_INET6,++RANDOM_ID)) {
         char buff[1024];
         rc = netlink_tools_process_socket(sock,
                 process_neigh_and_add_to_list,&list,
-                buff,sizeof(buff),&RANDOM_ID,NULL);
+                buff,sizeof(buff),&RANDOM_ID,NULL, vrf_id);
     }
 
     close(sock);
@@ -257,7 +293,8 @@ static cps_api_return_code_t db_read_function (void * context, cps_api_get_param
         return cps_api_ret_code_OK;
     }
 
-    read_all_neighbours(param->list);
+    /* @@TODO Use the appropriate vrf-id to read the neighbors from non-default VRF context */
+    read_all_neighbours(param->list, NL_DEFAULT_VRF_ID);
 
     return rc;
 }

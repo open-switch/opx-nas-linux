@@ -23,6 +23,7 @@ import cps
 iplink_cmd = '/sbin/ip'
 
 config_sad_key_prefix = 'eipsec/ipsec/sad/sad-entries'
+config_sad_options_key_prefix = 'ipsec-sad/eipsec/ipsec/sad/sad-entries'
 config_spd_key_prefix = 'spd/eipsec/ipsec/spd/spd-entries'
 
 _ipsec_keys = {config_sad_key_prefix : cps.key_from_name('target', config_sad_key_prefix),
@@ -100,28 +101,32 @@ _id_obj_map = {
                }
 
 # Map for options of Security Association DB which includes IPSec mode
-# ip xfrm state { add | update } [ mode MODE ]
-_sad_options_obj_map = { 
+# ip xfrm state { add | update } [ mode MODE ] [sel SELECTOR] where SELECTOR := [ src ADDR[/PLEN] ] [ dst ADDR[/PLEN] ] [ dev DEV ] [UPSPEC ]
+_sad_options_obj_map = {
                          'mode': { 'sad_path': config_sad_key_prefix+'/sa-mode',
                                    'spd_path': config_spd_key_prefix+'/sa-mode',
                                    'cmd': 'mode'
-                                 } 
+                                 }
                        }
 
 # Map for Selector parameters of Security Policy DB
 # ip xfrm policy { add | update } SELECTOR where SELECTOR := [ src ADDR[/PLEN] ] [ dst ADDR[/PLEN] ] [ dev DEV ] [UPSPEC ]
 _selector_obj_map = {
                       'src': { 'spd_path': config_spd_key_prefix+'/source-ip-address',
+                               'sad_path': config_sad_options_key_prefix+'/source-ip-address',
                                'cmd': 'src'
                              },
                       'dst': { 'spd_path': config_spd_key_prefix+'/destination-ip-address',
+                               'sad_path': config_sad_options_key_prefix+'/destination-ip-address',
                                'cmd': 'dst'
                              },
                       'dev': { 'spd_path': config_spd_key_prefix+'/ifname',
+                               'sad_path': config_sad_options_key_prefix+'/ifname',
                                'cmd': 'dev'
                              },
                       'upper-proto': { 'spd_path': config_spd_key_prefix+'/upper-protocol',
-                                 'cmd': 'proto'
+                                       'sad_path': config_sad_key_prefix+'/upper-protocol',
+                                       'cmd': 'proto'
                                }
                     }
 
@@ -141,20 +146,20 @@ def _cmd_from_map(cmd, obj_map, key, data):
 sad_algo_map = {
                     'auth': {
                             'hmac(sha1)':  {
-                                            'sad_path': [ config_sad_key_prefix+'/ah/authentication-algorithm/hmac-sha1-96/hmac-sha1-96/key-str', 
+                                            'sad_path': [ config_sad_key_prefix+'/ah/authentication-algorithm/hmac-sha1-96/hmac-sha1-96/key-str',
                                                           config_sad_key_prefix+'/esp/authentication/authentication-algorithm/hmac-sha1-96/hmac-sha1-96/key-str'],
                                             'key_len' : {'str': 20, 'hex_str': 40},
                                             'cmd'     : 'hmac(sha1)'
-                                            
+
                                            },
                             'hmac(md5)': {
-                                            'sad_path': [ config_sad_key_prefix+'/ah/authentication-algorithm/hmac-md5-96/hmac-md5-96/key-str', 
+                                            'sad_path': [ config_sad_key_prefix+'/ah/authentication-algorithm/hmac-md5-96/hmac-md5-96/key-str',
                                                           config_sad_key_prefix+'/esp/authentication/authentication-algorithm/hmac-md5-96/hmac-md5-96/key-str'],
                                             'key_len' : {'str': 16, 'hex_str': 32},
                                             'cmd'     : 'hmac(md5)'
                                          },
                             'hmac(aes)': {
-                                            'sad_path': [ config_sad_key_prefix+'/ah/authentication-algorithm/hmac-aes-xcbc/hmac-aes-xcbc/key-str', 
+                                            'sad_path': [ config_sad_key_prefix+'/ah/authentication-algorithm/hmac-aes-xcbc/hmac-aes-xcbc/key-str',
                                                           config_sad_key_prefix+'/esp/authentication/authentication-algorithm/hmac-aes-xcbc/hmac-aes-xcbc/key-str'],
                                             'key_len' : {'str': 16, 'hex_str': 32},
                                             'cmd'     : 'hmac(aes)'
@@ -187,7 +192,7 @@ sad_algo_map = {
                                                 'cmd'     : 'cbc(aes)'
                                                 }
                            }
-               }    
+               }
 
 
 def config_sad(change):
@@ -200,6 +205,13 @@ def config_sad(change):
     _state_cmd_list = [_id_obj_map, _sad_options_obj_map]
     for obj_map in _state_cmd_list:
         cmd = _cmd_from_map(cmd, obj_map, 'sad_path', data)
+
+    # Add SELECTOR options
+    for elem in _selector_obj_map:
+        if _selector_obj_map[elem]['sad_path'] in data:
+            cmd.append('sel')
+            cmd = _cmd_from_map(cmd, _selector_obj_map, 'sad_path', data)
+            break
 
     for algo in sad_algo_map:
         algo_name = sad_algo_map[algo]
@@ -223,7 +235,7 @@ def config_sad(change):
         if all('/esp/encryption' not in string for string in data.keys()):
             cmd.extend(("enc", "ecb(cipher_null)" ))
             cmd.append("")
-    
+
     if run_command(cmd, res) == 0:
         return True
 
@@ -241,7 +253,7 @@ _spd_cmd_obj_map = { 'direction': {
 
 # Map for Security Policy DB Options
 # ip xfrm policy { add | update } [ priority PRIORITY ]
-_spd_options_obj_map = {  'priority': { 
+_spd_options_obj_map = {  'priority': {
                                         'spd_path': config_spd_key_prefix+'/priority',
                                         'cmd' : 'priority'
                                        }
@@ -332,6 +344,8 @@ def add_attr_type():
 
     cps_utils.add_attr_type("spd/eipsec/ipsec/spd/spd-entries/source-ip-address", "string")
     cps_utils.add_attr_type("spd/eipsec/ipsec/spd/spd-entries/destination-ip-address", "string")
+    cps_utils.add_attr_type("ipsec-sad/eipsec/ipsec/sad/sad-entries/source-ip-address", "string")
+    cps_utils.add_attr_type("ipsec-sad/eipsec/ipsec/sad/sad-entries/destination-ip-address", "string")
 
     return True
 

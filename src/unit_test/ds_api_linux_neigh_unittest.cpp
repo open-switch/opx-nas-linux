@@ -30,10 +30,10 @@
 #include "db_api_linux_init.h"
 #include "ds_api_linux_neigh.h"
 
-bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data) {
+bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data, uint32_t vrf_id) {
     cps_api_object_t obj = cps_api_object_create();
 
-    if (nl_to_neigh_info(rt_msg_type,hdr, obj,data)) {
+    if (nl_to_neigh_info(rt_msg_type,hdr, obj,data, vrf_id)) {
         cps_api_object_attr_t mac = cps_api_object_attr_get(obj,cps_api_if_NEIGH_A_NBR_MAC);
         if (mac == nullptr)
             return false;
@@ -53,17 +53,17 @@ bool test_netlink() {
     if (nl_neigh_get_all_request(sock,AF_INET,RANDOM_REQ_ID)) {
         char buf[2048];
         netlink_tools_process_socket(sock,get_netlink_data,
-                NULL,buf,sizeof(buf),&RANDOM_REQ_ID,NULL);
+                NULL,buf,sizeof(buf),&RANDOM_REQ_ID,NULL, NL_DEFAULT_VRF_ID);
     }
     if (nl_neigh_get_all_request(sock,AF_INET6,++RANDOM_REQ_ID)) {
         char buf[2048];
         netlink_tools_process_socket(sock,get_netlink_data,
-                NULL,buf,sizeof(buf),&RANDOM_REQ_ID,NULL);
+                NULL,buf,sizeof(buf),&RANDOM_REQ_ID,NULL, NL_DEFAULT_VRF_ID);
     }
     if (nl_neigh_get_all_request(sock,AF_PACKET,++RANDOM_REQ_ID)) {
         char buf[2048];
         netlink_tools_process_socket(sock,get_netlink_data,
-                NULL,buf,sizeof(buf),&RANDOM_REQ_ID,NULL);
+                NULL,buf,sizeof(buf),&RANDOM_REQ_ID,NULL, NL_DEFAULT_VRF_ID);
     }
     return true;
 }
