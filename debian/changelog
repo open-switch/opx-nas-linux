@@ -1,3 +1,18 @@
+opx-nas-linux (5.19.0) unstable; urgency=medium
+
+  * Feature: Support for VTY ACL squash
+  * Feature: MLD protocol flood handling
+  * Feature: Routing VRF
+  * Feature: Proxy ARP support
+  * Feature: Data VRF support
+  * Bugfix: Ping to VRRP virtual address fails
+  * Bugfix: Allow MAC-VLAN interface delete publish to delete the interface
+            from NAS-cmn DB.
+  * Bugfix: Fix logging issue for VRF configuration
+  * Bugfix: Fix false netlink event for member addition during member deletion time.
+
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Mon, 18 Jun 2018 19:25:43 -0800
+
 opx-nas-linux (5.11.0+opx5) unstable; urgency=medium
 
   * Update: Add compiler/linker hardening flags

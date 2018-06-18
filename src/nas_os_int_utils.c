@@ -179,13 +179,15 @@ t_std_error nas_os_util_int_mac_addr_set(const char *name, hal_mac_addr_t *macAd
     return err;
 }
 
-t_std_error nas_os_util_int_flags_get(const char *name, unsigned *flags)
+t_std_error nas_os_util_int_flags_get(const char *vrf_name, const char *name, unsigned *flags)
 {
+    int sock = 0;
     struct ifreq  ifr;
     strncpy(ifr.ifr_ifrn.ifrn_name,name,sizeof(ifr.ifr_ifrn.ifrn_name)-1);
 
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock==-1) return STD_ERR(INTERFACE,FAIL,errno);
+    if (os_sock_create(vrf_name, e_std_sock_INET4, e_std_sock_type_DGRAM, 0, &sock) != STD_ERR_OK) {
+        return STD_ERR(INTERFACE,FAIL,errno);
+    }
 
     t_std_error err = STD_ERR_OK;
 

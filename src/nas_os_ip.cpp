@@ -28,9 +28,12 @@
 #include "ds_api_linux_interface.h"
 #include "ds_api_linux_route.h"
 #include "nas_os_int_utils.h"
-
+#include "private/nas_os_if_priv.h"
 #include "nas_nlmsg_object_utils.h"
 #include "standard_netlink_requests.h"
+#include "nas_os_l3_utils.h"
+#include "std_ip_utils.h"
+#include "nas_vrf_utils.h"
 
 #include <map>
 #include <sstream>
@@ -44,6 +47,27 @@
 /* This provides the global IP forwarding status */
 static bool is_global_ipv4_fwd_enable = true;
 static bool is_global_ipv6_fwd_enable = true;
+
+bool nas_os_is_reserved_ipv4(hal_ip_addr_t *p_ip_addr)
+{
+    /* 127.x.x.x - reserved address range */
+    if ((p_ip_addr->af_index == HAL_INET4_FAMILY) &&
+        ((p_ip_addr->u.v4_addr & 0xff) == 0x7f))
+        return true;
+
+    return false;
+}
+
+bool nas_os_is_reserved_ipv6(hal_ip_addr_t *p_ip_addr)
+{
+    if ((p_ip_addr->af_index == HAL_INET6_FAMILY) &&
+        (((((p_ip_addr->u.v6_addr[0]) & (0xff)) == (0xff)) &&
+          (((p_ip_addr->u.v6_addr[1]) & (0xf0)) == (0x00))) ||
+         (STD_IP_IS_V6_ADDR_LOOP_BACK(p_ip_addr)))) {
+        return true;
+    }
+    return false;
+}
 
 extern "C" t_std_error nas_os_read_ipv6_status(char *name, int *ipv6_status) {
     const std::string NETCONF_IPV6_CONF = "/proc/sys/net/ipv6/conf/";
@@ -70,38 +94,16 @@ extern "C" t_std_error nas_os_read_ipv6_status(char *name, int *ipv6_status) {
     }
     return (STD_ERR(NAS_OS,FAIL, 0));
 }
-/* @@TODO This is the work-around to flush the associated neighbors
- * for a given subnet during following scenarios as kernel doesn't delete it.
- * 1) IPv6 address delete
- * 2) IPv4/IPv6 route delete
- */
-extern "C" t_std_error nas_os_flush_ip_neigh(char *prefix, uint32_t prefix_len, bool is_intf_flush, char *dev) {
-    /* This function builds the following linux command for IP neigh flush
-     * ip neigh flush to <prefix> [dev <intf>] e.g ip neigh flush to 2222::1/64 dev br200 */
-    std::stringstream str_stream;
 
-    if (is_intf_flush)
-        str_stream << "ip neigh flush to " << prefix << "/" << prefix_len << " dev " << dev;
-    else
-        str_stream << "ip neigh flush to " << prefix << "/" << prefix_len;
-
-    std::string neigh_flush_cmd = str_stream.str();
-    if(system(neigh_flush_cmd.c_str()) != 0) {
-        EV_LOGGING(NAS_OS, ERR, "NEIGH-UPD", "cmd:%s failed", neigh_flush_cmd.c_str());
-        return (STD_ERR(NAS_OS,FAIL, 0));
-    }
-    EV_LOGGING(NAS_OS, INFO, "NEIGH-UPD", "cmd:%s success", neigh_flush_cmd.c_str());
-    return STD_ERR_OK;
-}
-
-extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context) {
+extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj,
+                                void *context, uint32_t vrf_id) {
 
     struct ifaddrmsg *ifmsg = (struct ifaddrmsg *)NLMSG_DATA(hdr);
 
     if(hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*ifmsg)))
         return false;
 
-    typedef enum { IP_KEY, IFINDEX, PREFIX, ADDRESS, IFNAME, VRFNAME, DAD_FAILED, ENABLED } attr_t ;
+    typedef enum { IP_KEY, IFINDEX, PREFIX, ADDRESS, IFNAME, VRFNAME, DAD_FAILED, ENABLED, AUTOCONF_ADDR} attr_t ;
     static const std::map<uint32_t, std::map<int,cps_api_attr_id_t>> _ipmap = {
       {AF_INET,
       {
@@ -122,7 +124,8 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
         {IFNAME,  BASE_IP_IPV6_NAME},
         {VRFNAME, BASE_IP_IPV6_VRF_NAME},
         {DAD_FAILED, BASE_IP_IPV6_DAD_FAILED},
-        {ENABLED, BASE_IP_IPV6_ENABLED}
+        {ENABLED, BASE_IP_IPV6_ENABLED},
+        {AUTOCONF_ADDR, BASE_IP_IPV6_ADDRESS_AUTOCONF_ADDR},
       }}
     };
 
@@ -131,10 +134,13 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
 
     cps_api_set_key_data(obj,_ipmap.at(ifmsg->ifa_family).at(IFINDEX), cps_api_object_ATTR_T_U32,
                          &ifmsg->ifa_index,sizeof(ifmsg->ifa_index));
-    if (context) {
-        cps_api_object_attr_add(obj, _ipmap.at(ifmsg->ifa_family).at(VRFNAME), (char*)context,
-                                strlen((char*)context)+1);
+    /* Get the VRF name from vrf-id */
+    const char *vrf_name = nas_os_get_vrf_name(vrf_id);
+    if (vrf_name == NULL) {
+        return false;
     }
+    cps_api_object_attr_add(obj, _ipmap.at(ifmsg->ifa_family).at(VRFNAME), vrf_name,
+                            strlen(vrf_name)+1);
     cps_api_object_attr_add_u32(obj, _ipmap.at(ifmsg->ifa_family).at(IFINDEX), ifmsg->ifa_index);
     cps_api_object_attr_add_u32(obj, _ipmap.at(ifmsg->ifa_family).at(PREFIX), ifmsg->ifa_prefixlen);
 
@@ -149,9 +155,10 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
         return false;
     }
     char            addr_str[INET6_ADDRSTRLEN];
-    EV_LOGGING(NAS_OS,INFO,"NAS-OS-IP", "Operation:%s(%d) VRF:%s flags:0x%x if-index:%s(%d) IP:%s/%d",
+    char            local_addr_str[INET6_ADDRSTRLEN];
+    EV_LOGGING(NAS_OS,INFO,"NAS-OS-IP", "Operation:%s(%d) VRF:%s(%d) flags:0x%x if-index:%s(%d) IP:%s/%d if-flags:0x%x scope:%d local:%s",
                ((rt_msg_type == RTM_NEWADDR) ? "Add" : ((rt_msg_type == RTM_DELADDR) ? "Del" : "Set")),
-               rt_msg_type, (char*)context,
+               rt_msg_type, vrf_name, vrf_id,
                (attrs[IFA_FLAGS] ? *(int *)nla_data((struct nlattr*)attrs[IFA_FLAGS]) :0),
                (attrs[IFA_LABEL] ? (char*)nla_data((struct nlattr*)attrs[IFA_LABEL]) :""),
                ifmsg->ifa_index,
@@ -162,11 +169,36 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
                             addr_str, INET_ADDRSTRLEN)) :
                  (inet_ntop(ifmsg->ifa_family,
                             ((struct in6_addr *) nla_data((struct nlattr*)attrs[IFA_ADDRESS])),
-                            addr_str, INET6_ADDRSTRLEN))) : "NA"), ifmsg->ifa_prefixlen);
+                            addr_str, INET6_ADDRSTRLEN))) : "NA"), ifmsg->ifa_prefixlen, ifmsg->ifa_flags, ifmsg->ifa_scope,
+               ((attrs[IFA_LOCAL] != NULL) ?
+                ((ifmsg->ifa_family == AF_INET) ?
+                 (inet_ntop(ifmsg->ifa_family,
+                            ((struct in_addr *) nla_data((struct nlattr*)attrs[IFA_LOCAL])),
+                            local_addr_str, INET_ADDRSTRLEN)) :
+                 (inet_ntop(ifmsg->ifa_family,
+                            ((struct in6_addr *) nla_data((struct nlattr*)attrs[IFA_LOCAL])),
+                            local_addr_str, INET6_ADDRSTRLEN))) : "NA"));
 
-
-    if(attrs[IFA_ADDRESS]!=NULL) {
+    if (attrs[IFA_ADDRESS]!=NULL) {
         size_t addr_len = (ifmsg->ifa_family == AF_INET)?HAL_INET4_LEN:HAL_INET6_LEN;
+        hal_ip_addr_t ip;
+        memset(&ip, 0, sizeof(ip));
+        ip.af_index = ifmsg->ifa_family;
+        if (ifmsg->ifa_family == AF_INET) {
+            struct in_addr *inp = (struct in_addr *) nla_data((struct nlattr*)attrs[IFA_ADDRESS]);
+            std_ip_from_inet(&ip,inp);
+            if (nas_os_is_reserved_ipv4(&ip)) {
+                EV_LOGGING(NETLINK,ERR,"ROUTE-EVT","IPv4 address ignored - if-index:%d", ifmsg->ifa_index);
+                return false;
+            }
+        } else if (ifmsg->ifa_family == AF_INET6) {
+            struct in6_addr *inp6 = (struct in6_addr *) nla_data((struct nlattr*)attrs[IFA_ADDRESS]);
+            std_ip_from_inet6(&ip,inp6);
+            if (nas_os_is_reserved_ipv6(&ip)) {
+                EV_LOGGING(NETLINK,ERR,"ROUTE-EVT","IPv6 address ignored - if-index:%d", ifmsg->ifa_index);
+                return false;
+            }
+        }
         cps_api_attr_id_t ids[1] = {_ipmap.at(ifmsg->ifa_family).at(ADDRESS)};
         cps_api_object_e_add(obj, ids, 1, cps_api_object_ATTR_T_BIN,
                              (const void *)(nla_data(attrs[IFA_ADDRESS])),addr_len);
@@ -183,6 +215,11 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
             cps_api_object_attr_add_u32(obj, _ipmap.at(ifmsg->ifa_family).at(DAD_FAILED),
                                         true);
         }
+        /* Set the flag if the IPv6 address is created dynamically. */
+        if (ifa_flags & IFA_F_MANAGETEMPADDR) {
+            cps_api_object_attr_add_u32(obj, _ipmap.at(ifmsg->ifa_family).at(AUTOCONF_ADDR),
+                                        true);
+        }
     }
     if (rt_msg_type == RTM_NEWADDR)  {
         cps_api_object_set_type_operation(cps_api_object_key(obj),cps_api_oper_CREATE);
@@ -194,7 +231,7 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
 
     if (ifmsg->ifa_family == AF_INET6) {
         char intf_name[HAL_IF_NAME_SZ+1];
-        if (nas_os_util_int_if_name_get((char*)context, ifmsg->ifa_index, intf_name) != STD_ERR_OK) {
+        if (nas_os_util_int_if_name_get(vrf_name, ifmsg->ifa_index, intf_name) != STD_ERR_OK) {
             EV_LOGGING(NAS_OS, ERR, "IP-PUB",
                        "Interface %d to if_name from OS returned error",
                        ifmsg->ifa_index);
@@ -220,25 +257,14 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
                 EV_LOGGING(NAS_OS,ERR,"NAS-IP","IPv6 status read for the intf:%s failed!", intf_name);
             }
         }
-        if (rt_msg_type == RTM_DELADDR) {
-            /* @@TODO This is the work-around to flush the associated neighbors on IPv6 address del
-             * until kernel supports it internally */
-            char addr_str[INET6_ADDRSTRLEN];
-            if (inet_ntop(ifmsg->ifa_family, (const void *)(nla_data(attrs[IFA_ADDRESS])), addr_str,
-                          INET6_ADDRSTRLEN) == NULL) {
-                EV_LOGGING(NAS_OS,ERR,"NAS-IP","IP address get failed for intf:%d ",ifmsg->ifa_index);
-                return true;
-            }
-
-            nas_os_flush_ip_neigh(addr_str, ifmsg->ifa_prefixlen, true, intf_name);
-        }
     }
     return true;
 }
 
 /* This function handles the netconf netlink messages from the kernel and constructs
  * the CPS object with the if-index and fwd attributes */
-extern "C" bool nl_get_ip_netconf_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context) {
+extern "C" bool nl_get_ip_netconf_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context,
+                                        uint32_t vrf_id) {
     struct rtattr   *rtatp = NULL;
     struct netconfmsg *ncmsg = (struct netconfmsg*)NLMSG_DATA(hdr);
     typedef enum { IP_KEY, IFINDEX, FWD, VRFNAME } attr_t ;
@@ -261,10 +287,14 @@ extern "C" bool nl_get_ip_netconf_info (int rt_msg_type, struct nlmsghdr *hdr, c
     };
     cps_api_key_from_attr_with_qual(cps_api_object_key(obj),_ipmap.at(ncmsg->ncm_family).at(IP_KEY),
                                     cps_api_qualifier_TARGET);
-    if (context) {
-        cps_api_object_attr_add(obj, _ipmap.at(ncmsg->ncm_family).at(VRFNAME), (char*)context,
-                                strlen((char*)context)+1);
+    /* Get the VRF name from vrf-id */
+    const char *vrf_name = nas_os_get_vrf_name(vrf_id);
+    if (vrf_name == NULL) {
+        return false;
     }
+
+    cps_api_object_attr_add(obj, _ipmap.at(ncmsg->ncm_family).at(VRFNAME), (char*)vrf_name,
+                            strlen((char*)vrf_name)+1);
 
     unsigned int attrlen = hdr->nlmsg_len - NLMSG_LENGTH(sizeof(*ncmsg));
 

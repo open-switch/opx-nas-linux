@@ -28,7 +28,7 @@ extern "C" {
 #include "cps_api_object.h"
 
 bool nl_neigh_get_all_request(int sock, int family, int req_id) ;
-bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr,cps_api_object_t obj, void *context);
+bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr,cps_api_object_t obj, void *context, uint32_t vrf_id);
 
 t_std_error ds_api_linux_neigh_init(cps_api_operation_handle_t handle);
 

@@ -34,7 +34,7 @@
 #include <stdio.h>
 #include <string.h>
 
-bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data) {
+bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data, uint32_t vrf_id) {
 
     cps_api_object_t obj=cps_api_object_create();
     if (!nl_get_if_info(rt_msg_type,hdr,obj,data)) return false;
@@ -51,9 +51,9 @@ bool netlinl_test() {
     int sock = nas_nl_sock_create(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,false);
     char buf[4196];
     const int RANDOM_REQ_ID = 23231;
-    if (nl_interface_get_request(sock,RANDOM_REQ_ID)) {
+    if (nl_interface_get_request(sock,RANDOM_REQ_ID, (char*)NL_DEFAULT_VRF_NAME, NL_DEFAULT_VRF_ID)) {
         if (netlink_tools_process_socket(sock,get_netlink_data, NULL,buf,sizeof(buf),
-                &RANDOM_REQ_ID,NULL)) {
+                &RANDOM_REQ_ID,NULL, NL_DEFAULT_VRF_ID)) {
             close(sock);
             return true;
         }

@@ -38,6 +38,7 @@
 #include "hal_if_mapping.h"
 #include "std_utils.h"
 #include "ds_api_linux_route.h"
+#include "nas_os_l3_utils.h"
 
 #include <arpa/inet.h>
 #include <linux/netlink.h>
@@ -49,6 +50,9 @@
 typedef struct {
     int family;
 } route_filter_t;
+
+#define NAS_RT_V4_PREFIX_LEN              (8 * HAL_INET4_LEN)
+#define NAS_RT_V6_PREFIX_LEN              (8 * HAL_INET6_LEN)
 
 bool nas_rt_is_reserved_intf(char *intf_name) {
 
@@ -118,16 +122,17 @@ bool nas_rt_is_reserved_intf_idx (unsigned int if_idx, bool sub_intf_check_requi
 
 // @TODO - This file has to conform to new yang model
 
-static inline void nas_os_log_route_info(struct nlmsghdr *hdr, int rt_msg_type, struct rtmsg *rtmsg, struct nlattr **attrs) {
+static inline void nas_os_log_route_info(struct nlmsghdr *hdr, int rt_msg_type, struct rtmsg *rtmsg,
+                                         struct nlattr **attrs, const char* vrf_name, uint32_t vrf_id) {
 
     char            addr_str[INET6_ADDRSTRLEN];
     char            addr_str1[INET6_ADDRSTRLEN];
 
-    EV_LOGGING(NETLINK, INFO,"ROUTE-EVENT","NLM type:0x%x flags:0x%x Op:%s af:%s(%d) Prefix:%s/%d tbl:%d "
+    EV_LOGGING(NETLINK, INFO,"ROUTE-EVENT","NLM type:0x%x flags:0x%x Op:%s VRF:%s(%d) af:%s(%d) Prefix:%s/%d tbl:%d "
                "proto:%d scope:%d type:%d flags:%d multiPath:%s gateway:%s ifx:%d",
                hdr->nlmsg_type,
                hdr->nlmsg_flags,
-               ((rt_msg_type == RTM_NEWROUTE) ? "Add" : "Del"),
+               ((rt_msg_type == RTM_NEWROUTE) ? "Add" : "Del"), vrf_name, vrf_id,
                ((rtmsg->rtm_family == AF_INET) ? "IPv4" : "IPv6"),
                rtmsg->rtm_family,
                ((attrs[RTA_DST] != NULL) ?
@@ -157,13 +162,10 @@ static inline void nas_os_log_route_info(struct nlmsghdr *hdr, int rt_msg_type, 
 }
 
 //db_route_t
-bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context) {
+bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context, uint32_t vrf_id) {
 
     struct rtmsg    *rtmsg = (struct rtmsg *)NLMSG_DATA(hdr);
     char            addr_str[INET6_ADDRSTRLEN];
-    char            prefix_str[INET6_ADDRSTRLEN];
-    ssize_t         addr_len = INET_ADDRSTRLEN;
-    bool            is_intf_flush_required = false;
 
     if(hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*rtmsg)))
         return false;
@@ -184,28 +186,27 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         /* NETLINK Header flags if received with NLM_F_REPLACE, send it as ROUTE_UPD instead of ROUTE_ADD */
         if (hdr->nlmsg_flags & NLM_F_REPLACE) {
             op = cps_api_oper_SET;
-            /* for route replace case, OIF may be changed,
-             * so flush all the neighbors for the route prefix
-             * on all interfaces (single-path/multi-path).
-             */
-            is_intf_flush_required = false;
         } else {
             op = cps_api_oper_CREATE;
         }
     } else if(rt_msg_type == RTM_DELROUTE) {
         op = cps_api_oper_DELETE;
-        /* for route delete,
-         * flush neighbors on that OIF for the route prefix.
-         */
-        is_intf_flush_required = true;
     } else {
         return false;
     }
-
-    if (context) {
-        cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_VRF_NAME, (char*)context,
-                                strlen((char*)context)+1);
+    /* Get VRF name from VRF-id */
+    const char *vrf_name = nas_os_get_vrf_name(vrf_id);
+    if (vrf_name == NULL) {
+        return false;
     }
+    cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_VRF_NAME, vrf_name, strlen(vrf_name)+1);
+    /* @@TODO all route netlink events expected to have the same VRF-name for both route and NH
+     * since leaked routes are not programmed into the kernel for now. */
+    cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_ENTRY_NH_VRF_NAME, vrf_name, strlen(vrf_name)+1);
+    cps_api_object_attr_add_u32(obj, BASE_ROUTE_OBJ_VRF_ID, vrf_id);
+    /* @@TODO all route netlink events expected to have the same VRF-id for both route and NH
+     * since leaked routes are not programmed into the kernel for now. */
+    cps_api_object_attr_add_u32(obj, BASE_ROUTE_OBJ_ENTRY_VRF_ID, vrf_id);
     cps_api_object_attr_add_u32(obj, BASE_ROUTE_OBJ_ENTRY_AF, rtmsg->rtm_family);
     cps_api_object_attr_add_u32(obj, BASE_ROUTE_OBJ_ENTRY_PROTOCOL, rtmsg->rtm_protocol);
 
@@ -220,8 +221,6 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         return false;
     }
 
-    memset (prefix_str, 0, sizeof (prefix_str));
-
     if(attrs[RTA_DST]!=NULL) {
         /* Ignore the link local route here, we program the link local self IPv6
          * into the NPU thru IPv6 address publish flow */
@@ -233,18 +232,13 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
                 EV_LOGGING(NETLINK,DEBUG,"NL-ROUTE-PARSE","LLA skipped!");
                 return false;
             }
-            addr_len = INET6_ADDRSTRLEN;
         }
-
-        inet_ntop(rtmsg->rtm_family,
-                  (nla_data((struct nlattr*)attrs[RTA_DST])),
-                  prefix_str, addr_len);
 
         cps_api_object_attr_add(obj, BASE_ROUTE_OBJ_ENTRY_ROUTE_PREFIX,
                                 nla_data((struct nlattr*)attrs[RTA_DST]),
                                 nla_len((struct nlattr*)attrs[RTA_DST]));
     }
-    nas_os_log_route_info(hdr,rt_msg_type, rtmsg, attrs);
+    nas_os_log_route_info(hdr,rt_msg_type, rtmsg, attrs, vrf_name, vrf_id);
     /* If the route is not local/unicast, dont handle it.
      * RTN_UNICAST - 1, RTN_LOCAL - 2
      * @@TODO see if some other route types to be supported */
@@ -255,6 +249,29 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         return false;
     }
 
+    /* Ignore the local IP route programming into the NPU
+     * since the IP subnet is good enough to punt the packets to CPU */
+    if ((rtmsg->rtm_type == RTN_LOCAL) && (attrs[RTA_GATEWAY] == NULL) && (attrs[RTA_MULTIPATH] == NULL) &&
+        (((rtmsg->rtm_family == AF_INET) && (rtmsg->rtm_dst_len == NAS_RT_V4_PREFIX_LEN)
+          && (rtmsg->rtm_protocol == RTPROT_KERNEL)) ||
+         ((rtmsg->rtm_family == AF_INET6) && (rtmsg->rtm_dst_len == NAS_RT_V6_PREFIX_LEN)
+          && (rtmsg->rtm_protocol == RTPROT_UNSPEC)))) {
+        char addr_str[INET6_ADDRSTRLEN];
+        EV_LOGGING(NETLINK, INFO, "NL-ROUTE-PARSE", "Self IP route ignored, family:%d protocol:%d op:%s route:%s/%d",
+                   rtmsg->rtm_family, rtmsg->rtm_protocol,
+                   ((rt_msg_type == RTM_NEWROUTE) ? "Add" : "Del"),
+                   ((attrs[RTA_DST] != NULL) ?
+                    ((rtmsg->rtm_family == AF_INET) ?
+                     (inet_ntop(rtmsg->rtm_family,
+                                ((struct in_addr *) nla_data((struct nlattr*)attrs[RTA_DST])),
+                                addr_str, INET_ADDRSTRLEN)) :
+                     (inet_ntop(rtmsg->rtm_family,
+                                ((struct in6_addr *) nla_data((struct nlattr*)attrs[RTA_DST])),
+                                addr_str, INET6_ADDRSTRLEN))) : "NA"),
+                   rtmsg->rtm_dst_len);
+
+        return false;
+    }
     /* @@TODO for IPv6 routes we should not program the invalid route into the NPU i.e
      * For 2::1/64 configurations, kernel generates three routes 1. 2::1/64 2. 2::1/128 3. 2::/128
      * We have to ignore the 2::/128 since it's of no use, but now not able
@@ -311,22 +328,6 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
                 nla_data(attrs[RTA_OIF]),sizeof(uint32_t));
 
         cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_ENTRY_NH_LIST_IFINDEX,*x);
-
-        /* route is configured on OIF only and no gateway configured,
-         * then trigger flush of neighbor entries for this prefix.
-         */
-        if ((op != cps_api_oper_CREATE) &&
-            (attrs[RTA_DST]) && (attrs[RTA_GATEWAY] == NULL)) {
-            interface_ctrl_t intf_ctrl;
-            memset(&intf_ctrl, 0, sizeof(intf_ctrl));
-            intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
-            intf_ctrl.if_index = *x;
-
-            if (dn_hal_get_interface_info(&intf_ctrl) != STD_ERR_OK) {
-                EV_LOGGING(NETLINK,INFO,"ROUTE-EVENT","Invalid Interface Index %d ",*x);
-            }
-            nas_os_flush_ip_neigh(prefix_str, rtmsg->rtm_dst_len, is_intf_flush_required, intf_ctrl.if_name);
-        }
     }
     if (attrs[RTA_MULTIPATH]) {
         //array of next hops
@@ -365,7 +366,7 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
                     return false;
                 }
 
-                EV_LOGGING(NETLINK, INFO,"ROUTE-EVENT","MultiPath nh-cnt:%d gateway:%s ifIndex:%d nh-flags:0x%x weight:%d",
+                EV_LOGGING(NETLINK, INFO,"ROUTE-EVENT","MultiPath nh-cnt:%lu gateway:%s ifIndex:%d nh-flags:0x%x weight:%d",
                        hop_count,
                        ((rtmsg->rtm_family == AF_INET) ?
                         (inet_ntop(rtmsg->rtm_family, ((struct in_addr *) nla_data((struct nlattr*)nhattr[RTA_GATEWAY])), addr_str,
@@ -374,23 +375,8 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
                                    addr_str, INET6_ADDRSTRLEN))),
                         rtnh->rtnh_ifindex, rtnh->rtnh_flags, rtnh->rtnh_hops);
             } else {
-                EV_LOGGING(NETLINK, INFO,"ROUTE-EVENT","MultiPath nh-cnt:%d ifIndex:%d nh-flags:0x%x weight:%d",
+                EV_LOGGING(NETLINK, INFO,"ROUTE-EVENT","MultiPath nh-cnt:%lu ifIndex:%d nh-flags:0x%x weight:%d",
                        hop_count, rtnh->rtnh_ifindex, rtnh->rtnh_flags, rtnh->rtnh_hops);
-
-                /* multipath OIF is present,
-                 * trigger flush of neighbor entries for this prefix.
-                 */
-                if ((op != cps_api_oper_CREATE) && (attrs[RTA_DST])) {
-                    interface_ctrl_t intf_ctrl;
-                    memset(&intf_ctrl, 0, sizeof(intf_ctrl));
-                    intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
-                    intf_ctrl.if_index = rtnh->rtnh_ifindex;
-
-                    if (dn_hal_get_interface_info(&intf_ctrl) != STD_ERR_OK) {
-                        EV_LOGGING(NETLINK,INFO,"ROUTE-EVENT","Invalid Interface Index %d ", rtnh->rtnh_ifindex);
-                    }
-                    nas_os_flush_ip_neigh(prefix_str, rtmsg->rtm_dst_len, is_intf_flush_required, intf_ctrl.if_name);
-                }
             }
             rtnh = rtnh_next(rtnh,&remaining);
             ++hop_count;
@@ -411,7 +397,7 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
 }
 
 static bool process_route_and_add_to_list(int sock, int rt_msg_type, struct nlmsghdr *nh,
-        void *context) {
+        void *context, uint32_t vrf_id) {
     cps_api_object_list_t *list = (cps_api_object_list_t*) context;
     cps_api_object_t obj=cps_api_object_create();
 
@@ -420,7 +406,7 @@ static bool process_route_and_add_to_list(int sock, int rt_msg_type, struct nlms
         return false;
     }
 
-    if (!nl_to_route_info(nh->nlmsg_type,nh,obj,context)) {
+    if (!nl_to_route_info(nh->nlmsg_type,nh,obj,context, NAS_DEFAULT_VRF_ID)) {
         return false;
     }
     return true;
@@ -439,7 +425,7 @@ bool read_all_routes(cps_api_object_list_t list, route_filter_t *filter) {
     if (rc) {
         char buff[1024];
         rc = netlink_tools_process_socket(sock,process_route_and_add_to_list,&list,
-                buff,sizeof(buff),&RANDOM_REQ_ID,NULL);
+                buff,sizeof(buff),&RANDOM_REQ_ID,NULL, NL_DEFAULT_VRF_ID);
     }
     close(sock);
     return rc;
@@ -578,7 +564,7 @@ static cps_api_return_code_t _write_function(void * context, cps_api_transaction
     cps_api_key_t _local_key;
     cps_api_key_init(&_local_key,cps_api_qualifier_TARGET,cps_api_obj_cat_ROUTE,cps_api_route_obj_EVENT,0);
     if (cps_api_key_matches(&_local_key,cps_api_object_key(obj),true)) {
-        os_send_refresh(nas_nl_sock_T_ROUTE, NL_DEFAULT_VRF_NAME);
+        os_send_refresh(nas_nl_sock_T_ROUTE, NL_DEFAULT_VRF_NAME, NL_DEFAULT_VRF_ID);
     } else {
         return _op(op,context,obj,prev);
     }

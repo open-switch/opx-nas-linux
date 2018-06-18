@@ -37,7 +37,7 @@
 #include <unordered_map>
 #include <utility>
 
-bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context);
+bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context, uint32_t vrf_id);
 extern "C"
 cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t ifix, bool get_all,
                                        uint_t if_type );
@@ -118,5 +118,4 @@ public:
 };
 
 t_std_error os_interface_object_reg(cps_api_operation_handle_t handle);
-
 #endif /* NAS_OS_IF_PRIV_H_ */

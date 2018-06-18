@@ -28,6 +28,7 @@
 #include "std_type_defs.h"
 #include "std_error_codes.h"
 #include "std_socket_tools.h"
+#include "nas_vrf_utils.h"
 
 #include <stddef.h>
 #include <linux/rtnetlink.h>
@@ -47,8 +48,8 @@ extern "C" {
 /* Netlink socket buffer size for interface events - 30MB */
 #define NL_INTF_SOCKET_BUFFER_LEN (30*1024*1024)
 
-/* Netlink socket buffer size for neighbor events - 40MB */
-#define NL_NEIGH_SOCKET_BUFFER_LEN (40*1024*1024)
+/* Netlink socket buffer size for neighbor events - 60MB */
+#define NL_NEIGH_SOCKET_BUFFER_LEN (60*1024*1024)
 
 /* Netlink socket buffer size for route events - 250MB */
 #define NL_ROUTE_SOCKET_BUFFER_LEN (250*1024*1024)
@@ -62,7 +63,8 @@ extern "C" {
  * and hence defined the below macro */
 #define NL_SOL_NETLINK 270
 /* Default VRF name */
-#define NL_DEFAULT_VRF_NAME "default"
+#define NL_DEFAULT_VRF_NAME NAS_DEFAULT_VRF_NAME
+#define NL_DEFAULT_VRF_ID NAS_DEFAULT_VRF_ID
 typedef enum  {
     nas_nl_sock_T_ROUTE=0,
     nas_nl_sock_T_INT=1,
@@ -76,22 +78,22 @@ typedef enum  {
 int nas_nl_sock_create(const char* vrf_name, nas_nl_sock_TYPES type, bool include_bind) ;
 
 
-void os_send_refresh(nas_nl_sock_TYPES type, const char *vrf_name);
+void os_send_refresh(nas_nl_sock_TYPES type, char *vrf_name, uint32_t vrf_id);
 
-typedef bool (*fun_process_nl_message) (int sock, int rt_msg_type, struct nlmsghdr *hdr, void * context);
+typedef bool (*fun_process_nl_message) (int sock, int rt_msg_type, struct nlmsghdr *hdr, void * context, uint32_t);
 
 /**
  * Handle get and set using netlink messages. This function is called to receive resposes after a get, set is issued
  */
 bool netlink_tools_process_socket(int sock, fun_process_nl_message handlers,
         void * context, char * scratch_buff, size_t scratch_buff_len,
-        const int * seq, int *error_code);
+        const int * seq, int *error_code, uint32_t vrf_id);
 
 /**
  * Handle the netlink events only - only one netlink event per funcion call
  */
 void netlink_tools_receive_event(int sock,fun_process_nl_message handlers,
-        void * context, char * scratch_buff, size_t scratch_buff_len,int *error_code);
+        void * context, char * scratch_buff, size_t scratch_buff_len,int *error_code, uint32_t vrf_id);
 
 bool nl_send_request(int sock, int type, int flags, int seq, void * req, size_t len );
 
@@ -108,7 +110,7 @@ void nas_os_pack_if_hdr(struct ifinfomsg *ifmsg, unsigned char ifi_family,
 int nas_os_bind_nf_sub(int fd, int family, int type, int queue_num);
 bool os_nflog_enable ();
 
-t_std_error os_create_netlink_sock(const char *vrf_name);
+t_std_error os_create_netlink_sock(const char *vrf_name, uint32_t vrf_id);
 t_std_error os_del_netlink_sock(const char *vrf_name);
 t_std_error os_sock_create(const char *vrf_name, e_std_socket_domain_t domain,
                            e_std_sock_type_t type, int protocol, int *sock);

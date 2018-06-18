@@ -1,0 +1,8 @@
+#!/bin/bash -e
+
+./nas_os_l3_unittest
+./nas_linux_stg_unittest
+./cps_api_interface_unittest
+./nas_os_mac_unittest
+./nas_mcast_snoop_svc_unittest
+pytest -s ../../unit_test/scripts

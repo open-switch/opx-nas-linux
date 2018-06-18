@@ -59,6 +59,7 @@ inline static void rta_add_ip( struct nlattr* rtatp,
 
 unsigned int rta_add_name( struct nlattr* rtatp,cps_api_object_t obj, uint32_t attr);
 
+bool check_bridge_membership_in_os(hal_ifindex_t bridge_idx, hal_ifindex_t mem_idx);
 #ifdef __cplusplus
 }
 #endif

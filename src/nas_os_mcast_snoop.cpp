@@ -26,6 +26,8 @@
 #include "nas_os_mcast_snoop.h"
 #include "std_utils.h"
 #include "ietf-igmp-mld-snooping.h"
+#include "netlink_stats.h"
+#include "net_publish.h"
 
 #include <unordered_map>
 #include <arpa/inet.h>
@@ -37,6 +39,8 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+
+static const int MAX_NETLINK_BUF = 10000;
 
 static const auto _ipv4_cps_keymap = new std::unordered_map<std::string, cps_api_attr_id_t> {
         {"vlan", IGMP_MLD_SNOOPING_RT_ROUTING_STATE_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN},
@@ -113,21 +117,36 @@ static bool _populate_mdb_entry_object(struct br_mdb_entry *br_entry, int msg_ty
     return true;
 }
 
-static bool _populate_mdb_router_object(int msg_type, hal_vlan_id_t vlan_id, char *if_name, cps_api_object_t obj) {
-    cps_api_key_from_attr_with_qual(cps_api_object_key(obj), IGMP_MLD_SNOOPING_RT_ROUTING_STATE_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN, cps_api_qualifier_OBSERVED);
+static bool _populate_mdb_router_object(int msg_type, hal_vlan_id_t vlan_id, char *if_name, cps_api_object_t obj,
+                                        bool is_mld) {
 
     cps_api_operation_types_t op;
     std::string msg = "mdb";
+    std::string type_str = "IGMP";
+
     if (msg_type == RTM_NEWMDB ) { op = cps_api_oper_CREATE; msg = "new_mdb"; }
     else if  (msg_type == RTM_DELMDB ) { op = cps_api_oper_DELETE; msg = "del_mdb"; }
     else return false;
 
+    if (is_mld) {
+        type_str = "MLD";
+        cps_api_key_from_attr_with_qual(cps_api_object_key(obj), IGMP_MLD_SNOOPING_RT_ROUTING_STATE_CONTROL_PLANE_PROTOCOLS_MLD_SNOOPING_VLANS_VLAN, cps_api_qualifier_OBSERVED);
+
+        cps_api_object_attr_add_u16(obj, IGMP_MLD_SNOOPING_RT_ROUTING_STATE_CONTROL_PLANE_PROTOCOLS_MLD_SNOOPING_VLANS_VLAN_VLAN_ID, vlan_id);
+
+        cps_api_object_attr_add(obj, IGMP_MLD_SNOOPING_RT_ROUTING_STATE_CONTROL_PLANE_PROTOCOLS_MLD_SNOOPING_VLANS_VLAN_MROUTER_INTERFACE, if_name,HAL_IF_NAME_SZ);
+    }
+    else {
+        cps_api_key_from_attr_with_qual(cps_api_object_key(obj), IGMP_MLD_SNOOPING_RT_ROUTING_STATE_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN, cps_api_qualifier_OBSERVED);
+
+        cps_api_object_attr_add_u16(obj, IGMP_MLD_SNOOPING_RT_ROUTING_STATE_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN_VLAN_ID, vlan_id);
+
+        cps_api_object_attr_add(obj, IGMP_MLD_SNOOPING_RT_ROUTING_STATE_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN_MROUTER_INTERFACE, if_name,HAL_IF_NAME_SZ);
+    }
+
     cps_api_object_set_type_operation(cps_api_object_key(obj), op);
 
-    cps_api_object_attr_add_u16(obj, IGMP_MLD_SNOOPING_RT_ROUTING_STATE_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN_VLAN_ID, vlan_id);
-
-    cps_api_object_attr_add(obj, IGMP_MLD_SNOOPING_RT_ROUTING_STATE_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN_MROUTER_INTERFACE, if_name,HAL_IF_NAME_SZ);
-    EV_LOGGING(NETLINK_MCAST_SNOOP,DEBUG,"NAS-LINUX-MCAST-SNOOP", "Mrouter port Name %s", if_name);
+    EV_LOGGING(NETLINK_MCAST_SNOOP,DEBUG,"NAS-LINUX-MCAST-SNOOP", "%s Mrouter port Name %s", type_str.c_str(), if_name);
 
     // Info log with all information
     EV_LOGGING(NETLINK_MCAST_SNOOP,DEBUG,"NAS-LINUX-MCAST-SNOOP", "Message type %s Vlan ID %d Mrouter port %s", msg.c_str(), vlan_id, if_name);
@@ -148,11 +167,13 @@ static bool _get_ifname(uint32_t ifindex, char *if_name, unsigned int len) {
     return true;
 }
 
-bool nl_to_mcast_snoop_info(int msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context) {
+bool nl_to_mcast_snoop_info(int sock, int msg_type, struct nlmsghdr *hdr, void *context) {
     struct nlattr *nest_attr;
     struct nlattr *info_attr;
     struct br_mdb_entry *br_entry;
     struct br_port_msg *brp_msg = (struct br_port_msg *)NLMSG_DATA(hdr);
+    static char netlink_buf[MAX_NETLINK_BUF];
+
     EV_LOGGING(NETLINK_MCAST_SNOOP,DEBUG,"NAS-LINUX-MCAST-SNOOP", "message type %d Family %d VLAN ifindex %d ", msg_type, brp_msg->family, brp_msg->ifindex);
 
     if (! (msg_type == RTM_NEWMDB || msg_type == RTM_DELMDB))
@@ -193,8 +214,18 @@ bool nl_to_mcast_snoop_info(int msg_type, struct nlmsghdr *hdr, cps_api_object_t
                        }
 
                        // Populate CPS Object
-                       if( !_populate_mdb_entry_object(br_entry, msg_type, intf_ctrl.vlan_id, if_name, obj) )
+                       cps_api_object_t obj = cps_api_object_init(netlink_buf,sizeof(netlink_buf));
+
+                       if( !_populate_mdb_entry_object(br_entry, msg_type, intf_ctrl.vlan_id, if_name, obj) ) {
                            EV_LOGGING(NETLINK_MCAST_SNOOP,ERR,"NAS-LINUX-MCAST-SNOOP", "Invalid protocol ");
+                       }
+                       else {
+                           nas_nl_stats_update_pub_msg (sock, msg_type);
+                           if (net_publish_event(obj) != cps_api_ret_code_OK) {
+                               EV_LOGGING(NETLINK_MCAST_SNOOP,ERR,"NAS-LINUX-MCAST-SNOOP", "Failure to publish route update");
+                               nas_nl_stats_update_pub_msg_failed (sock, msg_type);
+                           }
+                       }
 
                     }
                 }
@@ -212,8 +243,31 @@ bool nl_to_mcast_snoop_info(int msg_type, struct nlmsghdr *hdr, cps_api_object_t
                            return false;
                        }
 
-                     // Populate IGMP CPS Object
-                     _populate_mdb_router_object(msg_type, intf_ctrl.vlan_id, if_name, obj);
+                     /* Kernel does not indicates or has facility to indicate it IGMP or MLD mrouter port.
+                        So just publishing it as IGMP alone is not sufficient and the mrouter port will
+                        not added to MLD routes. So here both IGMP and MLD object needs to be published
+                        separately.
+                     */
+
+                     cps_api_object_t igmp_obj = cps_api_object_init(netlink_buf, sizeof(netlink_buf));
+
+                     _populate_mdb_router_object(msg_type, intf_ctrl.vlan_id, if_name, igmp_obj, 1);
+                     nas_nl_stats_update_pub_msg (sock, msg_type);
+
+                     if (net_publish_event(igmp_obj) != cps_api_ret_code_OK) {
+                         EV_LOGGING(NETLINK_MCAST_SNOOP,ERR,"NAS-LINUX-MCAST-SNOOP", "Failure to publish MLD Mrouter port %s ", if_name);
+                         nas_nl_stats_update_pub_msg_failed (sock, msg_type);
+                     }
+
+                     cps_api_object_t mld_obj = cps_api_object_init(netlink_buf,sizeof(netlink_buf));
+
+                     _populate_mdb_router_object(msg_type, intf_ctrl.vlan_id, if_name, mld_obj, 0);
+
+                     nas_nl_stats_update_pub_msg (sock, msg_type);
+                     if (net_publish_event(igmp_obj) != cps_api_ret_code_OK) {
+                         EV_LOGGING(NETLINK_MCAST_SNOOP,ERR,"NAS-LINUX-MCAST-SNOOP", "Failure to publish IGMP Mrouter port %s ", if_name);
+                         nas_nl_stats_update_pub_msg_failed (sock, msg_type);
+                     }
                  }
              }
         }

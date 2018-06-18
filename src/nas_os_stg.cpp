@@ -30,6 +30,7 @@
 #include "nas_os_if_priv.h"
 #include "nas_os_if_conversion_utils.h"
 #include "nas_os_mcast_snoop.h"
+#include "hal_if_mapping.h"
 
 #include <netinet/in.h>
 #include <linux/if_bridge.h>
@@ -55,6 +56,21 @@ t_std_error get_if_stp_state(hal_ifindex_t index, uint8_t * state){
     return STD_ERR(STG,FAIL,0);
 }
 
+
+static bool _is_untagged_member_of_vlan(hal_ifindex_t ifindex, hal_vlan_id_t vlan_id){
+    interface_ctrl_t intf_ctrl;
+    memset(&intf_ctrl,0,sizeof(interface_ctrl_t));
+    intf_ctrl.q_type = HAL_INTF_INFO_FROM_VLAN;
+    intf_ctrl.vlan_id = vlan_id;
+    intf_ctrl.int_type = nas_int_type_VLAN;
+
+    if(dn_hal_get_interface_info(&intf_ctrl) != STD_ERR_OK){
+        return false;
+    }
+
+    return nas_os_is_port_part_of_vlan(intf_ctrl.if_index,ifindex);
+
+}
 
 t_std_error nl_int_update_stp_state(cps_api_object_t obj){
     std::lock_guard<std::mutex> lock(_if_stp_mutex);
@@ -83,9 +99,13 @@ t_std_error nl_int_update_stp_state(cps_api_object_t obj){
             char vlan_intf_name[HAL_IF_NAME_SZ+1];
             snprintf(vlan_intf_name,sizeof(vlan_intf_name)-1,"%s.%d",intf_name,vlan_id);
             if(!get_tagged_intf_index_from_name(vlan_intf_name,vlan_ifindex)){
-                EV_LOGGING(NAS_OS,DEBUG,"NAS-OS","Don't update the untagged port state for %s",
-                            vlan_intf_name);
-                return STD_ERR_OK;
+                /*
+                 * If tagged interfaces is not part of vlan check if  untagged port
+                 * is part of vlan. if not return
+                 */
+                if(!_is_untagged_member_of_vlan(phy_ifindex,vlan_id)){
+                    return STD_ERR_OK;
+                }
             }
         }
     }

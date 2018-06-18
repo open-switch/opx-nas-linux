@@ -19,6 +19,7 @@
  */
 
 #include "private/nas_os_if_priv.h"
+#include "private/nas_nlmsg_object_utils.h"
 #include "private/os_if_utils.h"
 #include "dell-base-if.h"
 #include "dell-base-if-vlan.h"
@@ -38,11 +39,22 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-
+#include <mutex>
 #include <unordered_map>
 
 /* A container to store the tagged/untagged member ports with VLANs mapping */
 static auto mbr_intf_to_vlan_map = new std::unordered_map<hal_ifindex_t,std::unordered_set<hal_ifindex_t>>;
+static std::mutex _mtx;
+
+bool nas_os_is_port_part_of_vlan(hal_ifindex_t vlan_ifindex, hal_ifindex_t port_ifindex){
+    std::lock_guard<std::mutex> _lg(_mtx);
+    auto it = mbr_intf_to_vlan_map->find(port_ifindex);
+    if(it == mbr_intf_to_vlan_map->end()){
+        return false;
+    }
+
+    return it->second.find(vlan_ifindex) != it ->second.end();
+}
 
 /* This function disable the IPv6 on VLAN member ports (Phy/LAG) i.e e101-001-0/bond1
  * and tagged member ports i.e e101-001-0.100/bond1.100
@@ -85,8 +97,8 @@ static bool os_interface_update_vlan_info(hal_ifindex_t mem_idx, hal_ifindex_t v
         /* Convert vlan enslave port (tagged VLAN interface) to member port
          * if-index (i.e e101-001-0.200 to if-index of e101-001-0 */
         if (!nas_os_sub_intf_name_to_intf_ifindex(mbr_name, &mbr_ifindex)) {
-            EV_LOGGING(NAS_OS,ERR,"NAS-UPD-VLAN", "Add %s vlan-index:%d sub-mbr-index:%d to "
-                       "mbr-index mapping does not exist!", ((is_tag) ? "tag" : "untag"),
+            EV_LOGGING(NAS_OS,ERR,"NAS-UPD-VLAN", "Add %s vlan-index:%d sub-mbr name:%s to "
+                       "mbr-index %d mapping does not exist!", ((is_tag) ? "tag" : "untag"),
                        vlan_if_index, sub_mbr_name.c_str(), mem_idx);
             return false;
         }
@@ -98,6 +110,7 @@ static bool os_interface_update_vlan_info(hal_ifindex_t mem_idx, hal_ifindex_t v
                vlan_if_index, sub_mbr_name.c_str(), mem_idx);
     /* Enable the IPv6 on Physical/LAG when it's not part of any VLAN, otherwise disable it */
     /* Tagged/Untagged member interface with VLANs handling */
+    std::lock_guard<std::mutex> _lg(_mtx);
     if(add){
         auto intf_it = mbr_intf_to_vlan_map->find(mbr_ifindex);
         if(intf_it == mbr_intf_to_vlan_map->end()) {
@@ -138,7 +151,12 @@ bool static os_interface_vlan_bridge_handler(hal_ifindex_t mas_idx, hal_ifindex_
                 mas_idx, mem_idx);
         return false;
     }
-
+    /* Check if intf is member in the kernel also. Kernel sends one false add member just fter delete member event*/
+    if (!check_bridge_membership_in_os(mas_idx, mem_idx)) {
+            EV_LOGGING(NAS_OS,ERR,"NET-MAIN"," False member addition if_idx %d, master idx  %d ",
+                     mem_idx, mas_idx);
+        return false;
+    }
     if(!tag) {
         os_interface_update_vlan_info(mem_idx, mas_idx, mem_name, false, true);
         br_hdlr->bridge_untag_mbr_add(mas_idx, mem_idx);
@@ -200,7 +218,6 @@ bool INTERFACE::os_interface_vlan_attrs_handler(if_details *details, cps_api_obj
     if (!strncmp(details->_info_kind, "tun", 3)) {
          if(details->_attrs[IFLA_MASTER]!=NULL  && ((details->_flags & IFF_SLAVE)==0)) {
              EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Received tun %d", details->_ifindex);
-
              if(!os_interface_vlan_bridge_handler(master_idx, details->_ifindex, details->if_name, false))
                  return true;
 
@@ -215,7 +232,6 @@ bool INTERFACE::os_interface_vlan_attrs_handler(if_details *details, cps_api_obj
 
         EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Received bond %d with master set %d",
                 details->_ifindex, *(int *)nla_data(details->_attrs[IFLA_MASTER]));
-
         if(!os_interface_vlan_bridge_handler(master_idx, details->_ifindex, details->if_name, false))
             return true;
 
@@ -259,7 +275,6 @@ bool INTERFACE::os_interface_vlan_attrs_handler(if_details *details, cps_api_obj
                         if(!os_interface_vlan_bridge_handler(master_idx, details->_ifindex,
                                                              details->if_name, true))
                             return false;
-
                         if(publish_untag) os_interface_add_untag_ports(master_idx, obj);
 
                         if (details->_attrs[IFLA_LINK]) {

@@ -47,8 +47,8 @@ class MCast_CpsEvents:
         obj = cps_object.CPSObject(module=mod,qual="observed")
 
         for key in event_data:
-            if isinstance(key, tuple) and len(key) == 3:
-                obj.add_embed_attr(list(key), event_data[key], 3)
+            if isinstance(key, tuple) and len(key) > 1:
+                obj.add_embed_attr(list(key), event_data[key], len(key))
             else:
                 obj.add_attr(key, event_data[key])
 
