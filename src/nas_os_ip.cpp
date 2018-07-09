@@ -235,6 +235,12 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
             EV_LOGGING(NAS_OS, ERR, "IP-PUB",
                        "Interface %d to if_name from OS returned error",
                        ifmsg->ifa_index);
+            if (rt_msg_type == RTM_DELADDR)  {
+                /* @@TODO Once the local intf cache supports intf-index to intf-name get, fill the below attributes,
+                 * in case of intf. del, this util which gets the intf-name from kernel fails,
+                 * and the IP addr del pub is ignored here, for now, allow it. */
+                return true;
+            }
             return false;
         }
 

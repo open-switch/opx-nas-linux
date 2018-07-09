@@ -27,6 +27,7 @@
 #include "cps_api_object_key.h"
 #include "cps_api_events.h"
 #include "ietf-igmp-mld-snooping.h"
+#include "std_utils.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -200,10 +201,11 @@ static void _parse_snoop_routes(cps_api_object_it_t &itor, int event_type)
             if (grp_attr_id == group_if_id) {
                 const char *if_name = (char *)cps_api_object_attr_data_bin(grp_it.attr);
                 cout<<"Multicast route OIF "<< if_name<<endl;
+                safestrncpy(received_oif, if_name,sizeof(received_oif));
             } else if (grp_attr_id == group_addr_id) {
                 const char *ip_addr_str = (const char *)cps_api_object_attr_data_bin(grp_it.attr);
                 cout<<"Multicast route group address "<<ip_addr_str<<endl;
-                strncpy(received_grp_ip, ip_addr_str,sizeof(received_grp_ip));
+                safestrncpy(received_grp_ip, ip_addr_str,sizeof(received_grp_ip));
             } else if (grp_attr_id == group_src_id) {
                 cps_api_object_it_t in_grp_it = grp_it;
                 cps_api_object_it_inside(&in_grp_it);
@@ -215,7 +217,7 @@ static void _parse_snoop_routes(cps_api_object_it_t &itor, int event_type)
                         if (src_attr_id == group_src_addr_id) {
                             const char *src_ip_str = (const char *)cps_api_object_attr_data_bin(src_it.attr);
                             cout<<"Multicast route group source address :"<< src_ip_str<<endl;
-                            strncpy(received_src_ip, src_ip_str,sizeof(received_src_ip));
+                            safestrncpy(received_src_ip, src_ip_str,sizeof(received_src_ip));
                         }
                     }
                 }
@@ -292,7 +294,7 @@ static bool _ut_mc_event_handler(cps_api_object_t evt_obj, void *param)
          cps_api_object_it_next(&it)) {
         cps_api_attr_id_t attr_id = cps_api_object_attr_id(it.attr);
         if (attr_id == mrouter_id) {
-                strncpy(received_mrouter_ifname, (const char *)cps_api_object_attr_data_bin(it.attr),
+                safestrncpy(received_mrouter_ifname, (const char *)cps_api_object_attr_data_bin(it.attr),
                         sizeof(received_mrouter_ifname));
                 cout<<"Handling mrouter event VLAN: "<<received_vlan<<
                          " mrouter interface: "<<received_mrouter_ifname<<endl;
@@ -432,19 +434,22 @@ static bool _set_snoop_igmp_route(int vlan, const char *grp, const char *src,
    cps_api_object_t commit_obj = cps_api_object_create();
    igmp_obj(commit_obj, vlan, true);
 
-   cps_api_attr_id_t ids[3] = {IGMP_MLD_SNOOPING_RT_ROUTING_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN_STATIC_L2_MULTICAST_GROUP, 0, IGMP_MLD_SNOOPING_RT_ROUTING_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN_STATIC_L2_MULTICAST_GROUP_INTERFACE};
-   if (!cps_api_object_e_add(commit_obj, ids, 3, cps_api_object_ATTR_T_BIN, rt_oif, strlen(rt_oif)+ 1)){
-       cout << "Failed to set mc entry interface name" <<endl;
-       cps_api_object_delete(commit_obj);
-       return false;
-   }
-   ids[2] = IGMP_MLD_SNOOPING_RT_ROUTING_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN_STATIC_L2_MULTICAST_GROUP_GROUP;
+   /* group is mandatory */
+   cps_api_attr_id_t ids[3] = {IGMP_MLD_SNOOPING_RT_ROUTING_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN_STATIC_L2_MULTICAST_GROUP, 0, IGMP_MLD_SNOOPING_RT_ROUTING_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN_STATIC_L2_MULTICAST_GROUP_GROUP};
    if (!cps_api_object_e_add(commit_obj, ids, 3, cps_api_object_ATTR_T_BIN, grp, strlen(grp)+ 1)) {
        cout << "Failed to set mc entry group IP address" <<endl;
        cps_api_object_delete(commit_obj);
        return false;
    }
-
+   /* OIF can be NULL */
+   if (rt_oif) {
+      ids[2] = IGMP_MLD_SNOOPING_RT_ROUTING_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN_STATIC_L2_MULTICAST_GROUP_INTERFACE;
+      if (!cps_api_object_e_add(commit_obj, ids, 3, cps_api_object_ATTR_T_BIN, rt_oif, strlen(rt_oif)+ 1)){
+          cout << "Failed to set mc entry interface name" <<endl;
+          cps_api_object_delete(commit_obj);
+          return false;
+      }
+   }
    if (src != NULL) {
       ids[2] = IGMP_MLD_SNOOPING_RT_ROUTING_CONTROL_PLANE_PROTOCOLS_IGMP_SNOOPING_VLANS_VLAN_STATIC_L2_MULTICAST_GROUP_SOURCE_ADDR;
       if (!cps_api_object_e_add(commit_obj, ids, 3, cps_api_object_ATTR_T_BIN, src, strlen(src) + 1)) {
@@ -461,13 +466,16 @@ static bool _set_snoop_igmp_route(int vlan, const char *grp, const char *src,
    sleep(1);
 
    if((received_op != op) && (strcmp(grp,received_grp_ip) != 0) && (vlan != received_vlan) &&
-      (strcmp(rt_oif, received_oif) != 0) && ((src != NULL) && (strcmp(src,received_src_ip) != 0))) {
+      ((rt_oif != NULL) && (strcmp(rt_oif, received_oif) != 0)) && ((src != NULL) && (strcmp(src,received_src_ip) != 0))) {
      cout<<"Failed to match VLAN "<<vlan<<" Grp: "<<grp<<" Src: "<<src<<" OIF: "<<rt_oif<<" Op: "<<op<<endl;
      return false;
    }
 
    if (src) {
-     cout<<"Matched VLAN "<<vlan<<" Grp: "<<grp<<"Src: "<<src <<" OIF: "<<rt_oif<<" Op: "<<op<<endl;
+     if (rt_oif)
+       cout<<"Matched VLAN "<<vlan<<" Grp: "<<grp<<" Src: "<<src <<" OIF: "<<rt_oif <<" Op: "<<op<<endl;
+     else
+       cout<<"Matched VLAN "<<vlan<<" Grp: "<<grp<<" Src: "<<src <<" OIF: "<< "NULL" <<" Op: "<<op<<endl;
    }
    else {
      cout<<"Matched VLAN "<<vlan<<" Grp: "<<grp<<" OIF: "<<rt_oif<<" Op: "<<op<<endl;
@@ -547,6 +555,11 @@ TEST(std_mcast_snoop_app_test, mcast_snoop_igmp_route) {
        ASSERT_TRUE(0);
     }
 
+    /* (S,G) route with NULL OIF */
+    if(_set_snoop_igmp_route(vlan, grp_ip,src_ip, NULL, cps_api_oper_CREATE) == 0) {
+       ASSERT_TRUE(0);
+    }
+
     /* (*,G) route */
     if(_set_snoop_igmp_route(vlan, grp_ip,NULL, oif, cps_api_oper_DELETE) == 0) {
        ASSERT_TRUE(0);
@@ -554,6 +567,11 @@ TEST(std_mcast_snoop_app_test, mcast_snoop_igmp_route) {
 
     /* (S,G) route */
     if(_set_snoop_igmp_route(vlan, grp_ip,src_ip, oif, cps_api_oper_DELETE) == 0) {
+       ASSERT_TRUE(0);
+    }
+
+    /* (S,G) route with NULL OIF */
+    if(_set_snoop_igmp_route(vlan, grp_ip,src_ip, NULL, cps_api_oper_DELETE) == 0) {
        ASSERT_TRUE(0);
     }
 }

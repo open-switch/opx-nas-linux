@@ -32,6 +32,7 @@
 #include "nas_nlmsg.h"
 #include "cps_api_object_key.h"
 #include "ds_api_linux_interface.h"
+#include "hal_if_mapping.h"
 #include "nas_os_l3_utils.h"
 
 #include "std_utils.h"
@@ -257,7 +258,6 @@ t_std_error nas_os_process_ports(hal_ifindex_t lag_index,hal_ifindex_t if_index)
 t_std_error nas_os_add_port_to_lag(cps_api_object_t obj)
 {
 
-    EV_LOGGING(NAS_OS, INFO, "CPS Interface", "ADD Port to LAG");
 
     cps_api_object_attr_t lag_index_attr = cps_api_object_attr_get(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
     cps_api_object_attr_t lag_port_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_MEMBER_PORTS);
@@ -293,7 +293,7 @@ t_std_error nas_os_add_port_to_lag(cps_api_object_t obj)
         if (nas_os_util_int_admin_state_get(if_name,&astate,&ostate)==STD_ERR_OK) {
             state = (astate == DB_ADMIN_STATE_UP)? true: false;
         } else {
-            EV_LOGGING(NAS_OS,ERR,"NAS-IF-REG","Get admin failed for idx %s", if_name);
+            EV_LOGGING(NAS_OS,ERR,"NAS-OS-LAG","Get admin failed for idx %s", if_name);
         }
 
         EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Masking admin state event for %d", if_index);
@@ -304,14 +304,14 @@ t_std_error nas_os_add_port_to_lag(cps_api_object_t obj)
             cps_api_object_attr_delete(if_obj,IF_INTERFACES_INTERFACE_ENABLED);
             cps_api_object_attr_add_u32(if_obj,IF_INTERFACES_INTERFACE_ENABLED, false);
             if(nas_os_interface_set_attribute(if_obj,IF_INTERFACES_INTERFACE_ENABLED)!=STD_ERR_OK) {
-                EV_LOGGING(NAS_OS,ERR,"NAS-IF-REG","Set admin failed for idx %d", if_index);
+                EV_LOGGING(NAS_OS,ERR,"NAS-OS-LAG","Set admin failed for idx %d", if_index);
                 rc = STD_ERR(NAS_OS,FAIL, 0);
                 break;
             }
         }
 
         if(nas_os_process_ports(lag_index,if_index) != STD_ERR_OK) {
-            EV_LOGGING(NAS_OS, ERR,"NAS-OS-LAG", "Failure  Adding interface in kernel");
+            EV_LOGGING(NAS_OS, ERR,"NAS-OS-LAG", "Failure  Adding interface %d to the lag %d in kernel", if_index, lag_index);
             rc = (STD_ERR(NAS_OS,FAIL, 0));
             break;
         }
@@ -320,7 +320,7 @@ t_std_error nas_os_add_port_to_lag(cps_api_object_t obj)
             cps_api_object_attr_delete(if_obj,IF_INTERFACES_INTERFACE_ENABLED);
             cps_api_object_attr_add_u32(if_obj,IF_INTERFACES_INTERFACE_ENABLED, false);
             if(nas_os_interface_set_attribute(if_obj,IF_INTERFACES_INTERFACE_ENABLED)!=STD_ERR_OK) {
-                EV_LOGGING(NAS_OS,ERR,"NAS-IF-REG","Set admin failed for idx %d", if_index);
+                EV_LOGGING(NAS_OS,ERR,"NAS-OS-LAG","Set admin failed for idx %d", if_index);
                 rc = STD_ERR(NAS_OS,FAIL, 0);
                 break;
             }
@@ -355,23 +355,33 @@ t_std_error nas_os_delete_port_from_lag(cps_api_object_t obj)
     }
 
     t_std_error rc = STD_ERR_OK;
-    bool state;
     do {
         if (nas_os_get_interface_obj(if_index, if_obj)!=STD_ERR_OK) {
             rc = STD_ERR(NAS_OS,FAIL, 0);
             break;
         }
-        cps_api_object_attr_t admin_attr = cps_api_object_attr_get(if_obj, IF_INTERFACES_INTERFACE_ENABLED);
-        if(admin_attr == NULL) {
-            EV_LOGGING(NAS_OS, ERR,"NAS-OS-LAG","Admin attribute missing!");
-            rc = STD_ERR(NAS_OS,FAIL, 0);
-            break;
+
+        db_interface_state_t astate;
+        db_interface_operational_state_t ostate;
+        interface_ctrl_t if_ctrl;
+        memset(&if_ctrl,0,sizeof(if_ctrl));
+        if_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
+        if_ctrl.if_index = if_index;
+        bool state = true;
+
+        if (dn_hal_get_interface_info(&if_ctrl) == STD_ERR_OK) {
+            // get admin state information from kernel for the given member port
+            if (nas_os_util_int_admin_state_get(if_ctrl.if_name,&astate,&ostate)==STD_ERR_OK) {
+                state = (astate == DB_ADMIN_STATE_UP)? true: false;
+            } else {
+                EV_LOGGING(NAS_OS,ERR,"NAS-OS-LAG","Get admin failed for idx %s", if_ctrl.if_name);
+            }
+        }else{
+            EV_LOGGING(NAS_OS,ERR,"NAS-OS-LAG","Interface information not found for port %d",if_ctrl.if_index);
         }
 
-        state = (bool) cps_api_object_attr_data_u32(admin_attr);
-
         if(nas_os_process_ports(lag_index,if_index) != STD_ERR_OK) {
-            EV_LOGGING(NAS_OS, ERR,"NAS-OS-LAG","Failure Deleting interface in kernel");
+            EV_LOGGING(NAS_OS, ERR,"NAS-OS-LAG","Failure Deleting interface %d from Lag in kernel", if_index);
             rc = STD_ERR(NAS_OS,FAIL, 0);
             break;
         }
