@@ -115,13 +115,14 @@ def _set_proc_variable(path, value):
         return -1
 
 
-def create_obj_from_line(obj_type, ifix, ifname):
+def create_obj_from_line(obj_type, ifix, ifname, vrfname):
 
     af = _get_af_from_name(obj_type)
 
     o = cps_object.CPSObject(obj_type, data={'base-ip/' + af + '/vrf-id': 0,
                                              'base-ip/' + af + '/ifindex': ifix,
                                              'base-ip/' + af + '/name': ifname,
+                                             'base-ip/' + af + '/vrf-name': vrfname,
                                              })
     return o
 
@@ -203,10 +204,17 @@ def _get_ip_objs(filt, resp):
     af = _get_af_from_obj(filt)
     name = _get_key_from_obj(filt)
 
-    lst = dn_base_ip_tool.get_if_details(name)
+    vrf_name = None
+    try:
+       vrf_name = filt.get_attr_data('base-ip/' + af + '/vrf-name')
+    except:
+       # VRF-name is optional attribute.
+       pass
+
+    lst = dn_base_ip_tool.get_if_details(vrf_name, name)
 
     for _if in lst:
-        o = create_obj_from_line('base-ip/' + af, _if.ifix, _if.ifname)
+        o = create_obj_from_line('base-ip/' + af, _if.ifix, _if.ifname, _if.vrf_name)
 
         name = o.get_attr_data('base-ip/' + af + '/name')
         if not filt.key_compare(
@@ -256,7 +264,14 @@ def _get_ip_addr_obj(filt, resp):
     af = _get_af_from_obj(filt)
     name = _get_key_from_obj(filt)
 
-    lst = dn_base_ip_tool.get_if_details(name)
+    vrf_name = None
+    try:
+       vrf_name = filt.get_attr_data('base-ip/' + af + '/vrf-name')
+    except:
+       # VRF-name is optional attribute.
+       pass
+
+    lst = dn_base_ip_tool.get_if_details(vrf_name, name)
 
     for _if in lst:
 
@@ -267,7 +282,7 @@ def _get_ip_addr_obj(filt, resp):
             o = create_obj_from_line(
                 'base-ip/' + af + '/address',
                 _if.ifix,
-                _if.ifname)
+                _if.ifname, _if.vrf_name)
             if not filt.key_compare(
                 {'base-ip/' + af + '/name': o.get_attr_data('base-ip/' + af + '/name'),
                                    'base-ip/' + af + '/ifindex': o.get_attr_data('base-ip/' + af + '/ifindex')}):
@@ -395,7 +410,7 @@ def trans_cb(methods, params):
         if params['operation'] == 'create' and obj.get_key() == _keys['base-ip/' + af + '/address']:
             addr = _create_ip_and_prefix_from_obj(obj, af)
             log_info("Attempting to add address:%s intf:%s vrf:%s"% (addr, name, vrf_name))
-            if dn_base_ip_tool.add_ip_addr(addr, name, vrf_name):
+            if dn_base_ip_tool.add_ip_addr(addr, name, af, vrf_name):
                 return True
             log_err("Attempting to add address:%s intf:%s vrf:%s failed"% (addr, name, vrf_name))
 

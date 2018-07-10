@@ -14,6 +14,7 @@
 
 
 import subprocess
+import netaddr
 import re
 import os
 import cps
@@ -64,10 +65,13 @@ def run_command(cmd, response):
     return p.returncode
 
 
-def _get_ip_addr(dev=None):
+def _get_ip_addr(vrf_name, dev=None):
     output = []
     result = []
-    cmd = [iplink_cmd, 'addr', 'show']
+    if vrf_name == 'default':
+        cmd = [iplink_cmd, 'addr', 'show']
+    else:
+        cmd = [iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'addr', 'show']
     if dev is not None:
         cmd.append('dev')
         cmd.append(dev)
@@ -134,7 +138,8 @@ class InterfaceObject:
                         if data[1] == 'bond':
                             self.type = 10
 
-    def __init__(self, lines):
+    def __init__(self, lines, vrf_name):
+        self.vrf_name = str(vrf_name)
         self.ifix = _find_field(
             r'(?P<ifindex>\d+):\s+(?P<ifname>\S+):\s+<(?P<flags>\S+)>',
             'ifindex',
@@ -183,27 +188,66 @@ class InterfaceObject:
             if _af == 'inet' or _af == 'inet6':
                 self.ip.append((_af, _addr, _prefix))
 
-
-def get_if_details(dev=None):
-    l = _get_ip_addr(dev)
+def get_if_details_per_vrf(resp, vrf_name, dev=None):
+    l = []
+    l = _get_ip_addr(vrf_name, dev)
     l = _group_lines_based_on_position(0, l)
-    res = []
     for i in l:
-        res.append(InterfaceObject(i))
+        resp.append(InterfaceObject(i, vrf_name))
+    return True
 
-    return res
+def get_if_details(vrf_name=None, dev=None):
+    resp = []
+    if vrf_name is None:
+        cmd = ['/sbin/ip','netns','list']
+        res = []
+        if run_command(cmd, res) != 0:
+            return resp
+        if len(res) == 0:
+            get_if_details_per_vrf(resp, 'default', dev)
+        else:
+            for vrf in res:
+                vrf_name = vrf.split(' ')[0]
+                get_if_details_per_vrf(resp, vrf_name, dev)
+    else:
+        get_if_details_per_vrf(resp, vrf_name, dev)
+
+    return resp
 
 
-def add_ip_addr(addr_and_prefix, dev, vrf_name='default'):
+def add_ip_addr(addr_and_prefix, dev, af, vrf_name='default'):
+    bcast_addr = None
+    if af == "ipv4":
+        try:
+            ip = netaddr.IPNetwork(addr_and_prefix)
+            bcast_addr = ip.broadcast
+        except Exception as e:
+            return False
+
+    cmds = {
+               'bcast_flag': { 'default': [iplink_cmd, 'addr', 'add', addr_and_prefix, 'broadcast', str(bcast_addr), 'dev', dev],
+                               'vrf_name': [iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'addr', 'add',
+                                            addr_and_prefix, 'broadcast', str(bcast_addr), 'dev', dev] },
+               'no_bcast_flag': { 'default': [iplink_cmd, 'addr', 'add', addr_and_prefix, 'dev', dev],
+                                  'vrf_name': [iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'addr', 'add',
+                                              addr_and_prefix, 'dev', dev]}
+          }
+
     res = []
-    if vrf_name == 'default':
-        if run_command([iplink_cmd, 'addr', 'add', addr_and_prefix, 'dev', dev], res) == 0:
-            return True
-        return False
+    if bcast_addr is None:
+       if vrf_name == 'default':
+           cmd = cmds['no_bcast_flag']['default']
+       else:
+            cmd = cmds['no_bcast_flag']['vrf_name']
+    else:
+        if vrf_name == 'default':
+           cmd = cmds['bcast_flag']['default']
+        else:
+            cmd = cmds['bcast_flag']['vrf_name']
 
-    if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'addr', 'add',\
-                   addr_and_prefix, 'dev', dev], res) == 0:
+    if run_command(cmd, res) == 0:
         return True
+
     return False
 
 
@@ -454,7 +498,7 @@ def handle_interface_event_for_lla_cfg():
         lla_addr_with_prefix_len = lla_addr + '/64'
         # Configuring the LLA on the L2 intf will lead to error, pass the exception
         try:
-            add_ip_addr(lla_addr_with_prefix_len, intf_name,vrf_name)
+            add_ip_addr(lla_addr_with_prefix_len, intf_name,"ipv6",vrf_name)
         except:
             pass
 

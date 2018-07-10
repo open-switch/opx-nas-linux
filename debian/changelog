@@ -1,3 +1,25 @@
+opx-nas-linux (5.22.0) unstable; urgency=medium
+
+  * Bugfix: Non-default VRF with MASQURADE option should not change the source IP of the forwarded traffic.
+  * Bugfix: Kernel is not updated with the CoPP ACL destination address correctly. 
+  * Update: Cleanup vrf-firewall outgoing service model that handles service binding config.
+            Ensuring proper handling of private ip/port allocation/de-allocation.
+  * Update: Support for dst_ip filter type for COPP ACL
+  * Bugfix: Added rule to drop all flooded queries except the general queries.
+  * Bugfix: Support for oper. status publish thru BASE_IF_LINUX_IF_INTERFACES_INTERFACE_IF_FLAGS 
+            CPS attribute from NAS-linux.
+  * Update: Added support for CPS Get query on IP address, based on non-default VRF name filter. 
+  * Update: Added support to handle snoop routes with no OIF(out going interfaces).
+  * Update: Added support for outgoing source address translation as part of ns-outgoing-service model. 
+  * Update: Added UT scripts for outgoing service configuration.
+  * Update: Added interface attribute to incoming service model to support rule configuration on a specific port.
+  * Update: Added broadcast address during IP address configuration.
+  * Update: Added support for L4 destination port range for CoPP ACL.
+  * Update: Added default accept rule for lo interface to default netns.
+  * Bugfux: Fix ping failure after unconfigure and re-configure.
+
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Mon, 9 Jul 2018 19:25:43 -0800
+
 opx-nas-linux (5.19.0) unstable; urgency=medium
 
   * Feature: Support for VTY ACL squash
