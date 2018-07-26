@@ -49,6 +49,13 @@ t_std_error nas_os_add_vlan(cps_api_object_t obj, hal_ifindex_t *br_index);
 t_std_error nas_os_del_vlan(cps_api_object_t obj);
 
 /**
+ * @brief : Del Bridge : This removes the bridge interface from kernel
+ *
+ * @obj : CPS API object which contains bridge_name and kernel ifindex
+ */
+
+t_std_error nas_os_delete_bridge (cps_api_object_t obj);
+/**
  * @brief : Add port in the vlan : Creates the vlan interface in kernel and
  * also updates the interface in the bridge
  *
@@ -59,12 +66,47 @@ t_std_error nas_os_del_vlan(cps_api_object_t obj);
 t_std_error nas_os_add_port_to_vlan(cps_api_object_t obj, hal_ifindex_t *vlan_index);
 
 /**
+ * @brief : Add an interface to a bridge : Adds an  interface in the bridge
+ *
+ * @obj : CPS API object which contains vlan_id, bridge name, interface name
+ */
+
+t_std_error  nas_os_add_intf_to_bridge(cps_api_object_t obj);
+
+/**
+ * @brief : Creates a sub interface
+ *
+ * @obj : CPS API object which contains vlan_id, and interface name
+ *        ifindex of  the newly  created interface is returned.
+ */
+
+t_std_error nas_os_create_subinterface(cps_api_object_t obj);
+
+/**
  * @brief : Del port from vlan : Deletes the vlan interface from bridge and
  * also deletes the interface in the kernel
  *
  * @obj : CPS API object which contains vlan_id, portindex for the port
  */
+
 t_std_error nas_os_del_port_from_vlan(cps_api_object_t obj);
+
+
+t_std_error nas_os_del_intf_from_bridge(cps_api_object_t obj);
+
+/**
+ * @brief : Delete an interface from a bridge.
+ *
+ * @obj : CPS API object which contains vlan_id, tagged or untagged interface name
+ */
+
+t_std_error nas_os_del_intf_from_bridge(cps_api_object_t obj);
+
+/*r
+ * @brief : Deletes a sub interface based on name in obj
+ *
+ */
+t_std_error nas_os_delete_subinterface (cps_api_object_t obj);
 
 /**
  * @brief : Delete vlan interface: Deletes the vlan interface from kernel
@@ -100,6 +142,19 @@ bool nas_os_tag_port_exist(cps_api_object_t obj);
  */
 
 t_std_error nas_os_vlan_set_member_port_mtu(cps_api_object_t obj);
+
+/*
+ * @brief : Update the master interface for given slave interface index and vlan id in the OS
+ *
+ * @slave_ifindex - interface index of the slave interface
+ *
+ * @vlan_id : vlan id of the slave interface
+ *
+ * @master_ifindex : master interface index
+ *
+ * @return STD_ERR_OK if successful otherwise different error code
+ */
+t_std_error nas_os_change_master(hal_ifindex_t slave_ifindex,hal_vlan_id_t vlan_id ,hal_ifindex_t master_ifindex);
 
 #ifdef __cplusplus
 }

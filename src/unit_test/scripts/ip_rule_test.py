@@ -132,16 +132,16 @@ def test_id_alloc_resv():
 
 def test_rule_obj():
     af = socket.AF_INET
-    rule1 = cfg.VrfIncomingSvcsRule(cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, 'test_vrf',
-                                cfg.VrfIncomingSvcsRule.RULE_ACTION_ALLOW, af,
-                                src_ip = socket.inet_pton(af, '1.1.1.0'), prefix_len = 24,
-                                protocol = cfg.VrfIncomingSvcsRule.RULE_PROTO_TCP,
+    rule1 = cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'test_vrf',
+                                cfg.VrfSvcsRuleAction.RULE_ACTION_ALLOW, af,
+                                src_ip = socket.inet_pton(af, '1.1.1.0'), src_prefix_len = 24,
+                                protocol = cfg.VrfSvcsRuleProto.RULE_PROTO_TCP,
                                 dst_port = 8080, seq_num = 100,
                                 rule_id = 1)
-    rule2 = cfg.VrfIncomingSvcsRule(cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, 'test_vrf',
-                                cfg.VrfIncomingSvcsRule.RULE_ACTION_DENY, af,
-                                src_ip = socket.inet_pton(af, '1.1.2.0'), prefix_len = 24,
-                                protocol = cfg.VrfIncomingSvcsRule.RULE_PROTO_UDP,
+    rule2 = cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'test_vrf',
+                                cfg.VrfSvcsRuleAction.RULE_ACTION_DENY, af,
+                                src_ip = socket.inet_pton(af, '1.1.2.0'), src_prefix_len = 24,
+                                protocol = cfg.VrfSvcsRuleProto.RULE_PROTO_UDP,
                                 dst_port = 1000, seq_num = 110,
                                 rule_id = 2)
     assert rule1.get_rule_type_name() == 'ACL'
@@ -153,18 +153,18 @@ def test_rule_obj():
     print str(rule2)
     assert rule1 == rule1
     assert not rule1 == rule2
-    assert rule1.match(src_ip = socket.inet_pton(af, '1.1.1.0'), prefix_len = 24)
-    assert not rule2.match(src_ip = socket.inet_pton(af, '1.1.1.0'), prefix_len = 24)
+    assert rule1.match(src_ip = socket.inet_pton(af, '1.1.1.0'), src_prefix_len = 24)
+    assert not rule2.match(src_ip = socket.inet_pton(af, '1.1.1.0'), src_prefix_len = 24)
 
     af = socket.AF_INET6
-    rule1 = cfg.VrfIncomingSvcsRule(cfg.VrfIncomingSvcsRule.RULE_TYPE_IP, 'test_vrf',
-                                cfg.VrfIncomingSvcsRule.RULE_ACTION_DNAT, af,
-                                src_ip = socket.inet_pton(af, '1::1'), prefix_len = 128,
+    rule1 = cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_IP, 'test_vrf',
+                                cfg.VrfSvcsRuleAction.RULE_ACTION_DNAT, af,
+                                src_ip = socket.inet_pton(af, '1::1'), src_prefix_len = 128,
                                 dst_ip = socket.inet_pton(af, '2::1'),
-                                protocol = cfg.VrfIncomingSvcsRule.RULE_PROTO_ICMP)
-    rule2 = cfg.VrfIncomingSvcsRule(cfg.VrfIncomingSvcsRule.RULE_TYPE_IP, 'test_vrf',
-                                cfg.VrfIncomingSvcsRule.RULE_ACTION_DNAT, af,
-                                src_ip = socket.inet_pton(af, '1::2'), prefix_len = 128,
+                                protocol = cfg.VrfSvcsRuleProto.RULE_PROTO_ICMP)
+    rule2 = cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_IP, 'test_vrf',
+                                cfg.VrfSvcsRuleAction.RULE_ACTION_DNAT, af,
+                                src_ip = socket.inet_pton(af, '1::2'), src_prefix_len = 128,
                                 dst_ip = socket.inet_pton(af, '2::1'),
                                 seq_num = 20)
     print 'IPv6 rule created:'
@@ -177,12 +177,12 @@ def test_rule_obj():
     with pytest.raises(ValueError):
         rule = cfg.VrfIncomingSvcsRule(100, 'vrf', 1, socket.AF_INET6)
     with pytest.raises(ValueError):
-        rule = cfg.VrfIncomingSvcsRule(cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, 'vrf', 1, 50)
+        rule = cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'vrf', 1, 50)
     with pytest.raises(ValueError):
-        rule = cfg.VrfIncomingSvcsRule(cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, 'vrf', 1, socket.AF_INET,
+        rule = cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'vrf', 1, socket.AF_INET,
                                    protocol = 6)
     with pytest.raises(ValueError):
-        rule = cfg.VrfIncomingSvcsRule(cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, 'vrf', 6, socket.AF_INET)
+        rule = cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'vrf', 6, socket.AF_INET)
 
 # check if seq_num is sorted and rule_id_map
 def check_rule_list(rule_list):
@@ -198,17 +198,18 @@ def check_rule_list(rule_list):
 def test_rule_list():
     id_gen = IdGenerator()
     prefix_len_list = [8, 16, 24, 32]
-    action_list = [cfg.VrfIncomingSvcsRule.RULE_ACTION_ALLOW, cfg.VrfIncomingSvcsRule.RULE_ACTION_DENY]
+    bool_list = [True, False]
+    action_list = [cfg.VrfSvcsRuleAction.RULE_ACTION_ALLOW, cfg.VrfSvcsRuleAction.RULE_ACTION_DENY]
     src_ip_list = []
     for idx in range(1, 250):
-        src_ip_list.append('2.2.2.' + str(idx))
+        src_ip_list.append(str(idx) + '.2.2.2')
     rule_list = cfg.VrfIncomingSvcsRuleList()
 
     af = socket.AF_INET
-    rule1 = cfg.VrfIncomingSvcsRule(cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, 'test_vrf',
-                                cfg.VrfIncomingSvcsRule.RULE_ACTION_ALLOW, af,
-                                src_ip = socket.inet_pton(af, '1.1.1.0'), prefix_len = 24,
-                                protocol = cfg.VrfIncomingSvcsRule.RULE_PROTO_TCP,
+    rule1 = cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'test_vrf',
+                                cfg.VrfSvcsRuleAction.RULE_ACTION_ALLOW, af,
+                                src_ip = socket.inet_pton(af, '1.1.1.0'), src_prefix_len = 24,
+                                protocol = cfg.VrfSvcsRuleProto.RULE_PROTO_TCP,
                                 dst_port = 8080, seq_num = 100)
 
     assert rule_list.insert(rule1) is None
@@ -235,11 +236,18 @@ def test_rule_list():
         src_ip = get_rand_list_item(src_ip_list, True)
         if src_ip is None:
             break
-        prefix_len = get_rand_list_item(prefix_len_list)
+        src_prefix_len = get_rand_list_item(prefix_len_list)
+        if get_rand_list_item(bool_list):
+            dst_ip = socket.inet_pton(socket.AF_INET, get_rand_list_item(src_ip_list))
+            dst_prefix_len = src_prefix_len
+        else:
+            dst_ip = None
+            dst_prefix_len = None
         action = get_rand_list_item(action_list)
-        rule = cfg.VrfIncomingSvcsRule(cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, "test_vrf", action, af,
+        rule = cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, "test_vrf", action, af,
                                    src_ip = socket.inet_pton(socket.AF_INET, src_ip),
-                                   prefix_len = prefix_len, seq_num = random.randint(1, 1000),
+                                   src_prefix_len = src_prefix_len, seq_num = random.randint(1, 1000),
+                                   dst_ip = dst_ip, dst_prefix_len = dst_prefix_len,
                                    rule_id = id_gen.get_new_id())
         print 'Add rule to list: %s' % rule
         idx = rule_list.insert(rule)
@@ -271,17 +279,17 @@ def test_rule_list():
     assert len(new_list.rule_id_map) == 0
 
 def generate_random_rules(max_rule_num):
-    src_ip_list = ['10.1.1.%d' % x for x in range(1, 255)]
-    src_ip6_list = ['1000::%d' % x for x in range(101, 300)]
+    src_ip_list = ['%d.1.1.1' % x for x in range(1, 223)]
+    src_ip6_list = ['%d::1000' % x for x in range(1000, 1200)]
     dst_port_list = range(20, 200)
     dst_ip4 = '192.168.0.1'
     dst_ip6 = '1::1'
-    rule_type_list = [cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, cfg.VrfIncomingSvcsRule.RULE_TYPE_IP]
+    rule_type_list = [cfg.VrfSvcsRuleType.RULE_TYPE_ACL, cfg.VrfSvcsRuleType.RULE_TYPE_IP]
     af_list = [socket.AF_INET, socket.AF_INET6]
-    proto_list = [cfg.VrfIncomingSvcsRule.RULE_PROTO_TCP, cfg.VrfIncomingSvcsRule.RULE_PROTO_UDP]
-    action_list = [cfg.VrfIncomingSvcsRule.RULE_ACTION_DENY, cfg.VrfIncomingSvcsRule.RULE_ACTION_ALLOW]
+    proto_list = [cfg.VrfSvcsRuleProto.RULE_PROTO_TCP, cfg.VrfSvcsRuleProto.RULE_PROTO_UDP]
+    action_list = [cfg.VrfSvcsRuleAction.RULE_ACTION_DENY, cfg.VrfSvcsRuleAction.RULE_ACTION_ALLOW]
     prefix_list = [8, 16, 24, 32]
-    prefix6_list = [8, 16, 24, 32, 64, 128]
+    prefix6_list = [16, 24, 32, 64, 128]
     bool_list = [True, False]
     rule_id_list = range(10000, 10200)
     intf_list = [None, 'vdef-nsid1024', 'lo']
@@ -297,18 +305,25 @@ def generate_random_rules(max_rule_num):
         else:
             rule_id = None
         high_prio = get_rand_list_item(bool_list)
-        if rule_type == cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL:
+        if rule_type == cfg.VrfSvcsRuleType.RULE_TYPE_ACL:
             if af == socket.AF_INET:
                 src_ip = get_rand_list_item(src_ip_list, True)
-                prefix_len = get_rand_list_item(prefix_list)
+                src_prefix_len = get_rand_list_item(prefix_list)
             else:
                 src_ip = get_rand_list_item(src_ip6_list, True)
-                prefix_len = get_rand_list_item(prefix6_list)
+                src_prefix_len = get_rand_list_item(prefix6_list)
             if src_ip is None:
                 break
+            if get_rand_list_item(bool_list):
+                dst_ip = socket.inet_pton(af, src_ip)
+                dst_prefix_len = src_prefix_len
+            else:
+                dst_ip = None
+                dst_prefix_len = None
             in_intf = get_rand_list_item(intf_list)
             rule = cfg.VrfIncomingSvcsRule(rule_type, vrf_name, action, af,
-                                           src_ip = socket.inet_pton(af, src_ip), prefix_len = prefix_len,
+                                           src_ip = socket.inet_pton(af, src_ip), src_prefix_len = src_prefix_len,
+                                           dst_ip = dst_ip, dst_prefix_len = dst_prefix_len,
                                            seq_num = seq_num, rule_id = rule_id,
                                            high_prio = high_prio, in_intf = in_intf)
         else:
@@ -317,7 +332,7 @@ def generate_random_rules(max_rule_num):
             if dst_port is None:
                 break
             if vrf_name != 'default':
-                action = cfg.VrfIncomingSvcsRule.RULE_ACTION_DNAT
+                action = cfg.VrfSvcsRuleAction.RULE_ACTION_DNAT
                 if af == socket.AF_INET:
                     dst_ip = dst_ip4
                 else:
@@ -334,7 +349,7 @@ def get_rule_count(rule_list):
     count_acl = {socket.AF_INET: {}, socket.AF_INET6: {}}
     count_ip = {socket.AF_INET: {}, socket.AF_INET6: {}}
     for rule in rule_list:
-        if rule.rule_type == cfg.VrfIncomingSvcsRule.RULE_TYPE_IP:
+        if rule.rule_type == cfg.VrfSvcsRuleType.RULE_TYPE_IP:
             count_map = count_ip
         else:
             count_map = count_acl
@@ -370,7 +385,7 @@ def test_ipt_handler():
 
 def test_rule_cache():
     bool_list = [True, False]
-    action_list = [cfg.VrfIncomingSvcsRule.RULE_ACTION_DENY, cfg.VrfIncomingSvcsRule.RULE_ACTION_ALLOW]
+    action_list = [cfg.VrfSvcsRuleAction.RULE_ACTION_DENY, cfg.VrfSvcsRuleAction.RULE_ACTION_ALLOW]
     rule_list = generate_random_rules(test_rule_count)
     acl_count, ip_count = get_rule_count(rule_list)
     print 'Test rule cache insert/delete_by_id with %d rules' % len(rule_list)
@@ -392,11 +407,11 @@ def test_rule_cache():
         ret_val = cfg.VrfIncomingSvcsRuleCache.find_rule_by_id(rule_id)
         assert ret_val is not None
         rule, idx = ret_val
-        if rule.grp_priority == cfg.VrfIncomingSvcsRule.HIGH_GRP_PRIO:
+        if rule.grp_priority == cfg.VrfSvcsRuleGroupPrio.HIGH_GRP_PRIO:
             if ((rule.rule_type, rule.vrf_name, rule.af) not in max_prio_rule_idx or
                 idx > max_prio_rule_idx[(rule.rule_type, rule.vrf_name, rule.af)]):
                 max_prio_rule_idx[(rule.rule_type, rule.vrf_name, rule.af)] = idx
-        elif rule.grp_priority == cfg.VrfIncomingSvcsRule.DEFAULT_GRP_PRIO:
+        elif rule.grp_priority == cfg.VrfSvcsRuleGroupPrio.DEFAULT_GRP_PRIO:
             if ((rule.rule_type, rule.vrf_name, rule.af) not in min_reg_rule_idx or
                 idx < min_reg_rule_idx[(rule.rule_type, rule.vrf_name, rule.af)]):
                 min_reg_rule_idx[(rule.rule_type, rule.vrf_name, rule.af)] = idx
@@ -463,7 +478,7 @@ def test_rule_cache():
         params = {}
         if get_rand_list_item(bool_list):
             params['seq_num'] = rule.seq_num + random.randint(1, 100)
-        if rule.rule_type == cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL:
+        if rule.rule_type == cfg.VrfSvcsRuleType.RULE_TYPE_ACL:
             if rule.af == socket.AF_INET:
                 params['src_ip'] = socket.inet_pton(rule.af, '1.1.1.%d' % offset)
             else:
@@ -471,7 +486,7 @@ def test_rule_cache():
             if get_rand_list_item(bool_list):
                 params['action'] = get_rand_list_item(action_list)
         else:
-            params['protocol'] = cfg.VrfIncomingSvcsRule.RULE_PROTO_TCP
+            params['protocol'] = cfg.VrfSvcsRuleProto.RULE_PROTO_TCP
             params['dst_port'] = 300 + offset
         offset += 1
         print 'UPDATE rule with: %s' % params
@@ -513,11 +528,11 @@ def test_rule_cache():
         except ValueError:
             assert False
     for af in [socket.AF_INET, socket.AF_INET6]:
-        rule_type = cfg.VrfIncomingSvcsRule.RULE_TYPE_IP
+        rule_type = cfg.VrfSvcsRuleType.RULE_TYPE_IP
         for vrf_name in ip_count[af].keys():
             ret_list = cfg.VrfIncomingSvcsRuleCache.get_all_rules(rule_type, vrf_name, af = af)
             assert len(ret_list) == ip_count[af][vrf_name]
-        rule_type = cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL
+        rule_type = cfg.VrfSvcsRuleType.RULE_TYPE_ACL
         for vrf_name in acl_count[af].keys():
             ret_list = cfg.VrfIncomingSvcsRuleCache.get_all_rules(rule_type, vrf_name, af = af)
             assert len(ret_list) == acl_count[af][vrf_name]
@@ -528,39 +543,42 @@ def test_rule_cache():
     assert cfg.VrfIncomingSvcsRuleCache.id_generator.avail_id == 1
 
 def test_rule_api():
-    rid1 = cfg.process_vrf_svcs_rule_add(cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, 'management',
-                                         cfg.VrfIncomingSvcsRule.RULE_ACTION_DENY,
+    rid1 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'management',
+                                         cfg.VrfSvcsRuleAction.RULE_ACTION_DENY,
                                          socket.AF_INET,
-                                         src_ip = socket.inet_pton(socket.AF_INET, '1.1.1.0'), prefix_len = 24,
+                                         src_ip = socket.inet_pton(socket.AF_INET, '1.1.1.0'), src_prefix_len = 24,
+                                         dst_ip = socket.inet_pton(socket.AF_INET, '8.8.8.0'), dst_prefix_len = 24,
                                          seq_num = 100)
     assert rid1 is not None
-    rid2 = cfg.process_vrf_svcs_rule_add(cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, 'management',
-                                         cfg.VrfIncomingSvcsRule.RULE_ACTION_ALLOW,
+    rid2 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'management',
+                                         cfg.VrfSvcsRuleAction.RULE_ACTION_ALLOW,
                                          socket.AF_INET6,
-                                         src_ip = socket.inet_pton(socket.AF_INET6, '1:1::'), prefix_len = 64,
+                                         src_ip = socket.inet_pton(socket.AF_INET6, '1:1::'), src_prefix_len = 64,
+                                         dst_ip = socket.inet_pton(socket.AF_INET6, '2:2::'), dst_prefix_len = 64,
                                          seq_num = 101)
     assert rid2 is not None
-    rid3 = cfg.process_vrf_svcs_rule_add(cfg.VrfIncomingSvcsRule.RULE_TYPE_IP, 'management',
-                                         cfg.VrfIncomingSvcsRule.RULE_ACTION_DNAT,
+    rid3 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_IP, 'management',
+                                         cfg.VrfSvcsRuleAction.RULE_ACTION_DNAT,
                                          socket.AF_INET,
-                                         protocol = cfg.VrfIncomingSvcsRule.RULE_PROTO_TCP, dst_port = 1234,
+                                         protocol = cfg.VrfSvcsRuleProto.RULE_PROTO_TCP, dst_port = 1234,
                                          dst_ip = socket.inet_pton(socket.AF_INET, '3.3.3.3'))
     assert rid3 is not None
-    rid4 = cfg.process_vrf_svcs_rule_add(cfg.VrfIncomingSvcsRule.RULE_TYPE_IP, 'management',
-                                         cfg.VrfIncomingSvcsRule.RULE_ACTION_DNAT,
+    rid4 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_IP, 'management',
+                                         cfg.VrfSvcsRuleAction.RULE_ACTION_DNAT,
                                          socket.AF_INET6,
-                                         protocol = cfg.VrfIncomingSvcsRule.RULE_PROTO_TCP, dst_port = 1235,
+                                         protocol = cfg.VrfSvcsRuleProto.RULE_PROTO_TCP, dst_port = 1235,
                                          dst_ip = socket.inet_pton(socket.AF_INET6, '3::3'))
     assert rid4 is not None
 
     assert cfg.process_vrf_svcs_rule_set(rid1, src_ip = socket.inet_pton(socket.AF_INET, '2.2.2.0'))
     assert cfg.process_vrf_svcs_rule_set(rid2, seq_num = 200)
-    assert not cfg.process_vrf_svcs_rule_del(cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, 'management',
-                                             cfg.VrfIncomingSvcsRule.RULE_ACTION_DENY, socket.AF_INET,
-                                             src_ip = socket.inet_pton(socket.AF_INET, '1.1.1.0'), prefix_len = 24)
-    assert cfg.process_vrf_svcs_rule_del(cfg.VrfIncomingSvcsRule.RULE_TYPE_ACL, 'management',
-                                         cfg.VrfIncomingSvcsRule.RULE_ACTION_DENY, socket.AF_INET,
-                                         src_ip = socket.inet_pton(socket.AF_INET, '2.2.2.0'), prefix_len = 24)
+    assert not cfg.process_vrf_svcs_rule_del(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'management',
+                                             cfg.VrfSvcsRuleAction.RULE_ACTION_DENY, socket.AF_INET,
+                                             src_ip = socket.inet_pton(socket.AF_INET, '1.1.1.0'), src_prefix_len = 24)
+    assert cfg.process_vrf_svcs_rule_del(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'management',
+                                         cfg.VrfSvcsRuleAction.RULE_ACTION_DENY, socket.AF_INET,
+                                         src_ip = socket.inet_pton(socket.AF_INET, '2.2.2.0'), src_prefix_len = 24,
+                                         dst_ip = socket.inet_pton(socket.AF_INET, '8.8.8.0'), dst_prefix_len = 24)
     assert not cfg.process_vrf_svcs_rule_del_by_id(rid1)
     assert cfg.process_vrf_svcs_rule_del_by_id(rid2)
     resp = []

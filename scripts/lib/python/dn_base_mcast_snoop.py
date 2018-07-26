@@ -75,18 +75,25 @@ MLD_CHAIN_NAME = ' MLDSNOOP '
 
 #IGMP:
 # 0x11 - Query, 0x12 - V1 Report, 0x16 - V2 Report, 0x17 - Leave, 0x22 - v3 Report
+#Flood IGMP General Queries (standard dest ip will be 224.0.0.1), other queries will be
+#handled by Snooping applications and will not be flooded by kernel (dropped here).
 
 igmp_add_rules = [IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1200 -j DROP',
 IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1600 -j DROP',
 IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1700 -j DROP',
 IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x2200 -j DROP',
+IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1100 ! -d 224.0.0.1 -j DROP',
 IGMP_CHAIN_NAME + '-j MARK --set-mark 0']
 
 #MLD:
 # 130 - Query, 131 - v1 Report, 132 - Leave/Done, 143 - v2 Report
+#Flood MLD General Queries (standard dest ip will be ff02::01), other queries will be
+#handled by Snooping applications and will not be flooded by kernel (dropped here).
+
 mld_add_rules= [MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 131 -j DROP',
         MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 132 -j DROP',
         MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 143 -j DROP',
+        MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 130 ! -d ff02::01 -j DROP',
         MLD_CHAIN_NAME + '-p icmpv6 -j MARK --set-mark 0']
 
 
@@ -449,23 +456,31 @@ def monitor_VLAN_interface_event():
 
 def _parse_snoop_routes(vlan_id, vlan_info, op, igmp_events,group_info, pub_data):
 
+    oif_present = True
+
     for key, val in group_info.items():
       if 'group' not in val:
-        mcast_utils.log_err("Route Event: VLAN %d Group not present, skip processing" %(vlan_id))
+        mcast_utils.log_err("Route Event: VLAN %d, Group not present, skip processing" %(vlan_id))
         continue
       if 'interface' not in val:
-        mcast_utils.log_err("Route Event: VLAN %d interface not present, skip processing" %(vlan_id))
-        continue
+        mcast_utils.log_info("Route Event: VLAN %d, OIF not present, route with NULL OIF " %(vlan_id))
+        oif_present = False
+        interface = 'NULL'
 
-      interface = val['interface']
+      if oif_present:
+        interface = val['interface']
 
-      #Validate given interface is VLAN member
-      if mcast_utils.is_intf_vlan_member(vlan_info, interface, vlan_id) is False:
-        mcast_utils.log_err("Route Event: interface %s is not VLAN %d member, skip processing" %(str(interface),vlan_id))
-        if (op != "delete"):
-          return False
+        #Validate given interface is VLAN member
+        if mcast_utils.is_intf_vlan_member(vlan_info, interface, vlan_id) is False:
+          mcast_utils.log_err("Route Event: interface %s is not VLAN %d member, skip processing" %(str(interface),vlan_id))
+          if (op != "delete"):
+            return False
 
-        continue
+          continue
+
+        #Add interface/OIF only if its present, else its treated as route with NULL OIF
+        pub_data.update( {'vlan-id': vlan_id,
+            ('group', key, 'interface'): interface})
 
       if mcast_utils._is_ip_addr(igmp_events, val['group']):
         group = val['group']
@@ -475,7 +490,6 @@ def _parse_snoop_routes(vlan_id, vlan_info, op, igmp_events,group_info, pub_data
         group =  ba.ba_to_ipv6str('ipv6',val['group'])
 
       pub_data.update( {'vlan-id': vlan_id,
-            ('group', key, 'interface'): interface,
             ('group', key, 'address'): group})
 
       if 'source-addr' in val:

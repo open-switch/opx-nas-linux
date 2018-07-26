@@ -290,4 +290,3 @@ t_std_error nas_os_util_int_if_name_get(const char *vrf_name, int if_index, char
     return err;
 }
 
-

@@ -117,13 +117,14 @@ extern "C" t_std_error nas_os_get_interface(cps_api_object_t filter,cps_api_obje
                 cps_api_object_attr_get(filter, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
     hal_ifindex_t ifindex = 0;
     cps_api_object_attr_t type_attr =
-                cps_api_object_attr_get(filter, BASE_IF_LINUX_IF_INTERFACES_INTERFACE_DELL_TYPE);
+                cps_api_object_attr_get(filter, IF_INTERFACES_INTERFACE_TYPE);
     uint_t if_type = 0;
     if (ifix != nullptr) {
         ifindex = cps_api_object_attr_data_u32(ifix);
         type_attr = nullptr; // Won't consider if_type if ifindex is specified
     } else if (type_attr != nullptr) {
-        if_type = cps_api_object_attr_data_u32(type_attr);
+        const char *ietf_type = (const char *)cps_api_object_attr_data_bin(type_attr);
+        ietf_to_nas_os_if_type_get(ietf_type, (BASE_CMN_INTERFACE_TYPE_t *)&if_type);
     }
     _get_interfaces(result,ifindex, ifix==nullptr, if_type);
     return STD_ERR_OK;
@@ -138,7 +139,7 @@ static void _set_mac(cps_api_object_t obj, struct nlmsghdr *nlh, struct ifinfoms
     int addr_len = strlen(static_cast<char *>(addr));
     if (std_string_to_mac(&mac_addr, static_cast<const char *>(addr), addr_len)) {
         char mac_str[40] = {0};
-        EV_LOG(INFO, NAS_OS, ev_log_s_MAJOR, "NAS-OS", "Setting mac address %s, actual string %s, len %d",
+        EV_LOGGING(NAS_OS, NOTICE, "NAS-OS", "Setting mac address %s, actual string %s, len %d",
                 std_mac_to_string(&mac_addr,mac_str,sizeof(mac_str)), static_cast<char *>(addr), addr_len);
         nlmsg_add_attr(nlh,len,IFLA_ADDRESS, mac_addr , cps_api_object_attr_len(attr));
     }
@@ -148,6 +149,7 @@ static void _set_mtu(cps_api_object_t obj, struct nlmsghdr *nlh, struct ifinfoms
     cps_api_object_attr_t attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_MTU);
     if (attr==NULL) return;
     int mtu = (int)cps_api_object_attr_data_uint(attr) - NAS_LINK_MTU_HDR_SIZE;
+    EV_LOGGING(NAS_OS, NOTICE, "NAS-OS", "set mtu to %d ", mtu);
     nlmsg_add_attr(nlh,len,IFLA_MTU, &mtu , sizeof(mtu));
 }
 
@@ -168,11 +170,14 @@ static void _set_ifalias(cps_api_object_t obj, struct nlmsghdr *nlh, struct ifin
 static void _set_admin(cps_api_object_t obj, struct nlmsghdr *nlh, struct ifinfomsg * inf,size_t len) {
     cps_api_object_attr_t attr = cps_api_object_attr_get(obj,IF_INTERFACES_INTERFACE_ENABLED);
     if (attr==NULL) return;
-    if ((int)cps_api_object_attr_data_uint(attr) == true) {
+    bool admin_enabled = (bool) cps_api_object_attr_data_uint(attr);
+
+    if (admin_enabled) {
         inf->ifi_flags |= IFF_UP;
-    } else if ((int)cps_api_object_attr_data_uint(attr) == false) {
+    } else  {
         inf->ifi_flags &= ~IFF_UP;
     }
+    EV_LOGGING(NAS_OS, NOTICE, "NAS-OS", "set admin state to %s ", ((admin_enabled) ? "true" : "false"));
 }
 
 static t_std_error _set_intf_attribute (const char *vrf_name, hal_ifindex_t if_index,
@@ -199,6 +204,7 @@ static t_std_error _set_intf_attribute (const char *vrf_name, hal_ifindex_t if_i
         ifmsg->ifi_flags = flags;
     }
 
+    EV_LOGGING(NAS_OS, NOTICE, "NAS-OS", "set attribute for  %s ", if_name);
     static const std::map<cps_api_attr_id_t,void (*)( cps_api_object_t ,struct nlmsghdr *,
             struct ifinfomsg *,size_t)> _funcs = {
             {DELL_IF_IF_INTERFACES_INTERFACE_MTU, _set_mtu},

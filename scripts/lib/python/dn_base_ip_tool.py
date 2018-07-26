@@ -14,15 +14,23 @@
 
 
 import subprocess
+import netaddr
 import re
 import os
 import cps
 import cps_object
+import event_log as ev
 
 iplink_cmd = '/sbin/ip'
 VXLAN_PORT = '4789'
 
 _mgmt_vrf_name = 'management'
+
+def log_err(msg):
+    ev.logging("BASE_IP",ev.ERR,"IP-CONFIG","","",0,msg)
+
+def log_info(msg):
+    ev.logging("BASE_IP",ev.INFO,"IP-CONFIG","","",0,msg)
 
 def get_ip_line_type(lines):
     header = lines[0].strip().split()
@@ -49,8 +57,12 @@ def _group_lines_based_on_position(scope, lines):
         resp.append(data)
     return resp
 
+def run_command(cmd, response, log_fail = True):
+    """Method to run a command in shell"""
 
-def run_command(cmd, response):
+    if len(response) > 0:
+        del response[:]
+
     p = subprocess.Popen(cmd, shell=False, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT)
     output = p.communicate()[0]
@@ -60,14 +72,21 @@ def run_command(cmd, response):
         if 'Dump was interrupted and may be inconsistent.' in line:
             continue
         response.append(line.rstrip())
+    if log_fail and p.returncode != 0:
+        log_err('Failed CMD: %s' % ' '.join(cmd))
+        for msg in response:
+            log_err('* ' + msg)
 
     return p.returncode
 
 
-def _get_ip_addr(dev=None):
+def _get_ip_addr(vrf_name, dev=None):
     output = []
     result = []
-    cmd = [iplink_cmd, 'addr', 'show']
+    if vrf_name == 'default':
+        cmd = [iplink_cmd, 'addr', 'show']
+    else:
+        cmd = [iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'addr', 'show']
     if dev is not None:
         cmd.append('dev')
         cmd.append(dev)
@@ -134,7 +153,8 @@ class InterfaceObject:
                         if data[1] == 'bond':
                             self.type = 10
 
-    def __init__(self, lines):
+    def __init__(self, lines, vrf_name):
+        self.vrf_name = str(vrf_name)
         self.ifix = _find_field(
             r'(?P<ifindex>\d+):\s+(?P<ifname>\S+):\s+<(?P<flags>\S+)>',
             'ifindex',
@@ -183,27 +203,66 @@ class InterfaceObject:
             if _af == 'inet' or _af == 'inet6':
                 self.ip.append((_af, _addr, _prefix))
 
-
-def get_if_details(dev=None):
-    l = _get_ip_addr(dev)
+def get_if_details_per_vrf(resp, vrf_name, dev=None):
+    l = []
+    l = _get_ip_addr(vrf_name, dev)
     l = _group_lines_based_on_position(0, l)
-    res = []
     for i in l:
-        res.append(InterfaceObject(i))
+        resp.append(InterfaceObject(i, vrf_name))
+    return True
 
-    return res
+def get_if_details(vrf_name=None, dev=None):
+    resp = []
+    if vrf_name is None:
+        cmd = ['/sbin/ip','netns','list']
+        res = []
+        if run_command(cmd, res) != 0:
+            return resp
+        if len(res) == 0:
+            get_if_details_per_vrf(resp, 'default', dev)
+        else:
+            for vrf in res:
+                vrf_name = vrf.split(' ')[0]
+                get_if_details_per_vrf(resp, vrf_name, dev)
+    else:
+        get_if_details_per_vrf(resp, vrf_name, dev)
+
+    return resp
 
 
-def add_ip_addr(addr_and_prefix, dev, vrf_name='default'):
+def add_ip_addr(addr_and_prefix, dev, af, vrf_name='default'):
+    bcast_addr = None
+    if af == "ipv4":
+        try:
+            ip = netaddr.IPNetwork(addr_and_prefix)
+            bcast_addr = ip.broadcast
+        except Exception as e:
+            return False
+
+    cmds = {
+               'bcast_flag': { 'default': [iplink_cmd, 'addr', 'add', addr_and_prefix, 'broadcast', str(bcast_addr), 'dev', dev],
+                               'vrf_name': [iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'addr', 'add',
+                                            addr_and_prefix, 'broadcast', str(bcast_addr), 'dev', dev] },
+               'no_bcast_flag': { 'default': [iplink_cmd, 'addr', 'add', addr_and_prefix, 'dev', dev],
+                                  'vrf_name': [iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'addr', 'add',
+                                              addr_and_prefix, 'dev', dev]}
+          }
+
     res = []
-    if vrf_name == 'default':
-        if run_command([iplink_cmd, 'addr', 'add', addr_and_prefix, 'dev', dev], res) == 0:
-            return True
-        return False
+    if bcast_addr is None:
+       if vrf_name == 'default':
+           cmd = cmds['no_bcast_flag']['default']
+       else:
+            cmd = cmds['no_bcast_flag']['vrf_name']
+    else:
+        if vrf_name == 'default':
+           cmd = cmds['bcast_flag']['default']
+        else:
+            cmd = cmds['bcast_flag']['vrf_name']
 
-    if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'addr', 'add',\
-                   addr_and_prefix, 'dev', dev], res) == 0:
+    if run_command(cmd, res) == 0:
         return True
+
     return False
 
 
@@ -370,11 +429,16 @@ def flush_ip_neigh(af, dev, addr=None, vrf_name='default'):
 
     if vrf_name == 'default':
         if addr is not None and dev is not None:
-            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'to', str(addr), 'dev', dev], res) == 0:
+            # When an address is set, it has to be on the particular interface.
+            if len(dev) != 1:
+                return False
+            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'to', str(addr), 'dev', dev[0]], res) == 0:
                 return True
         elif dev is not None:
-            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'dev', dev], res) == 0:
-                return True
+            for ifname in dev:
+                if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'dev', ifname], res) != 0:
+                    return False
+            return True
         elif addr is not None:
             if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'to', str(addr)], res) == 0:
                 return True
@@ -386,13 +450,18 @@ def flush_ip_neigh(af, dev, addr=None, vrf_name='default'):
 
     # Flush the neighbors present in the non-default VRF
     if addr is not None and dev is not None:
+        # When an address is set, it has to be on the particular interface.
+        if len(dev) != 1:
+            return False
         if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
-                   'neigh', 'flush', 'to', str(addr), 'dev', dev], res) == 0:
+                   'neigh', 'flush', 'to', str(addr), 'dev', dev[0]], res) == 0:
             return True
     elif dev is not None:
-        if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
-                   'neigh', 'flush', 'dev', dev], res) == 0:
-            return True
+        for ifname in dev:
+            if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
+                   'neigh', 'flush', 'dev', ifname], res) != 0:
+                return False
+        return True
     elif addr is not None:
         if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
                    'neigh', 'flush', 'to', str(addr)], res) == 0:
@@ -454,7 +523,7 @@ def handle_interface_event_for_lla_cfg():
         lla_addr_with_prefix_len = lla_addr + '/64'
         # Configuring the LLA on the L2 intf will lead to error, pass the exception
         try:
-            add_ip_addr(lla_addr_with_prefix_len, intf_name,vrf_name)
+            add_ip_addr(lla_addr_with_prefix_len, intf_name,"ipv6",vrf_name)
         except:
             pass
 

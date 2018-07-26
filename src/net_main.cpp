@@ -211,9 +211,10 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
     /*!
      * Range upto SET_LINK
      */
+    bool evt_publish = true;
     if (rt_msg_type <= RTM_SETLINK) {
         nas_nl_stats_update_tot_msg (sock, rt_msg_type);
-        if (os_interface_to_object(rt_msg_type,hdr,obj,data, vrf_id)) {
+        if (os_interface_to_object(rt_msg_type, hdr,obj, &evt_publish, vrf_id) == STD_ERR_OK && evt_publish) {
             nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
                 nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);

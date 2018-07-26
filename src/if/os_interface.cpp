@@ -20,12 +20,13 @@
 
 #include "private/nas_os_if_priv.h"
 #include "private/os_if_utils.h"
+#include "private/os_interface_cache_utils.h"
+#include "private/nas_os_if_conversion_utils.h"
 #include "private/nas_os_l3_utils.h"
 
 #include "netlink_tools.h"
 #include "nas_nlmsg.h"
 #include "nas_nlmsg_object_utils.h"
-#include "nas_os_vlan_utils.h"
 #include "nas_os_int_utils.h"
 #include "nas_os_interface.h"
 #include "vrf-mgmt.h"
@@ -99,11 +100,49 @@ static bool is_reserved_interface (if_details &details)
 
 }
 
-static bool is_sub_interface(if_details &details)
+
+std::string nas_os_if_name_get(hal_ifindex_t ifix) {
+    INTERFACE *fill = os_get_if_db_hdlr();
+
+    if (!fill) return nullptr;
+
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS-CACHE", "get name  for ifindex %d", ifix);
+    return (fill->if_info_get_name(ifix));
+}
+
+t_std_error os_intf_type_get(hal_ifindex_t ifix, BASE_CMN_INTERFACE_TYPE_t *if_type) {
+    INTERFACE *fill = os_get_if_db_hdlr();
+
+    if (!fill) return STD_ERR(INTERFACE,FAIL,0);
+
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS-CACHE", "get type  for ifindex %d", ifix);
+    BASE_CMN_INTERFACE_TYPE_t  _type;
+    _type = fill->if_info_get_type(ifix);
+    if ( _type != BASE_CMN_INTERFACE_TYPE_NULL) {
+        EV_LOGGING(NAS_OS, INFO, "NAS-OS-CACHE", "get type  %d for ifindex %d", _type, ifix );
+        *if_type = _type;
+        return STD_ERR_OK;
+    }
+    return STD_ERR(INTERFACE,FAIL,0);
+}
+static auto info_kind_to_intf_type  = new std::unordered_map<std::string,BASE_CMN_INTERFACE_TYPE_t>
 {
-    if(details.if_name.find_first_of(".") != std::string::npos)
-        return true;
-    return false;
+    {"tun", BASE_CMN_INTERFACE_TYPE_L3_PORT},
+    {"bond", BASE_CMN_INTERFACE_TYPE_LAG},
+    {"bridge", BASE_CMN_INTERFACE_TYPE_BRIDGE},
+    {"vlan", BASE_CMN_INTERFACE_TYPE_VLAN_SUBINTF},
+    {"macvlan", BASE_CMN_INTERFACE_TYPE_MACVLAN},
+    {"vxlan", BASE_CMN_INTERFACE_TYPE_VXLAN},
+    {"dummy", BASE_CMN_INTERFACE_TYPE_LOOPBACK},
+};
+static t_std_error nas_os_info_kind_to_intf_type(const char *info_kind, BASE_CMN_INTERFACE_TYPE_t *if_type)
+{
+    auto it = info_kind_to_intf_type->find(std::string(info_kind));
+    if(it != info_kind_to_intf_type->end()){
+        *if_type = it->second;
+        return STD_ERR_OK;
+    }
+    return STD_ERR(INTERFACE,FAIL,0);
 }
 
 static bool get_if_detail_from_netlink (int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data,
@@ -138,6 +177,19 @@ static bool get_if_detail_from_netlink (int sock, int rt_msg_type, struct nlmsgh
     if (nla_parse(details->_attrs,__IFLA_MAX,head,nla_len)!=0) {
         EV_LOGGING(NAS_OS, ERR,"NL-PARSE","Failed to parse attributes");
         return false;
+    }
+    return true;
+}
+
+bool nas_os_if_index_get(std::string &if_name , hal_ifindex_t &index) {
+
+    INTERFACE *fill = os_get_if_db_hdlr();
+    if (!fill) return false;
+
+    if_info_t ifinfo;
+    if(!fill->get_ifindex_from_name(if_name, index)) {
+        /*  if not present then check in the kernel */
+        index = cps_api_interface_name_to_if_index(if_name.c_str());
     }
     return true;
 }
@@ -189,12 +241,15 @@ static bool get_if_detail_from_netlink (int sock, int rt_msg_type, struct nlmsgh
     return false;
 }
 
-bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context, uint32_t vrf_id)
+t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, bool* p_pub_evt,
+                                    uint32_t vrf_id)
 {
     struct ifinfomsg *ifmsg = (struct ifinfomsg *)NLMSG_DATA(hdr);
 
-    if(hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*ifmsg)))
-        return false;
+    if(hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*ifmsg))) {
+        EV_LOGGING(NAS_OS, ERR, "NL-PARSE", "Invalid msg length in netlink header: %d", hdr->nlmsg_len);
+        return STD_ERR(INTERFACE, PARAM, 0);
+    }
 
     int track_change = OS_IF_CHANGE_NONE;
     if_details details;
@@ -208,8 +263,8 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
             { RTM_DELLINK, cps_api_oper_DELETE }
     };
 
-    EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "VRF-id:%d msgType %d, ifindex %d change %x\n",
-           vrf_id, rt_msg_type, ifmsg->ifi_index, ifmsg->ifi_change);
+    EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "VRF-id:%d msgType %d, ifindex %d change 0x%x flags 0x%x\n",
+           vrf_id, rt_msg_type, ifmsg->ifi_index, ifmsg->ifi_change, ifmsg->ifi_flags);
 
     auto it = _to_op_type.find(rt_msg_type);
     if (it==_to_op_type.end()) {
@@ -218,14 +273,21 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
         details._op = it->second;
     }
 
-    cps_api_operation_types_t _if_op = details._op;
-
     details._flags = ifmsg->ifi_flags;
-
     details._type = BASE_CMN_INTERFACE_TYPE_L3_PORT;
-
     details._ifindex = ifmsg->ifi_index;
 
+    // Check if the interface already exists in the local database.
+    // If present then mark it as SET operation otherwise CREATE operation.
+    if (details._op == cps_api_oper_CREATE) {
+        bool present = false;
+        if (nas_os_check_intf_exists(details._ifindex, &present) != STD_ERR_OK) {
+            EV_LOGGING(NAS_OS, ERR, "NET-MAIN", " Failed to get cached info");
+            return false;
+        }
+        if (present) { details._op = cps_api_oper_SET; }
+    }
+    cps_api_operation_types_t _if_op = details._op;
     cps_api_object_attr_add_u32(obj,BASE_IF_LINUX_IF_INTERFACES_INTERFACE_IF_FLAGS, details._flags);
 
     cps_api_object_attr_add_u32(obj,IF_INTERFACES_INTERFACE_ENABLED,
@@ -233,6 +295,7 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
 
     ifinfo.ev_mask = OS_IF_CHANGE_NONE;
     ifinfo.admin = (ifmsg->ifi_flags & IFF_UP) ? true :false;
+    ifinfo.oper = (ifmsg->ifi_flags & IFF_RUNNING) ? true :false;
 
     int nla_len = nlmsg_attrlen(hdr,sizeof(*ifmsg));
     struct nlattr *head = nlmsg_attrdata(hdr, sizeof(struct ifinfomsg));
@@ -243,7 +306,7 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
 
     if (nla_parse(details._attrs,__IFLA_MAX,head,nla_len)!=0) {
         EV_LOGGING(NAS_OS,ERR,"NL-PARSE","Failed to parse attributes");
-        return false;
+        return STD_ERR(INTERFACE, FAIL, 0);
     }
 
     if (details._attrs[IFLA_LINKINFO]) {
@@ -274,32 +337,49 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
         ifinfo.mtu = *mtu;
     }
 
+    if (details._attrs[IFLA_LINK] != NULL) {
+        EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Rcvd Link index index %d",
+                *(int *)nla_data(details._attrs[IFLA_LINK]));
+    }
+
     if(details._attrs[IFLA_MASTER]!=NULL) {
             /* This gives us the bridge index, which should be sent to
              * NAS for correlation  */
-        EV_LOG(INFO, NAS_OS, 3, "NET-MAIN", "Rcvd master index %d",
+        EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Rcvd master index %d",
                 *(int *)nla_data(details._attrs[IFLA_MASTER]));
 
         cps_api_object_attr_add_u32(obj,BASE_IF_LINUX_IF_INTERFACES_INTERFACE_IF_MASTER,
                                    *(int *)nla_data(details._attrs[IFLA_MASTER]));
     }
-
-    if (details._info_kind != nullptr && (!strncmp(details._info_kind, "bridge", 6))) {
-        EV_LOG(INFO,NAS_OS,3, "NET-MAIN", "Bridge intf index is %d ",
-                details._ifindex);
-        details._type = BASE_CMN_INTERFACE_TYPE_L2_PORT;
+    if (details._info_kind != nullptr) {
+        if ( nas_os_info_kind_to_intf_type(details._info_kind, &details._type) != STD_ERR_OK) {
+            EV_LOGGING(NAS_OS, ERR, "NET-MAIN", "info kind not known %s",details._info_kind);
+        }
+    } else {
+        // In case if info_kind not present in the netlink event then look into
+        // the local cache.
+        EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "info kind not present in netlink %d",details._ifindex);
+        if (os_intf_type_get(details._ifindex, &details._type) != STD_ERR_OK) {
+                EV_LOGGING(NAS_OS, ERR, "NET-MAIN", "unknown interface %d", details._ifindex);
+        }
     }
 
     INTERFACE *fill = os_get_if_db_hdlr();
     if_change_t mask = OS_IF_CHANGE_NONE;
-    if(fill && !(fill->if_hdlr(&details, obj)))
-        return false; // Return in case of sub-interfaces etc (Handler will return false)
+    if(fill && !(fill->if_hdlr(&details, obj))) {
+        EV_LOGGING(NAS_OS, ERR, "NL-PARSE", "Failure on sub-interface handling");
+        return STD_ERR(INTERFACE, FAIL, 0); // Return in case of sub-interfaces etc (Handler will return false)
+    }
 
     ifinfo.if_type = details._type;
-    if (!fill)
+    ifinfo.if_name = details.if_name;
+    ifinfo.parent_idx = details.parent_idx;
+
+    if (!fill) {
         track_change = OS_IF_CHANGE_ALL;
-    else
+    } else {
         track_change = fill->if_info_update(ifmsg->ifi_index, ifinfo);
+    }
 
     /*
      * Delete the interface from cache if interface type is not vlan or lag
@@ -309,41 +389,44 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
                             ifmsg->ifi_index,details._type, track_change);
 
     if(_if_op == cps_api_oper_DELETE) {
-        if((details._type != BASE_CMN_INTERFACE_TYPE_VLAN)&&
+        if((details._type != BASE_CMN_INTERFACE_TYPE_L2_PORT)&&
            (details._type != BASE_CMN_INTERFACE_TYPE_LAG)&&
            (details._type != BASE_CMN_INTERFACE_TYPE_MACVLAN)) {
-            if(fill) fill->if_info_delete(ifmsg->ifi_index);
-            //Need not publish if sub-interface
-            if(is_sub_interface(details)) return false;
+            if(fill) fill->if_info_delete(ifmsg->ifi_index, details.if_name);
         } else if(details._type == BASE_CMN_INTERFACE_TYPE_LAG &&
                 (!strncmp(details._info_kind, "bond", 4))) {
-            if(fill) fill->if_info_delete(ifmsg->ifi_index);
+            if(fill) fill->if_info_delete(ifmsg->ifi_index, details.if_name);
         }
     }
 
-    if(details._type != BASE_CMN_INTERFACE_TYPE_L3_PORT && details._attrs[IFLA_MASTER]!=NULL) {
+    bool evt_publish = true;
+    if((details._type == BASE_CMN_INTERFACE_TYPE_L2_PORT) ||
+            ((details._type == BASE_CMN_INTERFACE_TYPE_LAG) && (details._attrs[IFLA_MASTER]!=NULL))) {
         /*
-         * Use master for Vlan and Lag
+         * If member addition/deletion in the LAG or bridge
          */
-        char if_name[HAL_IF_NAME_SZ+1];
         int ifix = *(int *)nla_data(details._attrs[IFLA_MASTER]);
-        if (cps_api_interface_if_index_to_name(ifix,if_name,  sizeof(if_name))==NULL) {
-            return false;
+        std::string if_name = nas_os_if_name_get(ifix);
+        if (if_name.empty()) {
+            EV_LOGGING(NAS_OS,ERR,"NET-MAIN"," Interface not present, index %d ", ifix);
+            return STD_ERR(INTERFACE, FAIL, 0);
         }
+         EV_LOGGING(NAS_OS,INFO,"NET-MAIN"," ifidx %d Remove attrs in case of member add/del to master %s",
+                            ifmsg->ifi_index, if_name.c_str());
         // Delete the previously filled attributes in case of Vlan/Lag member add/del
         cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_MTU);
         cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_PHYS_ADDRESS);
         cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_NAME);
         cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_ENABLED);
         cps_api_object_attr_delete(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
-        cps_api_object_attr_add(obj, IF_INTERFACES_INTERFACE_NAME, if_name, (strlen(if_name)+1));
+        cps_api_object_attr_add(obj, IF_INTERFACES_INTERFACE_NAME, if_name.c_str(), (strlen(if_name.c_str())+1));
         cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,ifix);
     } else if (!track_change) {
         /*
          * If track change is false, check for interface type - Return false ONLY in the individual update case
          * If the handler has identified it as VLAN or Bond member addition, then continue with publishing
          */
-        if (details._op != cps_api_oper_DELETE && details._type != BASE_CMN_INTERFACE_TYPE_VLAN) {
+        if (details._op != cps_api_oper_DELETE && details._type != BASE_CMN_INTERFACE_TYPE_L2_PORT) {
 
             /*
              * Avoid filtering netlink events for reserved interface (eth0/mgmtxxx-xx).
@@ -351,7 +434,7 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
              * the CPS interface object.
              */
             if (!is_reserved_interface(details)) {
-                return false;
+                evt_publish = false;
             }
         }
 
@@ -362,14 +445,18 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
         if(track_change != OS_IF_ADM_CHANGE && mask == OS_IF_ADM_CHANGE)
             cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_ENABLED);
         else if (mask == OS_IF_ADM_CHANGE)
-            return false;
+            evt_publish = false;
+    }
+
+    if (p_pub_evt != NULL) {
+        *p_pub_evt = evt_publish;
     }
 
     const char *vrf_name = nas_os_get_vrf_name(vrf_id);
     if (vrf_name == NULL) {
         EV_LOGGING(NAS_OS, ERR, "NET-MAIN", "VRF id:%d to name mapping not present, index %d type %d!",
                    vrf_id, details._ifindex, details._type);
-        return false;
+        return STD_ERR(INTERFACE, PARAM, 0);
     }
     cps_api_object_attr_add(obj, NI_IF_INTERFACES_INTERFACE_BIND_NI_NAME, vrf_name, strlen(vrf_name)+1);
     cps_api_object_attr_add_u32(obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_VRF_ID, vrf_id);
@@ -381,8 +468,11 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
             cps_api_qualifier_OBSERVED);
     cps_api_object_set_type_operation(cps_api_object_key(obj),details._op);
     cps_api_object_attr_add_u32(obj, BASE_IF_LINUX_IF_INTERFACES_INTERFACE_DELL_TYPE, details._type);
+    EV_LOGGING(NAS_OS, INFO, "NET-MAIN"," NAS  OS interface event type \n %s",
+            (track_change ==OS_IF_CHANGE_ALL) ? "Change all" : "Interface Update");
+    EV_LOGGING(NAS_OS, INFO, "NET-MAIN"," NAS  OS interface event publish\n %s", cps_api_object_to_c_string(obj).c_str());
 
-    return true;
+    return STD_ERR_OK;
 }
 
 static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data, uint32_t vrf_id) {
@@ -391,7 +481,7 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
         cps_api_object_guard og(cps_api_object_create());
         if (!og.valid()) return false;
 
-        if (os_interface_to_object(rt_msg_type,hdr,og.get(), NULL, vrf_id)) {
+        if (os_interface_to_object(rt_msg_type,hdr,og.get(), NULL, vrf_id) == STD_ERR_OK) {
             if (cps_api_object_list_append(*list,og.get())) {
                 og.release();
                 return true;
@@ -406,7 +496,7 @@ static bool os_interface_info_to_object(hal_ifindex_t ifix, if_info_t& ifinfo, c
 {
     char if_name[HAL_IF_NAME_SZ+1];
     if(cps_api_interface_if_index_to_name(ifix, if_name, sizeof(if_name)) == NULL) {
-        EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Failure getting interface name for %d", ifix);
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failure getting interface name for %d", ifix);
         return false;
     } else
         cps_api_object_attr_add(obj, IF_INTERFACES_INTERFACE_NAME, if_name, (strlen(if_name)+1));
@@ -434,7 +524,7 @@ static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal
 
     if_info_t ifinfo;
     if(!get_all && fill->if_info_get(ifix, ifinfo)) {
-        EV_LOG(INFO,NAS_OS,3, "NET-MAIN", "Get ifinfo for %d", ifix);
+        EV_LOGGING(NAS_OS, INFO,"NET-MAIN", "Get ifinfo for %d", ifix);
 
         cps_api_object_t obj = cps_api_object_create();
         if(obj == nullptr) return cps_api_ret_code_ERR;
@@ -457,7 +547,7 @@ static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal
                 return;
             }
 
-            EV_LOG(INFO,NAS_OS,3, "NET-MAIN", "Get all ifinfo for %d", idx);
+            EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Get all ifinfo for %d", idx);
 
             cps_api_object_t obj = cps_api_object_create();
             if(obj == nullptr) return;
@@ -487,9 +577,11 @@ cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t
     if(_get_db_interface(&list, ifix, get_all, if_type) == cps_api_ret_code_OK)
         return cps_api_ret_code_OK;
 
+    EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Get interface info for ifindex %d", ifix);
     int if_sock = 0;
     if((if_sock = nas_nl_sock_create(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,false)) < 0) {
-       return cps_api_ret_code_ERR;
+        EV_LOGGING(NAS_OS, ERR, "NET-MAIN", "soc create failure for get ifindex %d", ifix);
+        return cps_api_ret_code_ERR;
     }
 
     const int BUFF_LEN=4196;
@@ -545,7 +637,7 @@ t_std_error os_interface_object_reg(cps_api_operation_handle_t handle) {
 
     char buff[CPS_API_KEY_STR_MAX];
     if (!cps_api_key_from_attr_with_qual(&f.key, BASE_IF_LINUX_IF_INTERFACES_INTERFACE,cps_api_qualifier_TARGET)) {
-        EV_LOG(ERR,INTERFACE,0,"NAS-IF-REG","Could not translate %d to key %s",
+        EV_LOGGING(NAS_OS, ERR,"NAS-IF-REG","Could not translate %d to key %s",
             (int)(BASE_IF_LINUX_IF_INTERFACES_INTERFACE),cps_api_key_print(&f.key,buff,sizeof(buff)-1));
         return STD_ERR(INTERFACE,FAIL,0);
     }
@@ -587,5 +679,4 @@ extern "C" t_std_error os_intf_mac_addr_get(hal_ifindex_t ifix, hal_mac_addr_t m
     }
     return STD_ERR(INTERFACE,FAIL,0);
 }
-
 

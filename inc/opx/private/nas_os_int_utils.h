@@ -36,6 +36,8 @@ typedef enum {
     OS_IF_ADM_CHANGE  = 0x1,
     OS_IF_MTU_CHANGE  = 0x2,
     OS_IF_PHY_CHANGE  = 0x4,
+    OS_IF_MASTER_CHANGE  = 0x5,
+    OS_IF_OPER_CHANGE = 0x8,
     OS_IF_CHANGE_ALL  = 0xf
 }if_change_t;
 

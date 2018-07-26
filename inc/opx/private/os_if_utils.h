@@ -143,7 +143,6 @@ public:
 
     ~if_bond() { };
 };
-
 INTERFACE *os_get_if_db_hdlr();
 if_bridge *os_get_bridge_db_hdlr();
 if_bond   *os_get_bond_db_hdlr();

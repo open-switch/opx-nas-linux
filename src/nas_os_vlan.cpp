@@ -35,6 +35,7 @@
 #include "nas_os_if_priv.h"
 #include "nas_os_lag.h"
 #include "os_if_utils.h"
+#include "std_utils.h"
 #include "nas_os_if_conversion_utils.h"
 #include "nas_os_l3_utils.h"
 
@@ -143,6 +144,63 @@ bool get_tagged_intf_index_from_name(const char * intf_name,hal_ifindex_t & intf
         return true;
     }
     return false;
+}
+
+/* Used to delete an bridge like br3 */
+
+t_std_error nas_os_delete_bridge (cps_api_object_t obj) {
+
+    hal_ifindex_t phy_index;
+
+    cps_api_object_attr_t _name = cps_api_object_attr_get(obj,IF_INTERFACES_INTERFACE_NAME);
+    if (_name == NULL) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Missing bridge name to be deleted ");
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+    std::string if_name((const char *)cps_api_object_attr_data_bin(_name));
+    if (!(nas_os_if_index_get(if_name, phy_index))) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Delete bridge :Failed to find ifindex for %s", if_name.c_str());
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS", "Delete bridge name %s, idx %d", if_name.c_str(), phy_index);
+    return nas_os_del_interface(phy_index);
+
+}
+
+/* Used to delete sunintf like e101-001-0.100 */
+
+t_std_error nas_os_delete_subinterface (cps_api_object_t obj) {
+
+    hal_ifindex_t phy_index, vlan_index;
+    vlan_index = 0;
+    cps_api_object_attr_t if_name_attr = cps_api_get_key_data(obj, IF_INTERFACES_INTERFACE_NAME);
+    cps_api_object_attr_t vlan_id_attr = cps_api_object_attr_get(obj, BASE_IF_VLAN_IF_INTERFACES_INTERFACE_ID);
+    cps_api_object_attr_t parent = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_PARENT_INTERFACE);
+
+    if (if_name_attr == NULL || vlan_id_attr == NULL || parent == NULL) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", " NAS OS del sub_int: Missing bridge name or vlan id or parent \n");
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    int vlan_id = (int)cps_api_object_attr_data_u32(vlan_id_attr);
+    std::string parent_name((char *)cps_api_object_attr_data_bin(parent));
+    std::string sub_if((char *)cps_api_object_attr_data_bin(if_name_attr));
+
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS", "del subintf %s with vlan id %d", sub_if.c_str(), vlan_id);
+
+    if (!(nas_os_if_index_get(parent_name, phy_index)) || !(nas_os_if_index_get(sub_if, vlan_index))) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Del  sub_intf :Failed ifindex for parent %s, sub_intf %s ",
+                    parent_name.c_str(), sub_if.c_str());
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    if (nas_os_del_interface(vlan_index) != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failed: Failed to del subintf  %s", sub_if.c_str());
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+    _update_intf_to_tagged_intf_map(phy_index, vlan_index, false);
+
+    return STD_ERR_OK;
 }
 
 #define NL_MSG_BUFFER_LEN 4096
@@ -254,7 +312,7 @@ t_std_error nas_os_del_vlan(cps_api_object_t obj)
     return nas_os_del_interface(if_index);
 }
 
-static t_std_error nas_os_add_vlan_in_br(int vlan_id, int vlan_index, int if_index, int br_index)
+static t_std_error nas_os_add_vlan_in_br(int vlan_index, int if_index, int br_index)
 {
     char buff[NL_MSG_BUFFER_LEN];
     memset(buff,0,sizeof(buff));
@@ -267,10 +325,12 @@ static t_std_error nas_os_add_vlan_in_br(int vlan_id, int vlan_index, int if_ind
 
     nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, 0, vlan_index);
 
-    EV_LOG(INFO, NAS_OS, ev_log_s_MINOR, "NAS-OS", "Vlan I/F index %d Bridge %d port %d vlan %d",
-           ifmsg->ifi_index, br_index, if_index, vlan_id);
+    EV_LOG(INFO, NAS_OS, ev_log_s_MINOR, "NAS-OS", "Vlan I/F index %d Bridge %d port %d ",
+           ifmsg->ifi_index, br_index, if_index);
 
     nlmsg_add_attr(nlh,sizeof(buff),IFLA_MASTER, &br_index, sizeof(int));
+    // TODO check if if_index needs to be sent for adding member
+    // This may not be even applicable for vxlan type of interface
     nlmsg_add_attr(nlh,sizeof(buff),IFLA_LINK, &if_index, sizeof(int));
 
     if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
@@ -283,7 +343,190 @@ static t_std_error nas_os_add_vlan_in_br(int vlan_id, int vlan_index, int if_ind
     return STD_ERR_OK;
 }
 
+
+t_std_error nas_os_add_intf_to_bridge(cps_api_object_t obj)
+{
+    hal_ifindex_t idx, br_index, parent_idx;
+
+    cps_api_object_attr_t if_name_attr = cps_api_get_key_data(obj, IF_INTERFACES_INTERFACE_NAME);
+    cps_api_object_attr_t tagged_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_TAGGED_PORTS);
+    cps_api_object_attr_t untagged_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_UNTAGGED_PORTS);
+    cps_api_object_attr_t vlan_id_attr = cps_api_object_attr_get(obj, BASE_IF_VLAN_IF_INTERFACES_INTERFACE_ID);
+    cps_api_object_attr_t parent = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_PARENT_INTERFACE);
+    cps_api_object_attr_t ifindex_attr = cps_api_object_attr_get(obj,DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
+
+    if (if_name_attr == NULL || vlan_id_attr == NULL) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", " NAS OS add port to bridge: Missing bridge name or vlan id /n");
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+    std::string bridge_name((char *)cps_api_object_attr_data_bin(if_name_attr));
+
+    int vlan_id = (int)cps_api_object_attr_data_u32(vlan_id_attr);
+
+    char mem_name[HAL_IF_NAME_SZ];
+    if (tagged_attr != NULL) {
+        if (parent == NULL) {
+            EV_LOGGING(NAS_OS, ERR, "NAS-OS", " NAS OS add port to bridge: Missing parent for tagged interface for bridge %s",
+                                       bridge_name.c_str());
+            return (STD_ERR(NAS_OS,FAIL, 0));
+        }
+        safestrncpy(mem_name ,(char*)cps_api_object_attr_data_bin(tagged_attr), HAL_IF_NAME_SZ); /* mem_name is  e101-001-1.100 */
+    } else if (untagged_attr != NULL) {
+        safestrncpy(mem_name ,(char*)cps_api_object_attr_data_bin(untagged_attr), HAL_IF_NAME_SZ);
+    } else {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", " NAS OS add port to bridge: Missing member information for %s ", bridge_name.c_str());
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    std::string interface_name(mem_name);
+    do {
+        if (!(nas_os_if_index_get(bridge_name, br_index))) {
+           EV_LOGGING(NAS_OS, ERR, "NAS-OS", " NAS OS add port to bridge: get br index failed %s", bridge_name.c_str());
+           break;
+        }
+
+        if (!(nas_os_if_index_get(interface_name, idx))) {
+            EV_LOGGING(NAS_OS, INFO, "NAS-OS", " NAS OS add port to bridge: get intf index failed %s", interface_name.c_str());
+        }
+
+        if (tagged_attr != NULL) {
+            if(ifindex_attr){
+                idx = cps_api_object_attr_data_uint(ifindex_attr);
+            }else{
+                EV_LOGGING(NAS_OS,ERR,"NAS-OS","No interface index passed to add vlan sub intf to bridge");
+                break;
+            }
+            std::string parent_name((char *)cps_api_object_attr_data_bin(parent));
+            if (!(nas_os_if_index_get(parent_name, parent_idx)))  {
+                EV_LOGGING(NAS_OS, ERR, "NAS-OS", " NAS OS add port to bridge: get parent index failed %s", parent_name.c_str());
+                break;
+            }
+        } else {
+            parent_idx = idx;
+        }
+        EV_LOGGING(NAS_OS, INFO, "NAS-OS", "NAS OS add port to bridge : vlanid %d ,idx %d, parent_idx %d, br_idx %d",
+                       vlan_id, idx,parent_idx, br_index);
+
+        return nas_os_add_vlan_in_br(idx,parent_idx, br_index);
+    } while (0);
+    return (STD_ERR(NAS_OS,FAIL, 0));
+}
+
+static t_std_error nas_os_add_tag_port_to_os(int vlan_id, const char *vlan_name, int port_index, const char * phy_if_name, int *vlan_index)
+{
+    char buff[NL_MSG_BUFFER_LEN];
+
+    memset(buff,0,sizeof(buff));
+
+    struct nlmsghdr *nlh = (struct nlmsghdr *) nlmsg_reserve((struct nlmsghdr *)buff,sizeof(buff),sizeof(struct nlmsghdr));
+    struct ifinfomsg *ifmsg = (struct ifinfomsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct ifinfomsg));
+
+    nas_os_pack_nl_hdr(nlh, RTM_NEWLINK, (NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL));
+
+    db_interface_state_t astate;
+    db_interface_operational_state_t ostate;
+
+    unsigned int flags = (IFF_BROADCAST | IFF_MULTICAST) ;
+
+
+    if (nas_os_util_int_admin_state_get(phy_if_name,&astate,&ostate)!=STD_ERR_OK)
+        return (STD_ERR(NAS_OS,FAIL, 0));;
+
+    /* For tagged interface, kernel does not inherit the port's admin status
+     * during creation. But any update that happens on the port later
+     * is inherited. Update the tagged interface admin to port's admin status */
+    if(astate == DB_ADMIN_STATE_UP) {
+        flags |= IFF_UP;
+    }
+
+    nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, flags, 0);
+
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS", "Add tagged Vlan Name %s Vlan Id %d for port %d",
+           vlan_name, vlan_id, port_index);
+
+    nlmsg_add_attr(nlh,sizeof(buff), IFLA_IFNAME, vlan_name, (strlen(vlan_name)+1));
+    nlmsg_add_attr(nlh,sizeof(buff),IFLA_LINK, &port_index, sizeof(int));
+
+    /* VLAN info is set of nested attributes
+     * IFLA_LINK_INFO(IFLA_INFO_KIND, IFLA_INFO_DATA(IFLA_VLAN_ID))*/
+    struct nlattr *attr_nh = nlmsg_nested_start(nlh, sizeof(buff));
+    attr_nh->nla_len = 0;
+    attr_nh->nla_type = IFLA_LINKINFO;
+
+    const char *info_kind = "vlan";
+    nlmsg_add_attr(nlh,sizeof(buff),IFLA_INFO_KIND, info_kind, (strlen(info_kind)+1));
+
+    if(vlan_id != 0) {
+        struct nlattr *attr_nh_data = nlmsg_nested_start(nlh, sizeof(buff));
+        attr_nh_data->nla_len = 0;
+        attr_nh_data->nla_type = IFLA_INFO_DATA;
+
+        nlmsg_add_attr(nlh,sizeof(buff),IFLA_VLAN_ID, &vlan_id, sizeof(int));
+
+        nlmsg_nested_end(nlh,attr_nh_data);
+    }
+    //End of IFLA_LINK_INFO
+    nlmsg_nested_end(nlh,attr_nh);
+
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK ||
+        (*vlan_index = cps_api_interface_name_to_if_index(vlan_name)) == 0) {
+        EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "Failed to add tagged intf %d in kernel", vlan_name);
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+    return STD_ERR_OK;
+}
+
+
+/* Needs sub_interface name like e101-001-0.100 in IF_INTERFACES_INTERFACE_NAME
+ * vlan_id in BASE_IF_VLAN_IF_INTERFACES_INTERFACE_ID
+ * returns wely created sub-interfcae index in DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX
+ */
+
+t_std_error nas_os_create_subinterface(cps_api_object_t obj) {
+
+    char sub_intf[HAL_IF_NAME_SZ];
+    char phy_if_name[HAL_IF_NAME_SZ];
+    int vlan_index;
+    hal_ifindex_t  phy_index;
+
+    cps_api_object_attr_t if_name_attr = cps_api_object_attr_get(obj, IF_INTERFACES_INTERFACE_NAME);
+    cps_api_object_attr_t vlan_id_attr = cps_api_object_attr_get(obj, BASE_IF_VLAN_IF_INTERFACES_INTERFACE_ID);
+    cps_api_object_attr_t parent = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_PARENT_INTERFACE);
+
+
+    if (if_name_attr == NULL || vlan_id_attr == NULL || parent == NULL ) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", " NAS OS create subintf: Missing intf name or vlan id  or parent \n");
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    safestrncpy(sub_intf, (const char*)cps_api_object_attr_data_bin(if_name_attr), HAL_IF_NAME_SZ);
+    safestrncpy(phy_if_name, (const char*)cps_api_object_attr_data_bin(parent), HAL_IF_NAME_SZ);
+    int vlan_id = (int)cps_api_object_attr_data_u32(vlan_id_attr);
+    std::string parent_name(phy_if_name);
+
+    if (!(nas_os_if_index_get(parent_name, phy_index))) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Create sub_intf :Failed ifindex for %s", parent_name.c_str());
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    if (nas_os_add_tag_port_to_os(vlan_id, sub_intf, phy_index, phy_if_name, &vlan_index) !=
+         STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failed: Failed to create subintf  %s", sub_intf);
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    _update_intf_to_tagged_intf_map(phy_index, vlan_index,true);
+
+    cps_api_object_attr_delete(obj,DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
+    cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,vlan_index);
+    return STD_ERR_OK;
+    //Add the interface to bridge comes separately
+}
+
+/* @TODO: To be deprecated */
+
 static t_std_error nas_os_add_t_port_to_os(int vlan_id, const char *vlan_name, int port_index, int *vlan_index)
+
 {
     char buff[NL_MSG_BUFFER_LEN];
 
@@ -350,80 +593,7 @@ static t_std_error nas_os_add_t_port_to_os(int vlan_id, const char *vlan_name, i
     return STD_ERR_OK;
 }
 
-static t_std_error nas_add_del_dummy_to_lag(hal_ifindex_t if_index, bool add) {
-
-     char buff[MAX_CPS_MSG_BUFF];
-     hal_ifindex_t ifix = cps_api_interface_name_to_if_index("dummy0");
-     cps_api_object_t name_obj = cps_api_object_init(buff, sizeof(buff));
-
-     cps_api_object_attr_add_u32(name_obj,DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX, if_index);
-     cps_api_object_attr_add_u32(name_obj,DELL_IF_IF_INTERFACES_INTERFACE_MEMBER_PORTS, ifix);
-
-    if (add && (nas_os_add_port_to_lag(name_obj) != STD_ERR_OK)) {
-        EV_LOGGING(INTERFACE, ERR, "NAS-OS",
-               "Error adding dummy port %d to lag %d in the Kernel", ifix, if_index);
-        return (STD_ERR(NAS_OS, FAIL, 0));
-    }
-    if (!add && (nas_os_delete_port_from_lag(name_obj) != STD_ERR_OK)) {
-        EV_LOGGING(INTERFACE, ERR, "NAS-OS",
-               "Error deleting  dummy port %d from lag %d in the Kernel", ifix, if_index);
-        return (STD_ERR(NAS_OS, FAIL, 0));
-
-    }
-    return STD_ERR_OK;
-
-}
-
-static bool nas_ck_if_lag_with_no_ports(hal_ifindex_t lag_id)
-
-{
-
-    if_bond *bond_hdlr = os_get_bond_db_hdlr();
-    INTERFACE *fill = os_get_if_db_hdlr();
-
-    if (!bond_hdlr || !fill) return false;
-
-    BASE_CMN_INTERFACE_TYPE_t intf_type = fill->if_info_get_type(lag_id);
-    /* Check if its a bond and has no members */
-    if (intf_type == BASE_CMN_INTERFACE_TYPE_LAG && bond_hdlr->bond_mbr_list_chk_empty(lag_id)) {
-        return true;
-    }
-    return false;
-
-
-}
-
-static t_std_error
-nas_handle_no_mem_tagged_bond (int vlan_id, const char *vlan_name, int port_index, int *vlan_index) {
-
-   t_std_error ret = (STD_ERR(NAS_OS, FAIL, 0));
-
-   bool if_lag =  nas_ck_if_lag_with_no_ports(port_index);
-
-   do {
-       if (!if_lag) {
-           EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failed: Not a bond or bond has members %d", port_index);
-           break;
-       }
-       if (nas_add_del_dummy_to_lag(port_index, true) != STD_ERR_OK) {
-           EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "Failed to add dummy intf to %d in kernel", port_index);
-           break;
-       }
-       ret = nas_os_add_t_port_to_os(vlan_id, vlan_name,
-               port_index, vlan_index);
-       /* del tagged bond to the kernel*/
-       if (nas_add_del_dummy_to_lag(port_index, false) != STD_ERR_OK) {
-           EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "Failed to del dummy intf to %d in kernel", port_index);
-           ret = (STD_ERR(NAS_OS, FAIL, 0));
-       }
-   } while (0);
-
-   return ret;
-}
-
-
 t_std_error nas_os_t_port_to_vlan(int vlan_id, const char *vlan_name, int port_index, int br_index, int *vlan_index) {
-
 
     if (nas_os_add_t_port_to_os(vlan_id, vlan_name, port_index, vlan_index) !=
          STD_ERR_OK) {
@@ -440,7 +610,7 @@ t_std_error nas_os_t_port_to_vlan(int vlan_id, const char *vlan_name, int port_i
     _update_intf_to_tagged_intf_map(port_index,*vlan_index,true);
 
     //Add the interface in the bridge now
-    t_std_error ret = nas_os_add_vlan_in_br(vlan_id, *vlan_index, port_index, br_index);
+    t_std_error ret = nas_os_add_vlan_in_br(*vlan_index, port_index, br_index);
     if (ret != STD_ERR_OK) {
         EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failed to add port with index  %d to %s in kernel",
                                 port_index,vlan_name);
@@ -452,7 +622,7 @@ t_std_error nas_os_t_port_to_vlan(int vlan_id, const char *vlan_name, int port_i
 
 t_std_error nas_os_ut_port_to_vlan(hal_ifindex_t port_index, hal_ifindex_t br_index)
 {
-    return (nas_os_add_vlan_in_br(0, port_index, port_index, br_index));
+    return (nas_os_add_vlan_in_br(port_index, port_index, br_index));
 }
 
 t_std_error nas_os_add_port_to_vlan(cps_api_object_t obj, hal_ifindex_t *vlan_index)
@@ -522,6 +692,7 @@ t_std_error nas_os_add_port_to_vlan(cps_api_object_t obj, hal_ifindex_t *vlan_in
              */
             cps_api_object_attr_delete(obj,DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
             cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,*vlan_index);
+
             return nas_os_interface_set_attribute(obj,DELL_IF_IF_INTERFACES_INTERFACE_MTU);
         }
         return rc;
@@ -531,7 +702,8 @@ t_std_error nas_os_add_port_to_vlan(cps_api_object_t obj, hal_ifindex_t *vlan_in
     return nas_os_ut_port_to_vlan(if_index, br_index);
 }
 
-static t_std_error nas_os_del_vlan_from_br(hal_ifindex_t vlan_if_index)
+
+t_std_error nas_os_change_master(hal_ifindex_t port_index, hal_vlan_id_t vlan_id, hal_ifindex_t m_index)
 {
     char buff[NL_MSG_BUFFER_LEN];
     memset(buff,0,sizeof(buff));
@@ -539,21 +711,30 @@ static t_std_error nas_os_del_vlan_from_br(hal_ifindex_t vlan_if_index)
     struct nlmsghdr *nlh = (struct nlmsghdr *) nlmsg_reserve((struct nlmsghdr *)buff,sizeof(buff),sizeof(struct nlmsghdr));
     struct ifinfomsg *ifmsg = (struct ifinfomsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct ifinfomsg));
 
-    if(vlan_if_index == 0) {
-        EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Invalid vlan interface index for deletion");
+    if(port_index == 0) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Invalid vlan interface index for deletion");
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
 
+    hal_ifindex_t vlan_ifindex= 0;
+
+    if(vlan_id){
+        if(nas_os_physical_to_vlan_ifindex(port_index,vlan_id,true, &vlan_ifindex)){
+            port_index = vlan_ifindex;
+        }
+    }
+
     nas_os_pack_nl_hdr(nlh, RTM_SETLINK, (NLM_F_REQUEST | NLM_F_ACK));
+    nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, 0, port_index);
 
-    nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, 0, vlan_if_index);
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS", "Del i/f %d from bridge", port_index);
 
-    EV_LOG(INFO, NAS_OS, ev_log_s_MINOR, "NAS-OS", "Del i/f %d from bridge",
-            vlan_if_index);
-    //when deleting from bridge set the master index to zero
-    int master_index = 0;
+    /*
+     * when deleting from bridge set the master index to zero otherwise
+     * update it to new master
+     */
 
-    nlmsg_add_attr(nlh, sizeof(buff),IFLA_MASTER, &master_index, sizeof(int));
+    nlmsg_add_attr(nlh, sizeof(buff),IFLA_MASTER, &m_index, sizeof(int));
 
     if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
         EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Failure deleting port from bridge in kernel");
@@ -562,6 +743,98 @@ static t_std_error nas_os_del_vlan_from_br(hal_ifindex_t vlan_if_index)
 
     return STD_ERR_OK;
 }
+
+/* This will set master for an interface. when deleting from bridge set the master index to zero */
+
+static t_std_error nas_os_set_master(hal_ifindex_t if_index, hal_vlan_id_t vlan_id)
+{
+    char buff[NL_MSG_BUFFER_LEN];
+    memset(buff,0,sizeof(buff));
+
+    struct nlmsghdr *nlh = (struct nlmsghdr *) nlmsg_reserve((struct nlmsghdr *)buff,sizeof(buff),sizeof(struct nlmsghdr));
+    struct ifinfomsg *ifmsg = (struct ifinfomsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct ifinfomsg));
+
+    if(if_index == 0) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Invalid vlan interface index for deletion");
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    nas_os_pack_nl_hdr(nlh, RTM_SETLINK, (NLM_F_REQUEST | NLM_F_ACK));
+
+    nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, 0, if_index);
+
+    EV_LOGGING(NAS_OS, INFO , "NAS-OS", "Del i/f %d from bridge",
+            if_index);
+    int master_index = vlan_id;
+
+    nlmsg_add_attr(nlh, sizeof(buff),IFLA_MASTER, &master_index, sizeof(int));
+
+    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failure setting master %d for  port %d  in kernel",
+           master_index, if_index);
+           return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    return STD_ERR_OK;
+}
+
+t_std_error nas_os_del_intf_from_bridge(cps_api_object_t obj) {
+
+    hal_ifindex_t idx, parent_idx;
+
+    cps_api_object_attr_t vlan_id_attr = cps_api_object_attr_get(obj, BASE_IF_VLAN_IF_INTERFACES_INTERFACE_ID);
+    cps_api_object_attr_t tagged_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_TAGGED_PORTS);
+    cps_api_object_attr_t untagged_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_UNTAGGED_PORTS);
+    cps_api_object_attr_t parent = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_PARENT_INTERFACE);
+
+
+    if((vlan_id_attr == NULL) ||
+      ((tagged_attr == NULL) &&
+      (untagged_attr == NULL))) {
+        EV_LOGGING(NAS_OS,ERR, "NAS-OS", "Parameters missing for deletion of member from bridge");
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    int vlan_id = (int)cps_api_object_attr_data_u32(vlan_id_attr);
+    char mem_name[HAL_IF_NAME_SZ];
+
+    if (tagged_attr != NULL) {
+        if (parent == NULL) {
+             EV_LOGGING(NAS_OS, ERR, "NAS-OS", " NAS OS del intf from bridge: missing parent intf for vlan_id %d",
+                       vlan_id);
+             return (STD_ERR(NAS_OS,FAIL, 0));
+        }
+        safestrncpy(mem_name, (char*)cps_api_object_attr_data_bin(tagged_attr), HAL_IF_NAME_SZ); /* mem_name is  e101-001-1.100 */
+
+    } else if (untagged_attr != NULL) {
+        safestrncpy(mem_name, (char*)cps_api_object_attr_data_bin(untagged_attr), HAL_IF_NAME_SZ);
+    } else {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", " NAS OS del port from bridge: Missing member information for vlan id ", vlan_id);
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+
+    std::string interface_name(mem_name);
+    if (!(nas_os_if_index_get(interface_name, idx))) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", " NAS OS del port from bridge: failed to find ifindex for %s", mem_name);
+        return (STD_ERR(NAS_OS,FAIL, 0));
+    }
+    if (tagged_attr != NULL) {
+        std::string parent_name((char *)cps_api_object_attr_data_bin(parent));
+        if (!(nas_os_if_index_get(parent_name, parent_idx))) {
+           EV_LOGGING(NAS_OS, ERR, "NAS-OS", " NAS OS del port from bridge: failed to find ifindex for parent %s",
+                                     parent_name.c_str());
+           return (STD_ERR(NAS_OS,FAIL, 0));
+        }
+        EV_LOGGING(NAS_OS, INFO, "NAS-OS", " NAS OS del tag port from bridge: parent_name %s, index %d",
+                                                          parent_name.c_str(), parent_idx);
+        _update_intf_to_tagged_intf_map(parent_idx, idx, false);
+    }
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS", " NAS OS del port from bridge name %s index %d", mem_name,idx);
+    return nas_os_set_master(idx, 0);
+}
+
+
+/* @TODO:  Will be deprecated */
 
 t_std_error nas_os_del_port_from_vlan(cps_api_object_t obj)
 {
@@ -593,6 +866,7 @@ t_std_error nas_os_del_port_from_vlan(cps_api_object_t obj)
 
         nas_os_get_vlan_if_name(if_name, sizeof(if_name), vlan_id, vlan_name);
 
+
         int vlan_if_index = cps_api_interface_name_to_if_index(vlan_name);
         if (vlan_if_index == 0) {
             EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "No interface exist for %s \n", vlan_name);
@@ -600,14 +874,14 @@ t_std_error nas_os_del_port_from_vlan(cps_api_object_t obj)
         }
 
         _update_intf_to_tagged_intf_map(port_index,vlan_if_index,false);
-        if(nas_os_del_vlan_from_br(vlan_if_index) != STD_ERR_OK)
+        if(nas_os_change_master(vlan_if_index,0,0) != STD_ERR_OK)
             return (STD_ERR(NAS_OS,FAIL, 0));
                 //Call the interface delete
         return nas_os_del_interface(vlan_if_index);
     }
     else {
         port_index = (int)cps_api_object_attr_data_u32(vlan_ut_port_attr);
-        return nas_os_del_vlan_from_br(port_index);
+        return nas_os_change_master(port_index,0,0);
     }
 
 }

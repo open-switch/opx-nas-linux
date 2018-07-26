@@ -496,7 +496,7 @@ TEST(std_route_test, del_neighbor) {
 TEST(std_route_test, add_ip_and_check_self_ip_pub) {
     char cmd_str[200];
 
-    if(system("os10-logging enable NETLINK info"));
+    if(system("opx-logging enable NETLINK info"));
     if(system("kill -USR1 `pidof base_nas`"));
 
     memset(cmd_str, 0, sizeof(cmd_str));
@@ -527,7 +527,7 @@ TEST(std_route_test, add_ip_and_check_self_ip_pub) {
     ret = system(cmd_str);
     ASSERT_TRUE (ret == 0);
 
-    if(system("os10-logging disable NETLINK info"));
+    if(system("opx-logging disable NETLINK info"));
     if(system("kill -USR1 `pidof base_nas`"));
 }
 
@@ -1085,7 +1085,7 @@ static cps_api_return_code_t nas_os_vrf_cfg (const char *vrf_name, bool is_add)
 }
 
 TEST(std_nas_route_test, nas_os_verify_lla) {
-    int ret = system("os10-show-version | grep \"OS_NAME.*Enterprise\"");
+    int ret = system("opx-show-version | grep \"OS_NAME.*Enterprise\"");
     if (ret == 0) {
         FILE *fp;
 

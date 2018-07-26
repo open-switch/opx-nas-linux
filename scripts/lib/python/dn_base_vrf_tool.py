@@ -40,6 +40,7 @@ veth_default_intf_ip6_prefix = 'fda5:74c8:b79e:4:'
 veth_default_intf_ip6_suffix = '::1'
 veth_default_intf_ip6_pref_len = '64'
 rej_rule_mark_value = 255
+masquerade_rule_mark_value = 254
 
 # fda5:74c8:b79e:4:<100+x>::2 -> x gets next available id for connectivity to non=default VRF
 veth_non_default_intf_ip6_prefix = 'fda5:74c8:b79e:4:'
@@ -85,6 +86,19 @@ def run_command(cmd, response, log_fail = True):
 
     return p.returncode
 
+def get_ip_str(af, ip_bin):
+    if af is None:
+        af_list = [socket.AF_INET, socket.AF_INET6]
+    else:
+        af_list = [af]
+    for af in af_list:
+        try:
+            ip_str = socket.inet_ntop(af, ip_bin)
+            return ip_str
+        except ValueError:
+            continue
+    return '-'
+
 def process_vrf_ip_nat_config(is_add, vrf_name, if_name, iptables):
     res = []
     operation = None
@@ -93,8 +107,17 @@ def process_vrf_ip_nat_config(is_add, vrf_name, if_name, iptables):
     else:
         operation = '-D'
 
+    vrf_id = None
+    vrf_id = _vrf_name_to_id.get(vrf_name, None)
+    if vrf_id is None:
+        return False
+
+    # ip netns exec management iptables -t nat -A POSTROUTING -o eth0 -m mark --mark 1 -j MASQUERADE
+
+    #@@@TODO - revisit and move this MASQUERADE rule to outgoing services config to maintain the rule order
+    #all user configure SNAT rule's should be actually added only after any interface MASQUERADE rule.
     cmd = [iplink_cmd, 'netns', 'exec', vrf_name, iptables, '-t', 'nat', operation, 'POSTROUTING',\
-          '-o', if_name, '-j', 'MASQUERADE']
+          '-o', if_name, '-m', 'mark', '--mark', str(masquerade_rule_mark_value), '-j', 'MASQUERADE']
     if run_command(cmd, res) != 0:
         return False
 
@@ -257,6 +280,10 @@ def process_vrf_config(is_add, vrf_name, vrf_id):
     ip_tables = { 'iptables', 'ip6tables' }
     for iptable in ip_tables:
         cmd = [iplink_cmd, 'netns', 'exec', vrf_name, iptable, '-t', 'nat', '-N', 'VRF']
+        if run_command(cmd, res) != 0:
+            return False
+        # ip netns exec management iptables -A FORWARD -i veth-nsid1024 -j MARK --set-mark 1
+        cmd = [iplink_cmd, 'netns', 'exec', vrf_name, iptable, '-A', 'FORWARD', '-i', 'veth-nsid'+str(vrf_id), '-j', 'MARK', '--set-mark', str(masquerade_rule_mark_value)]
         if run_command(cmd, res) != 0:
             return False
 
@@ -433,6 +460,7 @@ def ip_svcs_subnet_setup(is_add, vrf_name):
             if run_command(cmd, res) != 0:
                 return (False, sub_net_val)
 
+            #@@@TODO - revisit and remove any IPtable flush configuration. trigger only explicit rule delete.
             cmd = [iplink_cmd, 'netns', 'exec', vrf_name, iptable, '-t', 'nat', '-F']
             ret_val = run_command(cmd, res)
             if ret_val != 0:
@@ -510,15 +538,18 @@ def get_veth_ip(af, vrf_name='default'):
         veth_ip = socket.inet_pton(af, veth_intf_ip6)
     return veth_ip
 
-def process_outgoing_ip_svcs_config(is_add, af, public_ip, protocol, public_port, vrf_name='default'):
-    res = []
+
+""" This method provides the private IP, port for given
+    public IP, port required for the binding outgoing IP services.
+"""
+def process_outgoing_ip_svcs_sub_net_config(is_add, vrf_name, af, protocol, public_ip, public_port):
 
     sub_net_val = None
     sub_net_val = _vrf_sub_net_map.get(vrf_name, None)
     if sub_net_val is None:
         ret_val, sub_net_val = ip_svcs_subnet_setup(True, vrf_name)
         if ret_val is False:
-            return (False, 0, None)
+            return (False, None, 0)
 
     _outgoing_private_port = None
     alias = (vrf_name,af,public_ip,protocol,public_port)
@@ -528,7 +559,7 @@ def process_outgoing_ip_svcs_config(is_add, af, public_ip, protocol, public_port
         # Add case
         dup_check = _outgoing_ip_svcs_map.get(alias, None)
         if dup_check is not None:
-            return (False, 0, None)
+            return (False, None, 0)
         for private_port in range (_start_private_port, _end_private_port):
             if private_port not in _outgoing_ip_svcs_map.values():
                 _outgoing_ip_svcs_map[alias] = private_port
@@ -536,34 +567,14 @@ def process_outgoing_ip_svcs_config(is_add, af, public_ip, protocol, public_port
                 break
 
     if _outgoing_private_port is None:
-        return (False, 0, None)
+        return (False, None, 0)
 
-    iptable = None
-    operation = None
     private_ip = None
-    if is_add:
-        operation = '-A'
-    else:
-        operation = '-D'
-
-    if af == 'ipv4':
-        iptable = 'iptables'
+    if af == socket.AF_INET:
         private_ip = veth_non_default_intf_ip_prefix + str(sub_net_val) + veth_non_default_intf_ip_suffix
-    elif af == 'ipv6':
+        private_ip = (socket.inet_pton(af, private_ip))
+    elif af == socket.AF_INET6:
         private_ip = veth_non_default_intf_ip6_prefix + str(sub_net_val) + veth_non_default_intf_ip6_suffix
-        iptable = 'ip6tables'
+        private_ip = (socket.inet_pton(af, private_ip))
 
-    vrf_id = None
-    vrf_id = _vrf_name_to_id.get(vrf_name, None)
-    if vrf_id is None:
-        return False
-
-    # For outgoing IP services (SNMP Traps, RSYSLOG, RADIUS...etc) in the mgmt namespace, add the DNAT rule to
-    # modify the packets with the actual public IP address and public port
-    cmd = [iplink_cmd, 'netns', 'exec', vrf_name, iptable, '-t', 'nat', operation, 'PREROUTING',\
-          '-i', 'veth-nsid'+str(vrf_id), '-p', protocol, '--dport', str(_outgoing_private_port), '-j', 'DNAT',\
-          '--to-destination', public_ip + ':' + public_port]
-    if run_command(cmd, res) != 0:
-        return (False, 0, None)
-    return (True, _outgoing_private_port, private_ip)
-
+    return (True, private_ip, _outgoing_private_port)

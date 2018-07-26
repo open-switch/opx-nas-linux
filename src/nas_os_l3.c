@@ -119,7 +119,9 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
 
     if (rt_vrf_name) {
         cps_api_object_attr_add(new_obj, BASE_ROUTE_OBJ_VRF_NAME, rt_vrf_name, strlen(rt_vrf_name)+1);
-        if (nas_get_vrf_internal_id_from_vrf_name(rt_vrf_name, &rt_vrf_id) != STD_ERR_OK) {
+        if (strncmp(rt_vrf_name, NAS_MGMT_VRF_NAME, sizeof(NAS_MGMT_VRF_NAME)) == 0) {
+            rt_vrf_id = NAS_MGMT_VRF_ID;
+        } else if (nas_get_vrf_internal_id_from_vrf_name(rt_vrf_name, &rt_vrf_id) != STD_ERR_OK) {
             EV_LOGGING (NAS_OS, ERR, "ROUTE-PUBLISH", "Route VRF name:%s to id mapping is not present!",
                         rt_vrf_name);
             return (STD_ERR(NAS_OS, FAIL, 0));
@@ -140,7 +142,9 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
     }
     if (nh_vrf_name) {
         cps_api_object_attr_add(new_obj, BASE_ROUTE_OBJ_ENTRY_NH_VRF_NAME, nh_vrf_name, strlen(nh_vrf_name)+1);
-        if (nas_get_vrf_internal_id_from_vrf_name(nh_vrf_name, &nh_vrf_id) != STD_ERR_OK) {
+        if (strncmp(nh_vrf_name, NAS_MGMT_VRF_NAME, sizeof(NAS_MGMT_VRF_NAME)) == 0) {
+            nh_vrf_id = NAS_MGMT_VRF_ID;
+        } else if (nas_get_vrf_internal_id_from_vrf_name(nh_vrf_name, &nh_vrf_id) != STD_ERR_OK) {
             EV_LOGGING (NAS_OS, ERR, "ROUTE-PUBLISH", "Nexthop VRF name:%s to id mapping is not present!",
                         nh_vrf_name);
             return (STD_ERR(NAS_OS, FAIL, 0));
@@ -579,7 +583,8 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, nas_rt_msg_type
                 }
                 if (intf_ctrl.int_type == nas_int_type_MGMT) {
                     int if_index = 0;
-                    if (nas_os_util_int_if_index_get(vrf_name, intf_ctrl.if_name, &if_index) != STD_ERR_OK) {
+                    if (nas_os_util_int_if_index_get((vrf_name ? vrf_name : NAS_DEFAULT_VRF_NAME),
+                                                     intf_ctrl.if_name, &if_index) != STD_ERR_OK) {
                         EV_LOGGING(NAS_OS, ERR, "ROUTE-UPD",
                                    "Interface %s to if_index from OS returned error",
                                    intf_ctrl.if_name);
@@ -669,7 +674,8 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, nas_rt_msg_type
                     }
                     if (intf_ctrl.int_type == nas_int_type_MGMT) {
                         int if_index = 0;
-                        if (nas_os_util_int_if_index_get(vrf_name, intf_ctrl.if_name, &if_index) != STD_ERR_OK) {
+                        if (nas_os_util_int_if_index_get((vrf_name ? vrf_name : NAS_DEFAULT_VRF_NAME),
+                                                         intf_ctrl.if_name, &if_index) != STD_ERR_OK) {
                             EV_LOGGING(NAS_OS, ERR, "ROUTE-UPD",
                                        "Interface %s to if_index from OS returned error",
                                        intf_ctrl.if_name);
@@ -711,7 +717,7 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, nas_rt_msg_type
 
     do  {
 
-        rc = nl_do_set_request(vrf_name, nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
+        rc = nl_do_set_request((vrf_name ? vrf_name : NAS_DEFAULT_VRF_NAME), nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
         nhm_count--;
         err_code = STD_ERR_EXT_PRIV (rc);
         EV_LOGGING(NAS_OS, INFO,"ROUE_UPD","Netlink error_code %d", err_code);
@@ -760,7 +766,7 @@ t_std_error nas_os_update_route_nexthop (cps_api_object_t obj)
 
     memset(buff,0,sizeof(struct nlmsghdr));
 
-    const char *vrf_name           = cps_api_object_get_data(obj,BASE_ROUTE_OBJ_VRF_NAME);
+    const char *vrf_name           = cps_api_object_get_data(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_VRF_NAME);
     cps_api_object_attr_t prefix   = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_ROUTE_PREFIX);
     cps_api_object_attr_t af       = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_AF);
     cps_api_object_attr_t pref_len = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_PREFIX_LEN);
@@ -826,8 +832,8 @@ t_std_error nas_os_update_route_nexthop (cps_api_object_t obj)
     uint32_t addr_len = (rm->rtm_family == AF_INET)?HAL_INET4_LEN:HAL_INET6_LEN;
     nlmsg_add_attr(nlh,sizeof(buff),RTA_DST,cps_api_object_attr_data_bin(prefix),addr_len);
 
-    EV_LOGGING(NAS_OS, INFO, "ROUTE-NH-UPD","NH count:%d family:%s msg:%s for prefix:%s len:%d proto:%d scope:%d type:%d",
-               nhc,
+    EV_LOGGING(NAS_OS, INFO, "ROUTE-NH-UPD","VRF:%s NH count:%d family:%s msg:%s for prefix:%s len:%d proto:%d scope:%d type:%d",
+               (vrf_name ? vrf_name : ""), nhc,
                ((rm->rtm_family == AF_INET) ? "IPv4" : "IPv6"),
                ((m_type == NAS_RT_DEL) ? "Route-Delete-NH" : "Route-Append-NH"),
                ((rm->rtm_family == AF_INET) ?
@@ -960,7 +966,7 @@ t_std_error nas_os_update_route_nexthop (cps_api_object_t obj)
 
     int err_code;
 
-    rc = nl_do_set_request(vrf_name, nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
+    rc = nl_do_set_request((vrf_name ? vrf_name : NAS_DEFAULT_VRF_NAME), nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
 
     err_code = STD_ERR_EXT_PRIV (rc);
     EV_LOGGING (NAS_OS, INFO, "ROUE-NH-UPD","Netlink error_code %d", err_code);
@@ -1072,7 +1078,7 @@ cps_api_return_code_t nas_os_update_neighbor(cps_api_object_t obj, nas_rt_msg_ty
         }
         if (intf_ctrl.int_type == nas_int_type_MGMT) {
             int if_index = 0;
-            if (nas_os_util_int_if_index_get(vrf_name, intf_ctrl.if_name, &if_index) != STD_ERR_OK) {
+            if (nas_os_util_int_if_index_get((vrf_name ? vrf_name : NAS_DEFAULT_VRF_NAME), intf_ctrl.if_name, &if_index) != STD_ERR_OK) {
                 EV_LOGGING(NAS_OS, ERR, "NEIGH-UPD",
                            "Interface %s to if_index from OS returned error",
                            intf_ctrl.if_name);
@@ -1140,7 +1146,7 @@ cps_api_return_code_t nas_os_update_neighbor(cps_api_object_t obj, nas_rt_msg_ty
         nlmsg_add_attr(nlh,sizeof(buff),NDA_LLADDR, &mac_addr, HAL_MAC_ADDR_LEN);
     }
 
-    t_std_error rc = nl_do_set_request(vrf_name, nas_nl_sock_T_NEI,nlh,buff,sizeof(buff));
+    t_std_error rc = nl_do_set_request((vrf_name ? vrf_name : NAS_DEFAULT_VRF_NAME), nas_nl_sock_T_NEI,nlh,buff,sizeof(buff));
     int err_code = STD_ERR_EXT_PRIV (rc);
     char mac_buff[MAC_STRING_LEN];
     memset(mac_buff, '\0', sizeof(mac_buff));
@@ -1148,7 +1154,7 @@ cps_api_return_code_t nas_os_update_neighbor(cps_api_object_t obj, nas_rt_msg_ty
     EV_LOGGING(NAS_OS, INFO,"NEIGH-UPD","Operation:%s VRF:%s family:%s NH:%s MAC:%s out-intf:%d state:%s rc:%d",
                ((m_type == NAS_RT_DEL) ? "Arp-Del" : ((m_type == NAS_RT_ADD) ? "Arp-Add" :
                                                       ((m_type == NAS_RT_REFRESH) ? "Arp-Refresh" : "Arp-Replace"))),
-               vrf_name,
+               (vrf_name ? vrf_name : ""),
                ((ndm->ndm_family == AF_INET) ? "IPv4" : "IPv6"),
                ((ndm->ndm_family == AF_INET) ?
                 (inet_ntop(ndm->ndm_family, cps_api_object_attr_data_bin(ip), addr_str, INET_ADDRSTRLEN)) :
