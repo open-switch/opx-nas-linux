@@ -177,7 +177,7 @@ t_std_error nas_os_add_vlan(cps_api_object_t obj, hal_ifindex_t *br_index)
 
     EV_LOG(INFO, NAS_OS, ev_log_s_MINOR, "NAS-OS", "ADD Bridge name %s ",
            br_name);
-    nas_os_pack_nl_hdr(nlh, RTM_NEWLINK, (NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL));
+    nas_os_pack_nl_hdr(nlh, RTM_NEWLINK, (NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL));
 
     /* @TODO : Setting promisc mode to lift IP packets for now.
      *         Revisit when we get more details..
@@ -263,7 +263,7 @@ static t_std_error nas_os_add_vlan_in_br(int vlan_id, int vlan_index, int if_ind
     struct ifinfomsg *ifmsg = (struct ifinfomsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct ifinfomsg));
 
     //nlmsg_len is updated in reserve api's above ..
-    nas_os_pack_nl_hdr(nlh, RTM_SETLINK, (NLM_F_REQUEST | NLM_F_ACK));
+    nas_os_pack_nl_hdr(nlh, RTM_SETLINK, NLM_F_REQUEST);
 
     nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, 0, vlan_index);
 
@@ -292,7 +292,7 @@ static t_std_error nas_os_add_t_port_to_os(int vlan_id, const char *vlan_name, i
     struct nlmsghdr *nlh = (struct nlmsghdr *) nlmsg_reserve((struct nlmsghdr *)buff,sizeof(buff),sizeof(struct nlmsghdr));
     struct ifinfomsg *ifmsg = (struct ifinfomsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct ifinfomsg));
 
-    nas_os_pack_nl_hdr(nlh, RTM_NEWLINK, (NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL));
+    nas_os_pack_nl_hdr(nlh, RTM_NEWLINK, (NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL));
 
     db_interface_state_t astate;
     db_interface_operational_state_t ostate;
@@ -544,7 +544,7 @@ static t_std_error nas_os_del_vlan_from_br(hal_ifindex_t vlan_if_index)
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
 
-    nas_os_pack_nl_hdr(nlh, RTM_SETLINK, (NLM_F_REQUEST | NLM_F_ACK));
+    nas_os_pack_nl_hdr(nlh, RTM_SETLINK, NLM_F_REQUEST);
 
     nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, 0, vlan_if_index);
 

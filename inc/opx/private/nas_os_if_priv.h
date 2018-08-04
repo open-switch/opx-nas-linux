@@ -37,18 +37,21 @@
 #include <unordered_map>
 #include <utility>
 
-bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context, uint32_t vrf_id);
+t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, bool* p_pub_evt,
+                                    uint32_t vrf_id);
 extern "C"
 cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t ifix, bool get_all,
                                        uint_t if_type );
 
 typedef struct {
-    bool admin;
+    bool admin; /* Admin status of the interface in OS */
     if_change_t ev_mask; // Mask interface netlink event publish
     int mtu;
     BASE_CMN_INTERFACE_TYPE_t if_type;
     std::string os_link_type; // Can be bond, bridge, vlan, dummy, tun
     hal_mac_addr_t phy_addr;
+    bool oper; /* Operational status of the interface in OS, this field helps the Apps
+                  (e.g nbr-mgr) that only depend on OS netlink events for any operations. */
 }if_info_t;
 
 using os_if_map_t = std::unordered_map <hal_ifindex_t, if_info_t>;

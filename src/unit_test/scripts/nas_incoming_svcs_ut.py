@@ -11,20 +11,20 @@ import binascii
 
 """
 Example:
-nas_incoming_svcs_ut.py create -s 1.2.3.0/24 -f ipv4 -i 100 -a deny
-nas_incoming_svcs_ut.py delete -s 1.2.3.0/24 -f ipv4 -a deny
+nas_incoming_svcs_ut.py create -s 1.2.3.0/24 -d 4.5.0.0/16 -f ipv4 -i 100 -a deny
+nas_incoming_svcs_ut.py delete -s 1.2.3.0/24 -d 4.5.0.0/16 -f ipv4 -a deny
 nas_incoming_svcs_ut.py info
 nas_incoming_svcs_ut.py delete 1
 nas_incoming_svcs_ut.py create -s 1:2::0/64 -a allow -f ipv6 -i 200
 
-nas_incoming_svcs_ut.py create -n management -p udp -d 1234 -f ipv4
-nas_incoming_svcs_ut.py delete -n management -p udp -d 1234 -f ipv4
+nas_incoming_svcs_ut.py create -n management -p udp -dp 1234 -f ipv4
+nas_incoming_svcs_ut.py delete -n management -p udp -dp 1234 -f ipv4
 
-nas_incoming_svcs_ut.py create -n default -s 1.2.3.0/24 -p tcp -d 1234 -f ipv4 -i 100 -a allow
-nas_incoming_svcs_ut.py delete -n default -s 1.2.3.0/24 -p tcp -d 1234 -f ipv4 -a allow
+nas_incoming_svcs_ut.py create -n default -s 1.2.3.0/24 -p tcp -dp 1234 -f ipv4 -i 100 -a allow
+nas_incoming_svcs_ut.py delete -n default -s 1.2.3.0/24 -p tcp -dp 1234 -f ipv4 -a allow
 
-nas_incoming_svcs_ut.py create -n default -p tcp -d 21 -f ipv4 -a deny
-nas_incoming_svcs_ut.py delete -n default -p tcp -d 21 -f ipv4 -a deny
+nas_incoming_svcs_ut.py create -n default -p tcp -dp 21 -f ipv4 -a deny
+nas_incoming_svcs_ut.py delete -n default -p tcp -dp 21 -f ipv4 -a deny
 """
 
 def parse_ip_mask(key, val):
@@ -77,6 +77,7 @@ arg_cps_attr_map = {
     'rule_id': ('id', None),
     'vrf_name': ('ni-name', None),
     'src_ip': (['af', 'src-ip', 'src-prefix-len'], parse_ip_mask),
+    'dst_ip': (['af', 'dst-ip', 'dst-prefix-len'], parse_ip_mask),
     'addr_family': ('af', parse_af),
     'seq_num': ('seq-num', None),
     'action': ('action', parse_action),
@@ -140,11 +141,12 @@ parser.add_argument('--clear', action = 'store_true', help = 'Cleanup pre-config
 parser.add_argument('--mgmt-ip', help = 'Management IP address and mask for testing')
 parser.add_argument('-n', '--vrf-name',  default = 'default', choices = ['default', 'management'], help = 'VRF name')
 parser.add_argument('-s', '--src-ip', help = 'Source IP address and mask')
+parser.add_argument('-d', '--dst-ip', help = 'Destination IP address and mask')
 parser.add_argument('-f', '--addr-family', choices = ['ipv4', 'ipv6'], help = 'Address family')
 parser.add_argument('-i', '--seq-num', type = int, help = 'Sequence number')
 parser.add_argument('-a', '--action', choices = ['allow', 'deny'], help = 'Action')
 parser.add_argument('-p', '--protocol', choices = ['tcp', 'udp', 'icmp', 'all'], help = 'Protocol')
-parser.add_argument('-d', '--dst-port', type = int, help = 'L4 destination port')
+parser.add_argument('-dp', '--dst-port', type = int, help = 'L4 destination port')
 parser.add_argument('--multiport', help = 'L4 destination port range')
 parser.add_argument('-iif', '--in_intf', help = 'incoming interface')
 
@@ -174,6 +176,8 @@ def incoming_svcs_test(is_negative_test = False, *test_args):
         print 'Done with pre-configuration'
         return True
 
+    if op != 'run-test':
+        print '*** Running %stest: %s ***' % ('negative ' if is_negative_test else '', ' '.join(test_args))
     obj = cps_object.CPSObject('vrf-firewall/ns-incoming-service')
     for arg_name, arg_val in args.items():
         if arg_name in arg_cps_attr_map and arg_val is not None:
@@ -234,20 +238,20 @@ def run_test_incoming_svcs():
         incoming_svcs_test(False, "delete", "-s", "1:2::0/64", "-a", "allow", "-f", "ipv6", "-i", "100")
 
         ## test for ip protocol all
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.11.11.0/24", "-p", "all", "-f", "ipv4", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.11.11.0/24", "-p", "all", "-f", "ipv4", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.11.11.0/24", "-p", "all", "-f", "ipv4", "-i", "100", "-a", "deny")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.11.11.0/24", "-p", "all", "-f", "ipv4", "-a", "deny")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.11.11.0/24", "-d", "12.22.0.0/16", "-p", "all", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.11.11.0/24", "-d", "12.22.0.0/16", "-p", "all", "-f", "ipv4", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.11.11.0/24", "-d", "12.22.0.0/16", "-p", "all", "-f", "ipv4", "-i", "100", "-a", "deny")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.11.11.0/24", "-d", "12.22.0.0/16", "-p", "all", "-f", "ipv4", "-a", "deny")
 
         ## test for L4 destination port range
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.13.0/24", "-p", "tcp", "--multiport", "100:200", "-f", "ipv4", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.13.0/24", "-p", "tcp", "--multiport", "100:200", "-f", "ipv4", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.13.0/24", "-p", "tcp", "--multiport", "100:200", "-f", "ipv4", "-i", "100", "-a", "deny")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.13.0/24", "-p", "tcp", "--multiport", "100:200", "-f", "ipv4", "-a", "deny")
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.14.0/24", "-p", "udp", "--multiport", "111:120", "-f", "ipv4", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.14.0/24", "-p", "udp", "--multiport", "111:120", "-f", "ipv4", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.14.0/24", "-p", "udp", "--multiport", "111:120", "-f", "ipv4", "-i", "100", "-a", "deny")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.14.0/24", "-p", "udp", "--multiport", "111:120", "-f", "ipv4", "-a", "deny")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.13.0/24", "-d", "12.13.0.0/16", "-p", "tcp", "--multiport", "100:200", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.13.0/24", "-d", "12.13.0.0/16", "-p", "tcp", "--multiport", "100:200", "-f", "ipv4", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.13.0/24", "-d", "12.13.0.0/16", "-p", "tcp", "--multiport", "100:200", "-f", "ipv4", "-i", "100", "-a", "deny")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.13.0/24", "-d", "12.13.0.0/16", "-p", "tcp", "--multiport", "100:200", "-f", "ipv4", "-a", "deny")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.14.0/24", "-d", "12.13.0.0/16", "-p", "udp", "--multiport", "111:120", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.14.0/24", "-d", "12.13.0.0/16", "-p", "udp", "--multiport", "111:120", "-f", "ipv4", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.14.0/24", "-d", "12.13.0.0/16", "-p", "udp", "--multiport", "111:120", "-f", "ipv4", "-i", "100", "-a", "deny")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.14.0/24", "-d", "12.13.0.0/16", "-p", "udp", "--multiport", "111:120", "-f", "ipv4", "-a", "deny")
         ## dest port range for same ports (negative case)
         incoming_svcs_test(True, "create", "-n", "default", "-s", "11.12.14.0/24", "-p", "tcp", "--multiport", "90:90", "-f", "ipv4", "-i", "100", "-a", "allow")
         incoming_svcs_test(True, "delete", "-n", "default", "-s", "11.12.14.0/24", "-p", "tcp", "--multiport", "90:90", "-f", "ipv4", "-a", "allow")
@@ -255,8 +259,8 @@ def run_test_incoming_svcs():
         incoming_svcs_test(True, "create", "-n", "default", "-s", "11.12.14.0/24", "-p", "tcp", "--multiport", "90:80", "-f", "ipv4", "-i", "100", "-a", "allow")
         incoming_svcs_test(True, "delete", "-n", "default", "-s", "11.12.14.0/24", "-p", "tcp", "--multiport", "90:80", "-f", "ipv4", "-a", "allow")
         ## dest port range with dest port option (negative case)
-        incoming_svcs_test(True, "create", "-n", "default", "-s", "11.12.15.0/24", "-p", "tcp", "--multiport", "101:110", "-d", "101", "-f", "ipv4", "-i", "100", "-a", "allow")
-        incoming_svcs_test(True, "delete", "-n", "default", "-s", "11.12.15.0/24", "-p", "tcp", "--multiport", "101:110", "-d", "101", "-f", "ipv4", "-a", "allow")
+        incoming_svcs_test(True, "create", "-n", "default", "-s", "11.12.15.0/24", "-p", "tcp", "--multiport", "101:110", "-dp", "101", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(True, "delete", "-n", "default", "-s", "11.12.15.0/24", "-p", "tcp", "--multiport", "101:110", "-dp", "101", "-f", "ipv4", "-a", "allow")
 
         #rules with same dest port range, different protocol, same sequence
         incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.15.0/24", "-p", "tcp", "--multiport", "121:130", "-f", "ipv4", "-i", "100", "-a", "allow")
@@ -271,71 +275,71 @@ def run_test_incoming_svcs():
 
         #rule with dest port and dest port range
         incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.16.0/24", "-p", "udp", "--multiport", "150:151", "-f", "ipv4", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.16.0/24", "-p", "udp", "-d", "150", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.16.0/24", "-p", "udp", "-dp", "150", "-f", "ipv4", "-i", "100", "-a", "allow")
         incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.16.0/24", "-p", "udp", "--multiport", "150:151", "-f", "ipv4", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.16.0/24", "-p", "udp", "-d", "150", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.16.0/24", "-p", "udp", "-dp", "150", "-f", "ipv4", "-i", "100", "-a", "allow")
 
         ## test for default vrf
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "1.2.3.0/24", "-p", "tcp", "-d", "1234", "-f", "ipv4", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "1.2.3.0/24", "-p", "tcp", "-d", "1234", "-f", "ipv4", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "0.0.0.0/0", "-p", "tcp", "-d", "21", "-f", "ipv4", "-a", "deny")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "0.0.0.0/0", "-p", "tcp", "-d", "21", "-f", "ipv4", "-a", "deny")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "1.2.3.0/24", "-p", "tcp", "-dp", "1234", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "1.2.3.0/24", "-p", "tcp", "-dp", "1234", "-f", "ipv4", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "0.0.0.0/0", "-p", "tcp", "-dp", "21", "-f", "ipv4", "-a", "deny")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "0.0.0.0/0", "-p", "tcp", "-dp", "21", "-f", "ipv4", "-a", "deny")
 
         ## test for management vrf
-        incoming_svcs_test(False, "create", "-n", "management", "-s", "1.2.3.0/24", "-p", "tcp", "-d", "1234", "-f", "ipv4", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "management", "-s", "1.2.3.0/24", "-p", "tcp", "-d", "1234", "-f", "ipv4", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "management", "-s", "0.0.0.0/0", "-p", "tcp", "-d", "21", "-f", "ipv4", "-a", "deny")
-        incoming_svcs_test(False, "delete", "-n", "management", "-s", "0.0.0.0/0", "-p", "tcp", "-d", "21", "-f", "ipv4", "-a", "deny")
+        incoming_svcs_test(False, "create", "-n", "management", "-s", "1.2.3.0/24", "-p", "tcp", "-dp", "1234", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "management", "-s", "1.2.3.0/24", "-p", "tcp", "-dp", "1234", "-f", "ipv4", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "management", "-s", "0.0.0.0/0", "-p", "tcp", "-dp", "21", "-f", "ipv4", "-a", "deny")
+        incoming_svcs_test(False, "delete", "-n", "management", "-s", "0.0.0.0/0", "-p", "tcp", "-dp", "21", "-f", "ipv4", "-a", "deny")
 
         ## Negative test
         # Duplicate create (this rule should be created by application as default)
-        incoming_svcs_test(True,  "create", "-n", "management", "-p", "tcp", "-d", "22", "-f", "ipv4", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "management", "-p", "tcp", "-d", "22", "-f", "ipv4", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "management", "-p", "tcp", "-d", "22", "-f", "ipv4", "-a", "allow")
+        incoming_svcs_test(True,  "create", "-n", "management", "-p", "tcp", "-dp", "22", "-f", "ipv4", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "management", "-p", "tcp", "-dp", "22", "-f", "ipv4", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "management", "-p", "tcp", "-dp", "22", "-f", "ipv4", "-a", "allow")
         # Delete non-existent rule
-        incoming_svcs_test(True,  "delete", "-n", "management", "-s", "3.4.5.0/24", "-p", "tcp", "-d", "4321", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(True,  "delete", "-n", "management", "-s", "3.4.5.0/24", "-p", "tcp", "-dp", "4321", "-f", "ipv4", "-i", "100", "-a", "allow")
         # Give dst_port but no tcp/udp protocol
-        incoming_svcs_test(True,  "create", "-n", "management", "-s", "1.2.3.0/24", "-d", "8080", "-f", "ipv4", "-i", "101", "-a", "allow")
+        incoming_svcs_test(True,  "create", "-n", "management", "-s", "1.2.3.0/24", "-dp", "8080", "-f", "ipv4", "-i", "101", "-a", "allow")
 
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.13.0/24", "-p", "tcp", "-d", "22", "-f", "ipv4", "-i", "100", "-a", "allow")
-        incoming_svcs_test(True,  "create", "-n", "default", "-s", "11.12.13.0/24", "-p", "tcp", "-d", "22", "-f", "ipv4", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.13.0/24", "-p", "tcp", "-d", "22", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "11.12.13.0/24", "-p", "tcp", "-dp", "22", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(True,  "create", "-n", "default", "-s", "11.12.13.0/24", "-p", "tcp", "-dp", "22", "-f", "ipv4", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "11.12.13.0/24", "-p", "tcp", "-dp", "22", "-f", "ipv4", "-i", "100", "-a", "allow")
 
         ## test for default vrf, eth0
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-d", "123", "-f", "ipv4", "-iif", "eth0", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-d", "123", "-f", "ipv4", "-i", "101", "-a", "deny")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-d", "123", "-f", "ipv4", "-iif", "eth0", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-d", "123", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-dp", "123", "-f", "ipv4", "-iif", "eth0", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-dp", "123", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-dp", "123", "-f", "ipv4", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-dp", "123", "-f", "ipv4", "-i", "101", "-a", "deny")
 
         ## test for management vrf, eth0
-        incoming_svcs_test(False, "create", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-d", "124", "-f", "ipv4", "-iif", "eth0", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-d", "124", "-f", "ipv4", "-i", "101", "-a", "deny")
-        incoming_svcs_test(False, "delete", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-d", "124", "-f", "ipv4", "-iif", "eth0", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-d", "124", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "create", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-dp", "124", "-f", "ipv4", "-iif", "eth0", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-dp", "124", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "delete", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-dp", "124", "-f", "ipv4", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-dp", "124", "-f", "ipv4", "-i", "101", "-a", "deny")
 
         ## test for default vrf, L3 port (vlan 100)
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-d", "125", "-f", "ipv4", "-iif", "br100", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-d", "125", "-f", "ipv4", "-i", "101", "-a", "deny")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-d", "125", "-f", "ipv4", "-iif", "br100", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-d", "125", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-dp", "125", "-f", "ipv4", "-iif", "br100", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-dp", "125", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-dp", "125", "-f", "ipv4", "-iif", "br100", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "21.21.21.0/24", "-p", "tcp", "-dp", "125", "-f", "ipv4", "-i", "101", "-a", "deny")
 
         ## test for management vrf, L3 port (vlan 100)
-        incoming_svcs_test(False, "create", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-d", "126", "-f", "ipv4", "-iif", "br100", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-d", "126", "-f", "ipv4", "-i", "101", "-a", "deny")
-        incoming_svcs_test(False, "delete", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-d", "126", "-f", "ipv4", "-iif", "br100", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-d", "126", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "create", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-dp", "126", "-f", "ipv4", "-iif", "br100", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-dp", "126", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "delete", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-dp", "126", "-f", "ipv4", "-iif", "br100", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "management", "-s", "22.22.22.0/24", "-p", "tcp", "-dp", "126", "-f", "ipv4", "-i", "101", "-a", "deny")
 
         ## test for default vrf, !eth0
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "23.23.23.0/24", "-p", "tcp", "-d", "127", "-f", "ipv4", "-iif", "!eth0", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "default", "-s", "23.23.23.0/24", "-p", "tcp", "-d", "127", "-f", "ipv4", "-i", "101", "-a", "deny")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "23.23.23.0/24", "-p", "tcp", "-d", "127", "-f", "ipv4", "-iif", "!eth0", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "default", "-s", "23.23.23.0/24", "-p", "tcp", "-d", "127", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "23.23.23.0/24", "-p", "tcp", "-dp", "127", "-f", "ipv4", "-iif", "!eth0", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "default", "-s", "23.23.23.0/24", "-p", "tcp", "-dp", "127", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "23.23.23.0/24", "-p", "tcp", "-dp", "127", "-f", "ipv4", "-iif", "!eth0", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "default", "-s", "23.23.23.0/24", "-p", "tcp", "-dp", "127", "-f", "ipv4", "-i", "101", "-a", "deny")
 
         ## test for management vrf, !eth0
-        incoming_svcs_test(False, "create", "-n", "management", "-s", "24.24.24.0/24", "-p", "tcp", "-d", "128", "-f", "ipv4", "-iif", "!eth0", "-i", "100", "-a", "allow")
-        incoming_svcs_test(False, "create", "-n", "management", "-s", "24.24.24.0/24", "-p", "tcp", "-d", "128", "-f", "ipv4", "-i", "101", "-a", "deny")
-        incoming_svcs_test(False, "delete", "-n", "management", "-s", "24.24.24.0/24", "-p", "tcp", "-d", "128", "-f", "ipv4", "-iif", "!eth0", "-a", "allow")
-        incoming_svcs_test(False, "delete", "-n", "management", "-s", "24.24.24.0/24", "-p", "tcp", "-d", "128", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "create", "-n", "management", "-s", "24.24.24.0/24", "-p", "tcp", "-dp", "128", "-f", "ipv4", "-iif", "!eth0", "-i", "100", "-a", "allow")
+        incoming_svcs_test(False, "create", "-n", "management", "-s", "24.24.24.0/24", "-p", "tcp", "-dp", "128", "-f", "ipv4", "-i", "101", "-a", "deny")
+        incoming_svcs_test(False, "delete", "-n", "management", "-s", "24.24.24.0/24", "-p", "tcp", "-dp", "128", "-f", "ipv4", "-iif", "!eth0", "-a", "allow")
+        incoming_svcs_test(False, "delete", "-n", "management", "-s", "24.24.24.0/24", "-p", "tcp", "-dp", "128", "-f", "ipv4", "-i", "101", "-a", "deny")
 
     except RuntimeError as ex:
         print 'UT failed: %s' % ex

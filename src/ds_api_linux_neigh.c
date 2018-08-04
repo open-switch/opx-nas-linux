@@ -226,7 +226,7 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         // Ignore self-mac address during FDB learning.
         if(ndmsg->ndm_family == AF_BRIDGE) {
             if ((ndmsg->ndm_state == NUD_NOARP) && (rt_msg_type != RTM_DELNEIGH)) {
-                nas_os_handle_static_mac_port_chg(if_name, mac_buff, mac_addr, ndmsg->ndm_ifindex);
+                nas_os_handle_mac_port_chg(if_name, mac_buff, mac_addr, ndmsg->ndm_ifindex,true);
             }
 
             hal_mac_addr_t self_mac;

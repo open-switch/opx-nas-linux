@@ -75,18 +75,25 @@ MLD_CHAIN_NAME = ' MLDSNOOP '
 
 #IGMP:
 # 0x11 - Query, 0x12 - V1 Report, 0x16 - V2 Report, 0x17 - Leave, 0x22 - v3 Report
+#Flood IGMP General Queries (standard dest ip will be 224.0.0.1), other queries will be
+#handled by Snooping applications and will not be flooded by kernel (dropped here).
 
 igmp_add_rules = [IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1200 -j DROP',
 IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1600 -j DROP',
 IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1700 -j DROP',
 IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x2200 -j DROP',
+IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1100 ! -d 224.0.0.1 -j DROP',
 IGMP_CHAIN_NAME + '-j MARK --set-mark 0']
 
 #MLD:
 # 130 - Query, 131 - v1 Report, 132 - Leave/Done, 143 - v2 Report
+#Flood MLD General Queries (standard dest ip will be ff02::01), other queries will be
+#handled by Snooping applications and will not be flooded by kernel (dropped here).
+
 mld_add_rules= [MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 131 -j DROP',
         MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 132 -j DROP',
         MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 143 -j DROP',
+        MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 130 ! -d ff02::01 -j DROP',
         MLD_CHAIN_NAME + '-p icmpv6 -j MARK --set-mark 0']
 
 

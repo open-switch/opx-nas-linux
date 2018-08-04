@@ -28,13 +28,12 @@
 #include "nas_linux_l2.h"
 
 #include <linux/if_link.h>
-#include <sys/fcntl.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <string>
 
-
+static const size_t os_stp_state_frwd = 3;
 bool os_bridge_stp_enabled (if_details *details)
 {
     const std::string SYSFS_CLASS_NET = "/sys/class/net/";
@@ -110,6 +109,10 @@ bool INTERFACE::os_interface_stg_attrs_handler(if_details *details, cps_api_obje
 
                 }
 
+            }
+
+            if(stp_state == os_stp_state_frwd){
+                nas_os_mac_add_pending_mac_if_event(details->_ifindex);
             }
 
             if(os_bridge_stp_enabled(details)){

@@ -47,9 +47,9 @@
 #include "nas_nlmsg.h"
 
 #include "dell-base-l2-mac.h"
-#include "cps_api_route.h"
 #include "nas_nlmsg_object_utils.h"
 #include "netlink_stats.h"
+#include "nas_os_vlan_utils.h"
 
 #include <limits.h>
 #include <unistd.h>
@@ -211,9 +211,10 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
     /*!
      * Range upto SET_LINK
      */
+    bool evt_publish = true;
     if (rt_msg_type <= RTM_SETLINK) {
         nas_nl_stats_update_tot_msg (sock, rt_msg_type);
-        if (os_interface_to_object(rt_msg_type,hdr,obj,data, vrf_id)) {
+        if (os_interface_to_object(rt_msg_type, hdr,obj, &evt_publish, vrf_id) == STD_ERR_OK && evt_publish) {
             nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
                 nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
@@ -553,10 +554,15 @@ t_std_error cps_api_net_notify_init(void) {
     if (nas_os_create_publish_handle() != STD_ERR_OK) {
         return STD_ERR(INTERFACE,FAIL,0);
     }
+
+    t_std_error rc;
+    if((rc = nas_os_mac_init()) != STD_ERR_OK){
+        return rc;
+    }
     std_thread_init_struct(&_net_main_thr);
     _net_main_thr.name = "db-api-linux-events";
     _net_main_thr.thread_function = (std_thread_function_t)net_main;
-    t_std_error rc = std_thread_create(&_net_main_thr);
+    rc = std_thread_create(&_net_main_thr);
     if (rc!=STD_ERR_OK) {
         EV_LOGGING(INTERFACE,ERR,"db-api-linux-event-init-fail","Failed to "
                 "initialize event service due");

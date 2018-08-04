@@ -143,7 +143,7 @@ t_std_error nl_int_update_stp_state(cps_api_object_t obj){
 
     nlh->nlmsg_pid = 0 ;
     nlh->nlmsg_seq = 0 ;
-    nlh->nlmsg_flags =  NLM_F_REQUEST | BRIDGE_FLAGS_MASTER |NLM_F_ACK ;
+    nlh->nlmsg_flags =  NLM_F_REQUEST | BRIDGE_FLAGS_MASTER ;
     nlh->nlmsg_type = RTM_SETLINK ;
 
     ifmsg->ifi_family = AF_BRIDGE;

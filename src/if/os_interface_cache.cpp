@@ -38,6 +38,11 @@ int INTERFACE::if_info_update(hal_ifindex_t ifx, if_info_t& if_info)
             it->second.admin = if_info.admin;
         }
 
+        if(it->second.oper != if_info.oper) {
+            track_ |= OS_IF_OPER_CHANGE;
+            it->second.oper = if_info.oper;
+        }
+
         if(it->second.mtu != if_info.mtu) {
             track_ |= OS_IF_MTU_CHANGE;
             it->second.mtu = if_info.mtu;

@@ -63,8 +63,8 @@ arg_cps_attr_map = {
     'dst_port': ('public-port', None),
     'dest_ip': (['af', 'public-ip'], parse_ip_mask),
     'out_src_ip': (['af', 'outgoing-source-ip'], parse_ip_mask),
-    'priv_port': ('private-port', None),
-    'priv_ip': (['af', 'private-ip'], parse_ip_mask)
+    'private_port': ('private-port', None),
+    'private_ip': (['af', 'private-ip'], parse_ip_mask)
 }
 
 def exec_shell(cmd):
@@ -155,6 +155,8 @@ def outgoing_svcs_test(is_negative_test = False, *test_args):
         print 'Done with pre-configuration'
         return True
 
+    if op != 'run-test':
+        print '*** Running %stest: %s ***' % ('negative ' if is_negative_test else '', ' '.join(test_args))
     obj = cps_object.CPSObject('vrf-firewall/ns-outgoing-service')
     for arg_name, arg_val in args.items():
         if arg_name in arg_cps_attr_map and arg_val is not None:
@@ -308,6 +310,31 @@ def run_test_outgoing_svcs():
         outgoing_svcs_test(False, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.13.1", "-p", "tcp", "-d", "124", "-sip", "8.1.1.8")
         outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.13.1", "-p", "tcp", "-d", "124")
         outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.13.1", "-p", "tcp", "-d", "124", "-sip", "8.1.1.8")
+
+        # test for service binding rule & delete operations
+        outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "udp", "-d", "131")
+        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "udp", "-d", "131", "--private-ip", "127.100.100.2", "--private-port", "62000")
+        outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "tcp", "-d", "132")
+        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "tcp", "-d", "132", "--private-ip", "127.100.100.2", "--private-port", "62001")
+
+        #delete previously created rules and check same private IP/port is allocated for the rule that is created after this
+        outgoing_svcs_test(False, "delete", "1")
+        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "udp", "-d", "131", "--private-ip", "127.100.100.2", "--private-port", "62000")
+
+        outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133")
+        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.2", "--private-port", "62000")
+        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.2", "--private-port", "62001")
+        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.3", "--private-port", "62000")
+
+        outgoing_svcs_test(False, "delete", "2")
+        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "tcp", "-d", "132", "--private-ip", "127.100.100.2", "--private-port", "62001")
+
+        #delete with invalid private IP, private port combination (negative test)
+        outgoing_svcs_test(True, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.2", "--private-port", "62001")
+        outgoing_svcs_test(True, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.3", "--private-port", "62000")
+        #delete with valid private IP, private port combination
+        outgoing_svcs_test(False, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.2", "--private-port", "62000")
+        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.2", "--private-port", "62000")
 
 
     except RuntimeError as ex:

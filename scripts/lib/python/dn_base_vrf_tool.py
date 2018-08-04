@@ -40,6 +40,7 @@ veth_default_intf_ip6_prefix = 'fda5:74c8:b79e:4:'
 veth_default_intf_ip6_suffix = '::1'
 veth_default_intf_ip6_pref_len = '64'
 rej_rule_mark_value = 255
+masquerade_rule_mark_value = 254
 
 # fda5:74c8:b79e:4:<100+x>::2 -> x gets next available id for connectivity to non=default VRF
 veth_non_default_intf_ip6_prefix = 'fda5:74c8:b79e:4:'
@@ -85,6 +86,19 @@ def run_command(cmd, response, log_fail = True):
 
     return p.returncode
 
+def get_ip_str(af, ip_bin):
+    if af is None:
+        af_list = [socket.AF_INET, socket.AF_INET6]
+    else:
+        af_list = [af]
+    for af in af_list:
+        try:
+            ip_str = socket.inet_ntop(af, ip_bin)
+            return ip_str
+        except ValueError:
+            continue
+    return '-'
+
 def process_vrf_ip_nat_config(is_add, vrf_name, if_name, iptables):
     res = []
     operation = None
@@ -92,10 +106,18 @@ def process_vrf_ip_nat_config(is_add, vrf_name, if_name, iptables):
         operation = '-A'
     else:
         operation = '-D'
+
+    vrf_id = None
+    vrf_id = _vrf_name_to_id.get(vrf_name, None)
+    if vrf_id is None:
+        return False
+
+    # ip netns exec management iptables -t nat -A POSTROUTING -o eth0 -m mark --mark 1 -j MASQUERADE
+
     #@@@TODO - revisit and move this MASQUERADE rule to outgoing services config to maintain the rule order
     #all user configure SNAT rule's should be actually added only after any interface MASQUERADE rule.
     cmd = [iplink_cmd, 'netns', 'exec', vrf_name, iptables, '-t', 'nat', operation, 'POSTROUTING',\
-          '-o', if_name, '-j', 'MASQUERADE']
+          '-o', if_name, '-m', 'mark', '--mark', str(masquerade_rule_mark_value), '-j', 'MASQUERADE']
     if run_command(cmd, res) != 0:
         return False
 
@@ -258,6 +280,10 @@ def process_vrf_config(is_add, vrf_name, vrf_id):
     ip_tables = { 'iptables', 'ip6tables' }
     for iptable in ip_tables:
         cmd = [iplink_cmd, 'netns', 'exec', vrf_name, iptable, '-t', 'nat', '-N', 'VRF']
+        if run_command(cmd, res) != 0:
+            return False
+        # ip netns exec management iptables -A FORWARD -i veth-nsid1024 -j MARK --set-mark 1
+        cmd = [iplink_cmd, 'netns', 'exec', vrf_name, iptable, '-A', 'FORWARD', '-i', 'veth-nsid'+str(vrf_id), '-j', 'MARK', '--set-mark', str(masquerade_rule_mark_value)]
         if run_command(cmd, res) != 0:
             return False
 

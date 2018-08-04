@@ -24,10 +24,10 @@ import ifindex_utils
 
 import dn_base_ip_tool
 import systemd.daemon
-import event_log as ev
 import dn_base_ip_tbl_tool
 import dn_base_ipsec_utils
 import threading
+from dn_base_ip_tool import log_err, log_info
 
 iplink_cmd = '/sbin/ip'
 
@@ -53,12 +53,6 @@ _ip_af = {
 
 _ip_neigh_flush_key = cps.key_from_name('target', 'base-neighbor/flush')
 _ipv6_enable_status = {}
-
-def log_err(msg):
-    ev.logging("BASE_IP",ev.ERR,"IP-CONFIG","","",0,msg)
-
-def log_info(msg):
-    ev.logging("BASE_IP",ev.INFO,"IP-CONFIG","","",0,msg)
 
 def get_next_index(d):
     count = 0

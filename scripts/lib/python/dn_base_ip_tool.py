@@ -19,11 +19,18 @@ import re
 import os
 import cps
 import cps_object
+import event_log as ev
 
 iplink_cmd = '/sbin/ip'
 VXLAN_PORT = '4789'
 
 _mgmt_vrf_name = 'management'
+
+def log_err(msg):
+    ev.logging("BASE_IP",ev.ERR,"IP-CONFIG","","",0,msg)
+
+def log_info(msg):
+    ev.logging("BASE_IP",ev.INFO,"IP-CONFIG","","",0,msg)
 
 def get_ip_line_type(lines):
     header = lines[0].strip().split()
@@ -50,8 +57,12 @@ def _group_lines_based_on_position(scope, lines):
         resp.append(data)
     return resp
 
+def run_command(cmd, response, log_fail = True):
+    """Method to run a command in shell"""
 
-def run_command(cmd, response):
+    if len(response) > 0:
+        del response[:]
+
     p = subprocess.Popen(cmd, shell=False, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT)
     output = p.communicate()[0]
@@ -61,6 +72,10 @@ def run_command(cmd, response):
         if 'Dump was interrupted and may be inconsistent.' in line:
             continue
         response.append(line.rstrip())
+    if log_fail and p.returncode != 0:
+        log_err('Failed CMD: %s' % ' '.join(cmd))
+        for msg in response:
+            log_err('* ' + msg)
 
     return p.returncode
 
@@ -414,11 +429,16 @@ def flush_ip_neigh(af, dev, addr=None, vrf_name='default'):
 
     if vrf_name == 'default':
         if addr is not None and dev is not None:
-            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'to', str(addr), 'dev', dev], res) == 0:
+            # When an address is set, it has to be on the particular interface.
+            if len(dev) != 1:
+                return False
+            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'to', str(addr), 'dev', dev[0]], res) == 0:
                 return True
         elif dev is not None:
-            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'dev', dev], res) == 0:
-                return True
+            for ifname in dev:
+                if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'dev', ifname], res) != 0:
+                    return False
+            return True
         elif addr is not None:
             if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'to', str(addr)], res) == 0:
                 return True
@@ -430,13 +450,18 @@ def flush_ip_neigh(af, dev, addr=None, vrf_name='default'):
 
     # Flush the neighbors present in the non-default VRF
     if addr is not None and dev is not None:
+        # When an address is set, it has to be on the particular interface.
+        if len(dev) != 1:
+            return False
         if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
-                   'neigh', 'flush', 'to', str(addr), 'dev', dev], res) == 0:
+                   'neigh', 'flush', 'to', str(addr), 'dev', dev[0]], res) == 0:
             return True
     elif dev is not None:
-        if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
-                   'neigh', 'flush', 'dev', dev], res) == 0:
-            return True
+        for ifname in dev:
+            if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
+                   'neigh', 'flush', 'dev', ifname], res) != 0:
+                return False
+        return True
     elif addr is not None:
         if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
                    'neigh', 'flush', 'to', str(addr)], res) == 0:

@@ -413,10 +413,11 @@ t_std_error nl_do_set_request(const char *vrf_name, nas_nl_sock_TYPES type,struc
         }
         /* Default VRF-id is used here since it's not required for any operations,
          * if required in the future, pass the vrf-id associated with the vrf-name */
-        if (type == nas_nl_sock_T_ROUTE &&
+        if ((m->nlmsg_flags & NLM_F_ACK) &&
             !netlink_tools_process_socket(sock,_process_set_fun,(char*)vrf_name,buff,bufflen,&seq, &error, NL_DEFAULT_VRF_ID)) {
             break;
         }
+
         close(sock);
         return cps_api_ret_code_OK;
     } while(0);

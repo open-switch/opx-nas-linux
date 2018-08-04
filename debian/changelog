@@ -1,3 +1,18 @@
+opx-nas-linux (5.24.0) unstable; urgency=medium
+
+  * Update: Remove ack flag from interface config in netlink.
+  * Bugfix: Default route is not removed from management-route table,
+            after IP address is released from the DHCP Server for the Management-VRF. 
+  * Update: Use a fixed VRF-id (1024) for mgmt VRF while publishing the connected route event.
+  * Bugfix: Non-default VRF with MASQUERADE option is changing the source IP of the forwarded traffic.
+  * Update: Cleanup vrf-firewall outgoing service model for handling service binding config.
+            This is required for proper handling of private ip/port allocation/de-allocation.
+  * Bugfix: Switches are sending GSQ on reception of leave message.
+  * Update: Added output flag to interface-netlink message handler. This is to specify whether
+            the netlink notification would be published as an event or not.
+
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Fri, 10 Aug 2018 19:25:43 -0800
+
 opx-nas-linux (5.22.0) unstable; urgency=medium
 
   * Bugfix: Non-default VRF with MASQURADE option should not change the source IP of the forwarded traffic.

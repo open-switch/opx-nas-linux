@@ -67,7 +67,7 @@ extern "C" t_std_error nas_os_del_interface(hal_ifindex_t if_index)
     struct nlmsghdr *nlh = (struct nlmsghdr *) nlmsg_reserve((struct nlmsghdr *)buff,sizeof(buff),sizeof(struct nlmsghdr));
     struct ifinfomsg *ifmsg = (struct ifinfomsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct ifinfomsg));
 
-    nas_os_pack_nl_hdr(nlh, RTM_DELLINK, (NLM_F_REQUEST | NLM_F_ACK));
+    nas_os_pack_nl_hdr(nlh, RTM_DELLINK,NLM_F_REQUEST);
 
     nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, 0, if_index);
 
@@ -187,7 +187,7 @@ static t_std_error _set_intf_attribute (const char *vrf_name, hal_ifindex_t if_i
     struct nlmsghdr *nlh = (struct nlmsghdr *) nlmsg_reserve((struct nlmsghdr *)buff,sizeof(buff),sizeof(struct nlmsghdr));
     struct ifinfomsg *ifmsg = (struct ifinfomsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct ifinfomsg));
 
-    nas_os_pack_nl_hdr(nlh, RTM_SETLINK, (NLM_F_REQUEST | NLM_F_ACK));
+    nas_os_pack_nl_hdr(nlh, RTM_SETLINK, NLM_F_REQUEST);
     nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, 0, if_index);
 
     char if_name[HAL_IF_NAME_SZ+1];

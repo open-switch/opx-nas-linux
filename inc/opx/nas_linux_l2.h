@@ -83,6 +83,7 @@ bool nas_os_mac_get_learning(hal_ifindex_t ifindex);
 
 t_std_error get_if_stp_state(hal_ifindex_t index, uint8_t * state);
 
+
 #ifdef __cplusplus
 }
 #endif

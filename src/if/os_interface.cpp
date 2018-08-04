@@ -189,12 +189,15 @@ static bool get_if_detail_from_netlink (int sock, int rt_msg_type, struct nlmsgh
     return false;
 }
 
-bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context, uint32_t vrf_id)
+t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, bool* p_pub_evt,
+                                    uint32_t vrf_id)
 {
     struct ifinfomsg *ifmsg = (struct ifinfomsg *)NLMSG_DATA(hdr);
 
-    if(hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*ifmsg)))
-        return false;
+    if(hdr->nlmsg_len < NLMSG_LENGTH(sizeof(*ifmsg))) {
+        EV_LOGGING(NAS_OS, ERR, "NL-PARSE", "Invalid msg length in netlink header: %d", hdr->nlmsg_len);
+        return STD_ERR(INTERFACE, PARAM, 0);
+    }
 
     int track_change = OS_IF_CHANGE_NONE;
     if_details details;
@@ -208,8 +211,8 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
             { RTM_DELLINK, cps_api_oper_DELETE }
     };
 
-    EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "VRF-id:%d msgType %d, ifindex %d change %x\n",
-           vrf_id, rt_msg_type, ifmsg->ifi_index, ifmsg->ifi_change);
+    EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "VRF-id:%d msgType %d, ifindex %d change 0x%x flags 0x%x\n",
+           vrf_id, rt_msg_type, ifmsg->ifi_index, ifmsg->ifi_change, ifmsg->ifi_flags);
 
     auto it = _to_op_type.find(rt_msg_type);
     if (it==_to_op_type.end()) {
@@ -233,6 +236,7 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
 
     ifinfo.ev_mask = OS_IF_CHANGE_NONE;
     ifinfo.admin = (ifmsg->ifi_flags & IFF_UP) ? true :false;
+    ifinfo.oper = (ifmsg->ifi_flags & IFF_RUNNING) ? true :false;
 
     int nla_len = nlmsg_attrlen(hdr,sizeof(*ifmsg));
     struct nlattr *head = nlmsg_attrdata(hdr, sizeof(struct ifinfomsg));
@@ -243,7 +247,7 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
 
     if (nla_parse(details._attrs,__IFLA_MAX,head,nla_len)!=0) {
         EV_LOGGING(NAS_OS,ERR,"NL-PARSE","Failed to parse attributes");
-        return false;
+        return STD_ERR(INTERFACE, FAIL, 0);
     }
 
     if (details._attrs[IFLA_LINKINFO]) {
@@ -292,8 +296,10 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
 
     INTERFACE *fill = os_get_if_db_hdlr();
     if_change_t mask = OS_IF_CHANGE_NONE;
-    if(fill && !(fill->if_hdlr(&details, obj)))
-        return false; // Return in case of sub-interfaces etc (Handler will return false)
+    if(fill && !(fill->if_hdlr(&details, obj))) {
+        EV_LOGGING(NAS_OS, ERR, "NL-PARSE", "Failure on sub-interface handling");
+        return STD_ERR(INTERFACE, FAIL, 0); // Return in case of sub-interfaces etc (Handler will return false)
+    }
 
     ifinfo.if_type = details._type;
     if (!fill)
@@ -314,12 +320,19 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
            (details._type != BASE_CMN_INTERFACE_TYPE_MACVLAN)) {
             if(fill) fill->if_info_delete(ifmsg->ifi_index);
             //Need not publish if sub-interface
-            if(is_sub_interface(details)) return false;
+            if(is_sub_interface(details)) {
+                if (p_pub_evt != NULL) {
+                    *p_pub_evt = false;
+                }
+                return STD_ERR_OK;
+            }
         } else if(details._type == BASE_CMN_INTERFACE_TYPE_LAG &&
                 (!strncmp(details._info_kind, "bond", 4))) {
             if(fill) fill->if_info_delete(ifmsg->ifi_index);
         }
     }
+
+    bool evt_publish = true;
 
     if(details._type != BASE_CMN_INTERFACE_TYPE_L3_PORT && details._attrs[IFLA_MASTER]!=NULL) {
         /*
@@ -328,7 +341,8 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
         char if_name[HAL_IF_NAME_SZ+1];
         int ifix = *(int *)nla_data(details._attrs[IFLA_MASTER]);
         if (cps_api_interface_if_index_to_name(ifix,if_name,  sizeof(if_name))==NULL) {
-            return false;
+            EV_LOGGING(NAS_OS, ERR, "NL-PARSE", "Failed to convert ifindex %d to name", ifix);
+            return STD_ERR(INTERFACE, FAIL, 0);
         }
         // Delete the previously filled attributes in case of Vlan/Lag member add/del
         cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_MTU);
@@ -351,7 +365,7 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
              * the CPS interface object.
              */
             if (!is_reserved_interface(details)) {
-                return false;
+                evt_publish = false;
             }
         }
 
@@ -362,14 +376,18 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
         if(track_change != OS_IF_ADM_CHANGE && mask == OS_IF_ADM_CHANGE)
             cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_ENABLED);
         else if (mask == OS_IF_ADM_CHANGE)
-            return false;
+            evt_publish = false;
+    }
+
+    if (p_pub_evt != NULL) {
+        *p_pub_evt = evt_publish;
     }
 
     const char *vrf_name = nas_os_get_vrf_name(vrf_id);
     if (vrf_name == NULL) {
         EV_LOGGING(NAS_OS, ERR, "NET-MAIN", "VRF id:%d to name mapping not present, index %d type %d!",
                    vrf_id, details._ifindex, details._type);
-        return false;
+        return STD_ERR(INTERFACE, PARAM, 0);
     }
     cps_api_object_attr_add(obj, NI_IF_INTERFACES_INTERFACE_BIND_NI_NAME, vrf_name, strlen(vrf_name)+1);
     cps_api_object_attr_add_u32(obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_VRF_ID, vrf_id);
@@ -382,7 +400,7 @@ bool os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_obje
     cps_api_object_set_type_operation(cps_api_object_key(obj),details._op);
     cps_api_object_attr_add_u32(obj, BASE_IF_LINUX_IF_INTERFACES_INTERFACE_DELL_TYPE, details._type);
 
-    return true;
+    return STD_ERR_OK;
 }
 
 static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data, uint32_t vrf_id) {
@@ -391,7 +409,7 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
         cps_api_object_guard og(cps_api_object_create());
         if (!og.valid()) return false;
 
-        if (os_interface_to_object(rt_msg_type,hdr,og.get(), NULL, vrf_id)) {
+        if (os_interface_to_object(rt_msg_type,hdr,og.get(), NULL, vrf_id) == STD_ERR_OK) {
             if (cps_api_object_list_append(*list,og.get())) {
                 og.release();
                 return true;
@@ -487,9 +505,11 @@ cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t
     if(_get_db_interface(&list, ifix, get_all, if_type) == cps_api_ret_code_OK)
         return cps_api_ret_code_OK;
 
+    EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Get interface info for ifindex %d", ifix);
     int if_sock = 0;
     if((if_sock = nas_nl_sock_create(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,false)) < 0) {
-       return cps_api_ret_code_ERR;
+        EV_LOGGING(NAS_OS, ERR, "NET-MAIN", "soc create failure for get ifindex %d", ifix);
+        return cps_api_ret_code_ERR;
     }
 
     const int BUFF_LEN=4196;

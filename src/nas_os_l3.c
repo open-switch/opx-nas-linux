@@ -60,9 +60,10 @@
 #define MAX_NL_NH_ECMP_COUNT  256
 #define MAC_STRING_LEN 20
 
-static inline uint16_t nas_os_get_nl_flags(nas_rt_msg_type m_type)
+static inline uint16_t nas_os_get_nl_flags(nas_rt_msg_type m_type, bool is_ack_required)
 {
-    uint16_t flags = (NLM_F_REQUEST | NLM_F_ACK);
+    uint16_t flags = (NLM_F_REQUEST);
+    if (is_ack_required) flags |= NLM_F_ACK;
     if(m_type == NAS_RT_ADD) {
         flags |= NLM_F_CREATE | NLM_F_EXCL;
     } else if (m_type == NAS_RT_SET) {
@@ -119,7 +120,9 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
 
     if (rt_vrf_name) {
         cps_api_object_attr_add(new_obj, BASE_ROUTE_OBJ_VRF_NAME, rt_vrf_name, strlen(rt_vrf_name)+1);
-        if (nas_get_vrf_internal_id_from_vrf_name(rt_vrf_name, &rt_vrf_id) != STD_ERR_OK) {
+        if (strncmp(rt_vrf_name, NAS_MGMT_VRF_NAME, sizeof(NAS_MGMT_VRF_NAME)) == 0) {
+            rt_vrf_id = NAS_MGMT_VRF_ID;
+        } else if (nas_get_vrf_internal_id_from_vrf_name(rt_vrf_name, &rt_vrf_id) != STD_ERR_OK) {
             EV_LOGGING (NAS_OS, ERR, "ROUTE-PUBLISH", "Route VRF name:%s to id mapping is not present!",
                         rt_vrf_name);
             return (STD_ERR(NAS_OS, FAIL, 0));
@@ -140,7 +143,9 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
     }
     if (nh_vrf_name) {
         cps_api_object_attr_add(new_obj, BASE_ROUTE_OBJ_ENTRY_NH_VRF_NAME, nh_vrf_name, strlen(nh_vrf_name)+1);
-        if (nas_get_vrf_internal_id_from_vrf_name(nh_vrf_name, &nh_vrf_id) != STD_ERR_OK) {
+        if (strncmp(nh_vrf_name, NAS_MGMT_VRF_NAME, sizeof(NAS_MGMT_VRF_NAME)) == 0) {
+            nh_vrf_id = NAS_MGMT_VRF_ID;
+        } else if (nas_get_vrf_internal_id_from_vrf_name(nh_vrf_name, &nh_vrf_id) != STD_ERR_OK) {
             EV_LOGGING (NAS_OS, ERR, "ROUTE-PUBLISH", "Nexthop VRF name:%s to id mapping is not present!",
                         nh_vrf_name);
             return (STD_ERR(NAS_OS, FAIL, 0));
@@ -458,7 +463,7 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, nas_rt_msg_type
     struct rtmsg * rm = (struct rtmsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct rtmsg));
     memset(rm, 0, sizeof(struct rtmsg));
 
-    uint16_t flags = nas_os_get_nl_flags(m_type);
+    uint16_t flags = nas_os_get_nl_flags(m_type,true);
     uint16_t type = (m_type == NAS_RT_DEL)?RTM_DELROUTE:RTM_NEWROUTE;
 
     nas_os_pack_nl_hdr(nlh, type, flags);
@@ -733,10 +738,33 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, nas_rt_msg_type
              * as is from kernel netlink to program NPU for the route addition/deletion to
              * ensure stale routes are cleaned
              */
-            if(err_code == ESRCH)
+            if(err_code == ESRCH) {
                 nas_os_publish_route(RTM_DELROUTE, obj, false);
-            else
+            } else {
                 nas_os_publish_route(RTM_NEWROUTE, obj, false);
+                /* If the route already exists, replace the route
+                 * since there can be a NH difference (NH with IP or NH with interface) for a route.
+                 * For example, if we configure the IP on the oper. down interface,
+                 * kernel generates the connected route and NAS-L3 programs that route
+                 * into the HW, but RTM wont download that route if the interface is oper. down.
+                 * When the same route is reachable via some next-hop IP, RTM would program
+                 * with op - create and kernel is throwing EEXIST error though there is a difference
+                 * in the NH i.e connected route with link down (oper. down) created
+                 * from oper. down in kernel and route with NH IP (programmed by RTM).
+                 * To overcome this kernel limitation, replacing the route given by RTM
+                 * for IPv4 route. Note: IPv6 route case, we dont get the EEXIST
+                 * error. */
+                if (rm->rtm_family == AF_INET) {
+                    nlh->nlmsg_flags &= ~NLM_F_EXCL;
+                    nlh->nlmsg_flags |= NLM_F_REPLACE;
+                    rc = nl_do_set_request((vrf_name ? vrf_name : NAS_DEFAULT_VRF_NAME),
+                                           nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
+                    err_code = STD_ERR_EXT_PRIV (rc);
+                    EV_LOGGING(NAS_OS, INFO,"ROUE_UPD","Route replace - Netlink error_code %d",
+                               err_code);
+                }
+            }
+
             rc = STD_ERR_OK;
             repeat_delete = false;
         }
@@ -799,7 +827,7 @@ t_std_error nas_os_update_route_nexthop (cps_api_object_t obj)
     uint16_t type = (m_type == NAS_RT_DEL) ? RTM_DELROUTE:RTM_NEWROUTE;
 
     /* NH delete is sent as route delete with next hop to kernel */
-    uint16_t flags = nas_os_get_nl_flags(m_type);
+    uint16_t flags = nas_os_get_nl_flags(m_type,true);
 
     /* if op is append then update the flags and reset replace flag */
     if (op == BASE_ROUTE_RT_OPERATION_TYPE_APPEND) {
@@ -1126,7 +1154,7 @@ cps_api_return_code_t nas_os_update_neighbor(cps_api_object_t obj, nas_rt_msg_ty
     if (m_type == NAS_RT_ADD)
         m_type = NAS_RT_SET;
 
-    uint16_t flags = nas_os_get_nl_flags(m_type);
+    uint16_t flags = nas_os_get_nl_flags(m_type,false);
     uint16_t type = (m_type == NAS_RT_DEL)?RTM_DELNEIGH:RTM_NEWNEIGH;
     nas_os_pack_nl_hdr(nlh, type, flags);
 

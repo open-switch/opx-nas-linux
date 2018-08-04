@@ -76,7 +76,7 @@ static t_std_error nas_os_create_dummy(const char *dummy_intf)
     unsigned int flags = (IFF_BROADCAST | IFF_NOARP);
     flags &= ~IFF_UP;
 
-    nas_os_pack_nl_hdr(nlh, RTM_NEWLINK, (NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL));
+    nas_os_pack_nl_hdr(nlh, RTM_NEWLINK, (NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL));
     nas_os_pack_if_hdr(ifmsg, AF_PACKET, flags, if_index);
 
     nlmsg_add_attr(nlh,sizeof(buff),IFLA_IFNAME, dummy_intf, (strlen(dummy_intf)+1));
@@ -157,7 +157,7 @@ t_std_error nas_os_create_lag(cps_api_object_t obj, hal_ifindex_t *lag_index)
     EV_LOGGING(NAS_OS, INFO, "NAS-OS-LAG",
             "Create LAG name %s in Kernel",lag_name);
 
-    nas_os_pack_nl_hdr(nlh, RTM_NEWLINK, (NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL));
+    nas_os_pack_nl_hdr(nlh, RTM_NEWLINK, (NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL));
     nas_os_pack_if_hdr(ifmsg, AF_PACKET, (IFF_BROADCAST | IFF_MULTICAST), if_index);
 
     nlmsg_add_attr(nlh,sizeof(buff),IFLA_IFNAME, lag_name, (strlen(lag_name)+1));
@@ -241,7 +241,7 @@ t_std_error nas_os_process_ports(hal_ifindex_t lag_index,hal_ifindex_t if_index)
     struct ifinfomsg *ifmsg = (struct ifinfomsg *) nlmsg_reserve(nlh,sizeof(buff),
             sizeof(struct ifinfomsg));
 
-    nas_os_pack_nl_hdr(nlh, RTM_SETLINK, (NLM_F_REQUEST | NLM_F_ACK));
+    nas_os_pack_nl_hdr(nlh, RTM_SETLINK, NLM_F_REQUEST);
     ifmsg->ifi_family = AF_PACKET;
     ifmsg->ifi_index = if_index;
 

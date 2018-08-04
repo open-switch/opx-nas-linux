@@ -611,6 +611,7 @@ const string ip_raw_igmp_snoop1 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&
 const string ip_raw_igmp_snoop2 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x1600\" -j DROP"};
 const string ip_raw_igmp_snoop3 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x1700\" -j DROP"};
 const string ip_raw_igmp_snoop4 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x2200\" -j DROP"};
+const string ip_raw_igmp_snoop5 {"-A IGMPSNOOP ! -d 224.0.0.1/32 -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x1100\" -j DROP"};
 const string ip_raw_igmp_remove_mark {"-A IGMPSNOOP -j MARK --set-xmark 0x0/0xffffffff"};
 
 /*MLD EBTABLES,IPTABLES rules */
@@ -625,6 +626,7 @@ const string ip6_raw_mark_mld {"-A PREROUTING -p ipv6-icmp -m mark --mark 0x64 -
 const string ip6_raw_mld_snoop1 {"-A MLDSNOOP -p ipv6-icmp -m icmp6 --icmpv6-type 131 -j DROP"};
 const string ip6_raw_mld_snoop2 {"-A MLDSNOOP -p ipv6-icmp -m icmp6 --icmpv6-type 132 -j DROP"};
 const string ip6_raw_mld_snoop3 {"-A MLDSNOOP -p ipv6-icmp -m icmp6 --icmpv6-type 143 -j DROP"};
+const string ip6_raw_mld_snoop4 {"-A MLDSNOOP ! -d ff02::1/128 -p ipv6-icmp -m icmp6 --icmpv6-type 130 -j DROP"};
 const string ip6_raw_mld_remove_mark {"-A MLDSNOOP -p ipv6-icmp -j MARK --set-xmark 0x0/0xffffffff"};
 
 
@@ -695,10 +697,11 @@ static bool verify_globalIP_RawPreRoute_rules(vector<string>& list_lines, bool i
               (line.compare(0, ip_raw_igmp_snoop1.size(), ip_raw_igmp_snoop1) == 0) ||
               (line.compare(0, ip_raw_igmp_snoop2.size(), ip_raw_igmp_snoop2) == 0) ||
               (line.compare(0, ip_raw_igmp_snoop3.size(), ip_raw_igmp_snoop3) == 0) ||
-              (line.compare(0, ip_raw_igmp_snoop4.size(), ip_raw_igmp_snoop4) == 0)) {
+              (line.compare(0, ip_raw_igmp_snoop4.size(), ip_raw_igmp_snoop4) == 0) ||
+              (line.compare(0, ip_raw_igmp_snoop5.size(), ip_raw_igmp_snoop5) == 0)) {
                count++;
           }
-          if (count == 6){
+          if (count == 7){
             rule_found = true;
             break;
           }
@@ -712,10 +715,11 @@ static bool verify_globalIP_RawPreRoute_rules(vector<string>& list_lines, bool i
              (line.compare(0,ip6_raw_mld_snoop1.size(), ip6_raw_mld_snoop1) == 0) ||
              (line.compare(0,ip6_raw_mld_snoop2.size(), ip6_raw_mld_snoop2) == 0) ||
              (line.compare(0,ip6_raw_mld_snoop3.size(), ip6_raw_mld_snoop3) == 0) ||
-             (line.compare(0,ip6_raw_mld_snoop3.size(), ip6_raw_mld_remove_mark) == 0)) {
+             (line.compare(0,ip6_raw_mld_snoop4.size(), ip6_raw_mld_snoop4) == 0) ||
+             (line.compare(0,ip6_raw_mld_remove_mark.size(), ip6_raw_mld_remove_mark) == 0)) {
             count++;
           }
-          if (count == 5){
+          if (count == 6){
              rule_found = true;
              break;
           }

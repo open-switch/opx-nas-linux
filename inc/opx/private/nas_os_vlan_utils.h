@@ -38,8 +38,14 @@ bool nas_os_physical_to_vlan_ifindex(hal_ifindex_t intf_index, hal_vlan_id_t vla
 bool nas_os_sub_intf_name_to_intf_ifindex(char *sub_intf_name, hal_ifindex_t * index);
 
 bool nas_os_is_port_part_of_vlan(hal_ifindex_t vlan_ifindex, hal_ifindex_t port_ifindex);
-t_std_error nas_os_handle_static_mac_port_chg(char *vlan_name, char *mac_str, hal_mac_addr_t *mac,
-                                              uint32_t mbr_if_index);
+
+t_std_error nas_os_handle_mac_port_chg(const char *vlan_name, const char *mac_str, hal_mac_addr_t *mac,
+                                              uint32_t mbr_if_index, bool is_static);
+
+t_std_error nas_os_mac_add_pending_mac_if_event(hal_ifindex_t ifindex);
+
+t_std_error nas_os_mac_init();
+
 
 #ifdef __cplusplus
 }

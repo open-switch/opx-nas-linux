@@ -25,26 +25,52 @@
 #include "nas_os_if_priv.h"
 #include "ds_api_linux_interface.h"
 #include "nas_os_if_conversion_utils.h"
+#include "std_thread_tools.h"
+#include "std_socket_tools.h"
 
 #include <string>
 #include <netinet/in.h>
-#include <linux/if_bridge.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 
 #include <unordered_set>
 #include <unordered_map>
 #include <string>
 #include <mutex>
-
+#include <sstream>
+#include <vector>
+#include <chrono>
 
 
 #define NL_MSG_BUFF_LEN 4096
 #define MAC_STRING_LEN 20
 
 static std_rw_lock_t static_mac_lock = PTHREAD_RWLOCK_INITIALIZER;
+static std_rw_lock_t dynamic_mac_lock = PTHREAD_RWLOCK_INITIALIZER;
 static std::mutex _mac_ls_mutex;
 static auto _if_mac_learn_state = new std::unordered_map<hal_ifindex_t, bool> ;
 static auto _static_mac_list = *new std::unordered_map<std::string, uint32_t>;
+static auto _dynamic_mac_list = *new std::unordered_map<std::string, uint32_t>;
+static auto _port_to_dynamic_mac_list = *new std::unordered_map<uint32_t,std::unordered_set<std::string>>;
+static std_thread_create_param_t nas_os_mac_thread;
+static int nas_os_mac_fd[2];
+
+
+static bool nas_os_mac_read_pending_mac_if(hal_ifindex_t * ifindex) {
+    int len = 0;
+    do {
+        len = read(nas_os_mac_fd[0],ifindex,sizeof(*ifindex));
+        if (len<0 && errno==EINTR) break;
+    } while (0);
+    return len == sizeof(*ifindex);
+}
+
+static void nas_os_mac_write_pending_mac_if(hal_ifindex_t *ifindex) {
+    int rc = 0;
+    if ((rc=write(nas_os_mac_fd[1],ifindex,sizeof(*ifindex)))!=sizeof(*ifindex)) {
+       EV_LOGGING(NAS_OS,ERR,"DMAC-OS-PROGRAM","Writing pending mac if failed");
+    }
+}
 
 static bool nas_os_update_mac_learning(hal_ifindex_t ifindex, bool enable){
     char buff[NL_MSG_BUFF_LEN];
@@ -76,6 +102,14 @@ static bool nas_os_update_mac_learning(hal_ifindex_t ifindex, bool enable){
     return true;
 }
 
+static void nas_mac_split_string(std::string input_str, char delim, std::vector<std::string> & tokenized_strings){
+    std::istringstream ss(input_str);
+    std::string tokenized_string;
+    while(std::getline(ss,tokenized_string,delim)){
+        tokenized_strings.push_back(tokenized_string);
+    }
+    return;
+}
 
 bool nas_os_update_tagged_intf_mac_learning(hal_ifindex_t ifindex, hal_ifindex_t vlan_index){
     std::lock_guard<std::mutex> lock(_mac_ls_mutex);
@@ -88,6 +122,7 @@ bool nas_os_update_tagged_intf_mac_learning(hal_ifindex_t ifindex, hal_ifindex_t
     }
     return false;
 }
+
 void nas_os_dump_static_macs() {
     for(auto& itr : _static_mac_list)
         EV_LOGGING(NAS_OS,ERR,"L2-MAC-DUMP","Key:%s mbr:%d", itr.first.c_str(), itr.second);
@@ -95,25 +130,27 @@ void nas_os_dump_static_macs() {
 
 extern "C"{
 
-t_std_error nas_os_handle_static_mac_port_chg(char *vlan_name, char *mac_str, hal_mac_addr_t *mac,
-                                              uint32_t mbr_if_index) {
-    std::string key = std::string(vlan_name)+std::string(mac_str);
-    uint32_t cfg_mbr_if_index = 0;
-    std_rw_lock_read_guard l(&static_mac_lock);
-    auto itr = _static_mac_list.find(key);
-    if (itr == _static_mac_list.end()) {
-        EV_LOGGING(NAS_OS,INFO,"L2-MAC-CHG", "Static MAC doesnt exist - MAC VLAN:%s MAC:%s mbr:%d",
+t_std_error nas_os_handle_mac_port_chg(const char *vlan_name, const char *mac_str, hal_mac_addr_t *mac,
+                                              uint32_t mbr_if_index, bool is_static) {
+    std::string key = std::string(vlan_name)+"."+std::string(mac_str);
+    uint32_t cfg_mbr_if_index = mbr_if_index;
+    if(is_static){
+        std_rw_lock_read_guard l(&static_mac_lock);
+        auto itr = _static_mac_list.find(key);
+        if (itr == _static_mac_list.end()) {
+            EV_LOGGING(NAS_OS,INFO,"L2-MAC-CHG", "Static MAC doesnt exist - MAC VLAN:%s MAC:%s mbr:%d",
                    vlan_name, mac_str, mbr_if_index);
-        return STD_ERR_OK;
-    }
-    if (itr->second == mbr_if_index) {
-        EV_LOGGING(NAS_OS,INFO,"L2-MAC-CHG", "Static MAC exists but port doesnt change - MAC VLAN:%s MAC:%s mbr:%d",
+            return STD_ERR_OK;
+        }
+        if (itr->second == mbr_if_index) {
+            EV_LOGGING(NAS_OS,INFO,"L2-MAC-CHG", "Static MAC exists but port doesnt change - MAC VLAN:%s MAC:%s mbr:%d",
                    vlan_name, mac_str, mbr_if_index);
-        return STD_ERR_OK;
+            return STD_ERR_OK;
+        }
+        EV_LOGGING(NAS_OS,INFO,"L2-MAC-CHG", "Port-chg for MAC VLAN:%s MAC:%s cfg-mbr:%d chg-mbr:%d",
+                vlan_name, mac_str, itr->second, mbr_if_index);
+        cfg_mbr_if_index = itr->second;
     }
-    EV_LOGGING(NAS_OS,INFO,"L2-MAC-CHG", "Port-chg for MAC VLAN:%s MAC:%s cfg-mbr:%d chg-mbr:%d",
-               vlan_name, mac_str, itr->second, mbr_if_index);
-    cfg_mbr_if_index = itr->second;;
 
     char buff[NL_MSG_BUFF_LEN];
     memset(buff,0,sizeof(nlmsghdr));
@@ -123,25 +160,89 @@ t_std_error nas_os_handle_static_mac_port_chg(char *vlan_name, char *mac_str, ha
     memset(req, 0, sizeof(struct ndmsg));
 
     req->ndm_family = PF_BRIDGE;
-    req->ndm_state =  NUD_REACHABLE | NUD_NOARP;
+    req->ndm_state =  NUD_REACHABLE;
+
+    if(is_static){
+        req->ndm_state |= NUD_NOARP;
+    }
 
     req->ndm_flags = NTF_MASTER;
 
     req->ndm_ifindex = cfg_mbr_if_index;
 
-    nlh->nlmsg_flags = NLM_F_REQUEST;
+    nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
 
     nlh->nlmsg_flags |= NLM_F_CREATE | NLM_F_APPEND;
     nlh->nlmsg_type = RTM_NEWNEIGH;
 
     nlmsg_add_attr(nlh,sizeof(buff), NDA_LLADDR, mac, sizeof(hal_mac_addr_t));
-
-    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_NEI,nlh, buff, sizeof(buff)) != STD_ERR_OK){
-        EV_LOGGING(NAS_OS,ERR,"L2-MAC-CHG", "FAILED Port-chg for MAC VLAN:%s MAC:%s cfg:%d chg-mbr:%d",
+    t_std_error rc;
+    rc = nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_NEI,nlh, buff, sizeof(buff));
+    int err_code = STD_ERR_EXT_PRIV (rc);
+    if(err_code != 0){
+        EV_LOGGING(NAS_OS,DEBUG,"L2-MAC-CHG", "FAILED Port-chg for MAC VLAN:%s MAC:%s cfg:%d chg-mbr:%d",
                    vlan_name, mac_str, cfg_mbr_if_index, mbr_if_index);
+        return STD_ERR(L2MAC,FAIL,0);
     }
     return STD_ERR_OK;
 }
+
+/*
+ * If port stp state is not forwarding/learning when programming the dynamic macs
+ * in kernel fails. To fix it we cache the failed dynamic mac entries and when
+ * ports stp state becomes forwarding, we will try to re-pgoram the macs. Below
+ * thread reads from socket where ports which have pending macs, its ifindex will be
+ * pushed. This thread will keep trying to re-program the pending macs and will clear
+ * it from cache when it successfully programs the pending mac.
+ */
+
+static void nas_os_mac_main(void){
+     hal_ifindex_t ifindex;
+
+     while (true) {
+         if (!nas_os_mac_read_pending_mac_if(&ifindex)) {
+             continue;
+         }
+         std_rw_lock_write_guard l(&dynamic_mac_lock);
+
+         auto it = _port_to_dynamic_mac_list.find(ifindex);
+         if(it != _port_to_dynamic_mac_list.end()){
+
+             EV_LOGGING(NAS_OS,DEBUG,"DMAC-STG-PROGRAM","Pending MAC count %d for ifindex %d",it->second.size(),ifindex);
+             for(auto mac_it = it->second.begin(); mac_it != it->second.end() ; ){
+                 std::string key = *mac_it;
+                 std::vector<std::string> t_strings;
+                 nas_mac_split_string(key,'.',t_strings);
+                 if(t_strings.size() != 2) continue;
+                 hal_mac_addr_t mac_addr;
+                 const char * vlan = t_strings[0].c_str();
+                 const char * mac = t_strings[1].c_str();
+                 std_string_to_mac(&mac_addr,mac,t_strings[1].length());
+
+                 if(nas_os_handle_mac_port_chg(vlan,mac,&mac_addr,ifindex,false) == STD_ERR_OK){
+                     mac_it = it->second.erase(mac_it);
+                     _dynamic_mac_list.erase(key);
+                 }else{
+                     ++mac_it;
+                 }
+             }
+
+             if(_port_to_dynamic_mac_list[ifindex].size() == 0){
+                 _port_to_dynamic_mac_list.erase(ifindex);
+             }
+         }
+     }
+}
+
+t_std_error nas_os_mac_add_pending_mac_if_event(hal_ifindex_t ifindex){
+    std_rw_lock_read_guard l(&dynamic_mac_lock);
+    auto it = _port_to_dynamic_mac_list.find(ifindex);
+    if(it != _port_to_dynamic_mac_list.end()){
+        nas_os_mac_write_pending_mac_if(&ifindex);
+    }
+    return STD_ERR_OK;
+}
+
 
 t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
 
@@ -168,7 +269,7 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
     if(static_attr){
         is_static = cps_api_object_attr_data_u32(static_attr);
     }
-    nlh->nlmsg_flags = NLM_F_REQUEST;
+    nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
     std::string s;
     if(op == cps_api_oper_CREATE){
         nlh->nlmsg_flags |=   NLM_F_CREATE | (is_static ? NLM_F_APPEND : NLM_F_EXCL) ;
@@ -211,14 +312,15 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
     nlmsg_add_attr(nlh,sizeof(buff),NDA_LLADDR,(void *)cps_api_object_attr_data_bin(mac_attr),sizeof(hal_mac_addr_t));
     hal_mac_addr_t *mac_addr = (hal_mac_addr_t*)cps_api_object_attr_data_bin(mac_attr);
     char mac_buff[MAC_STRING_LEN];
+    char vlan_name[HAL_IF_NAME_SZ+1];
+    snprintf(vlan_name, HAL_IF_NAME_SZ, "br%d", vid);
+    std_mac_to_string(mac_addr,mac_buff,sizeof(mac_buff));
+    std::string key = std::string(vlan_name)+"."+std::string(mac_buff);
+    EV_LOGGING(NAS_OS,INFO,"NAS-L2-MAC","Op:%s MAC:%s VLAN:%s Key:%s mbr:%d",
+                    ((op == cps_api_oper_DELETE) ? "Del" : "Add/Set"), mac_buff, vlan_name, key.c_str(), ifindex);
     if (is_static) {
         std_rw_lock_write_guard l(&static_mac_lock);
-        char vlan_name[HAL_IF_NAME_SZ+1];
-        snprintf(vlan_name, HAL_IF_NAME_SZ, "br%d", vid);
-        std_mac_to_string(mac_addr,mac_buff,sizeof(mac_buff));
-        std::string key = std::string(vlan_name)+std::string(mac_buff);
-        EV_LOGGING(NAS_OS,INFO,"NAS-L2-MAC","Op:%s MAC:%s VLAN:%s Key:%s mbr:%d",
-                   ((op == cps_api_oper_DELETE) ? "Del" : "Add/Set"), mac_buff, vlan_name, key.c_str(), ifindex);
+
         if(op == cps_api_oper_DELETE) {
             auto itr = _static_mac_list.find(key);
             if (itr != _static_mac_list.end()) {
@@ -229,11 +331,31 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
         }
     }
 
-    if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_NEI,nlh, buff, sizeof(buff)) != STD_ERR_OK){
-        EV_LOG(ERR,NAS_OS,0,"NAS-L2-MAC","Failed to %s mac address entry %s for Interface %d "
+    t_std_error rc;
+    rc = nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_NEI,nlh, buff, sizeof(buff));
+    int err_code = STD_ERR_EXT_PRIV (rc);
+    if(err_code != 0){
+        EV_LOGGING(NAS_OS,DEBUG,"NAS-L2-MAC","Failed to %s mac address entry %s for Interface %d "
                 "with cps operation %d in Kernel",s.c_str(),std_mac_to_string(mac_addr,mac_buff,sizeof(mac_buff)),
                 req->ndm_ifindex,op);
-        return STD_ERR(L2MAC,FAIL,0);
+
+        if(!is_static){
+             std_rw_lock_write_guard l(&dynamic_mac_lock);
+
+             if(op == cps_api_oper_DELETE || op == cps_api_oper_SET) {
+                 auto itr = _dynamic_mac_list.find(key);
+                 if (itr != _dynamic_mac_list.end()) {
+                     _port_to_dynamic_mac_list[itr->second].erase(key);
+                     _dynamic_mac_list.erase(itr);
+                 }
+             }
+
+             if(op != cps_api_oper_DELETE){
+                 _dynamic_mac_list[key] = ifindex;
+                 _port_to_dynamic_mac_list[ifindex].insert(key);
+             }
+        }
+        return STD_ERR_OK;
     }
     EV_LOGGING(NAS_OS,INFO,"NAS-L2-MAC","%sd mac address entry %s for Interface %d with"
             "cps operation %d in Kernel",s.c_str(),std_mac_to_string(mac_addr,mac_buff,sizeof(mac_buff)),
@@ -287,6 +409,24 @@ bool nas_os_mac_get_learning(hal_ifindex_t ifindex) {
     }
 
     return it->second;
+}
+
+t_std_error nas_os_mac_init(){
+    t_std_error rc = STD_ERR_OK;
+    e_std_soket_type_t domain = e_std_sock_UNIX;
+    if (( rc = std_sock_create_pair(domain, true, nas_os_mac_fd)) != STD_ERR_OK) {
+        EV_LOGGING(NAS_OS,ERR,"NAS-OS-MAC-INIT","Failed to create socketpair for ndi events");
+        return STD_ERR(NPU,FAIL,0);
+    }
+    std_thread_init_struct(&nas_os_mac_thread);
+    nas_os_mac_thread.name = "nas-os-mac-thr";
+    nas_os_mac_thread.thread_function = (std_thread_function_t)nas_os_mac_main;
+    if ((rc = std_thread_create(&nas_os_mac_thread))!=STD_ERR_OK) {
+        EV_LOGGING(NAS_OS,ERR,"NAS-OS-MAC-INIT","Failed to create the nas os mac thread");
+        return rc;
+    }
+
+    return rc;
 }
 
 }
