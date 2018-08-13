@@ -167,7 +167,7 @@ sad_algo_map = {
                           },
                     'enc': {
                                 'cbc(des3)': {
-                                                'sad_path': [ config_sad_key_prefix+'/esp/encryption/encryption-algorithm/des3-cbc/des3-cbc/key-str'],
+                                                'sad_path': [ config_sad_key_prefix+'/esp/encryption/encryption-algorithm/des3-cbc/des3-cbd/key-str'],
                                                 'key_len' : {'str': 24, 'hex_str': 48},
                                                 'cmd'     : 'cbc(des3_ede)'
                                             },
@@ -336,7 +336,7 @@ def add_attr_type():
 
 
     cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/des-cbc/des-cbc/key-str", "string")
-    cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/des3-cbc/des3-cbc/key-str", "string")
+    cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/des3-cbc/des3-cbd/key-str", "string")
     cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/aes-128-cbc/aes-128-cbc/key-str", "string")
     cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/aes-192-cbc/aes-192-cbc/key-str", "string")
     cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/aes-256-cbc/aes-256-cbc/key-str", "string")

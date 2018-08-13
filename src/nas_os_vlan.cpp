@@ -600,11 +600,8 @@ t_std_error nas_os_t_port_to_vlan(int vlan_id, const char *vlan_name, int port_i
         /* Adding tagged bond interface with no member fails in kernel.
          * Handle such case.
          */
-        if (nas_handle_no_mem_tagged_bond(vlan_id, vlan_name, port_index,
-                                             vlan_index) != STD_ERR_OK) {
-            return (STD_ERR(NAS_OS,FAIL, 0));
-
-        }
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failed: Failed to add vlan member %d to %s", port_index, vlan_name);
+        return (STD_ERR(NAS_OS,FAIL, 0));
     }
 
     _update_intf_to_tagged_intf_map(port_index,*vlan_index,true);

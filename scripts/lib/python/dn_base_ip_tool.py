@@ -327,6 +327,20 @@ def create_loopback_if(name, mtu=None, mac=None):
     return False
 
 
+def create_macvlan_if(name, parent_if, mac):
+    res = []
+    cmd = [iplink_cmd,
+           'link', 'add',
+           'link', parent_if, name,
+           'address', mac,
+           'type', 'macvlan'
+           ]
+
+    if run_command(cmd, res) == 0:
+        return True
+    return False
+
+
 def delete_if(name):
     res = []
     if run_command([iplink_cmd, 'link', 'delete', 'dev', name], res) == 0:
