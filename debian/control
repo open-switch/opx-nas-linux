@@ -22,5 +22,5 @@ Description: This package contains the Linux integration portion of the Network 
 
 Package: opx-nas-linux
 Architecture: any
-Depends: ${misc:Depends},opx-cps (>= 3.6.2),python-opx-cps (>= 3.6.2)
+Depends: ${misc:Depends},opx-cps (>= 3.6.2),python-opx-cps (>= 3.6.2), python-ipaddress (>= 1.0.17-1), python-enum34 (>= 1.1.6-1)
 Description: This package contains the Linux integration portion of the Network abstractions service.
