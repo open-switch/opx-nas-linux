@@ -74,6 +74,60 @@ static inline uint16_t nas_os_get_nl_flags(nas_rt_msg_type m_type, bool is_ack_r
 
 #define MAX_CPS_MSG_SIZE 10000
 
+static t_std_error nas_os_publish_leaked_route(int rt_msg_type, cps_api_object_t obj, bool is_rt_route_replace)
+{
+    static char buff[MAX_CPS_MSG_SIZE];
+
+    cps_api_operation_types_t op;
+    if(rt_msg_type == RTM_NEWROUTE) {
+        op = (is_rt_route_replace) ? cps_api_oper_SET : cps_api_oper_CREATE;
+    } else if(rt_msg_type == RTM_DELROUTE) {
+        op = cps_api_oper_DELETE;
+    } else {
+        EV_LOGGING (NAS_OS, ERR, "LEAKED-RT-PUB", "Invalid rt_msg_type:%d", rt_msg_type);
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+
+    cps_api_object_t new_obj = cps_api_object_init(buff,sizeof(buff));
+
+    cps_api_key_from_attr_with_qual(cps_api_object_key(new_obj), OS_RE_OS_LEAK_ROUTE_CONFIG_OBJ,
+                                    cps_api_qualifier_OBSERVED);
+    cps_api_object_set_type_operation(cps_api_object_key(new_obj), op);
+
+    const char *rt_vrf_name           = cps_api_object_get_data(obj,BASE_ROUTE_OBJ_VRF_NAME);
+    const char *nh_vrf_name           = cps_api_object_get_data(obj,BASE_ROUTE_OBJ_ENTRY_NH_VRF_NAME);
+
+    cps_api_object_attr_t af = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_AF);
+    cps_api_object_attr_t prefix   = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_ROUTE_PREFIX);
+    if ((af == CPS_API_ATTR_NULL) || (prefix == CPS_API_ATTR_NULL)) {
+        EV_LOGGING (NAS_OS, ERR, "LEAKED-RT-PUB", "Address family/Prefix is not present!");
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+    cps_api_object_attr_t pref_len = cps_api_object_attr_get(obj, BASE_ROUTE_OBJ_ENTRY_PREFIX_LEN);
+
+    if (nh_vrf_name) {
+        cps_api_object_attr_add(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_SRC_VRF_NAME, nh_vrf_name, strlen(nh_vrf_name)+1);
+    } else {
+        cps_api_object_attr_add(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_SRC_VRF_NAME, NAS_DEFAULT_VRF_NAME, strlen(NAS_DEFAULT_VRF_NAME)+1);
+    }
+    if (rt_vrf_name) {
+        cps_api_object_attr_add(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_VRF_NAME, rt_vrf_name, strlen(rt_vrf_name)+1);
+    } else {
+        cps_api_object_attr_add(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_VRF_NAME, NAS_DEFAULT_VRF_NAME, strlen(NAS_DEFAULT_VRF_NAME)+1);
+    }
+    cps_api_object_attr_add_u32(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_AF, cps_api_object_attr_data_u32(af));
+
+    cps_api_object_attr_add(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_ROUTE_PREFIX,
+                            cps_api_object_attr_data_bin(prefix), cps_api_object_attr_len(prefix));
+
+    cps_api_object_attr_add_u32(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_PREFIX_LEN, cps_api_object_attr_data_u32(pref_len));
+    EV_LOGGING(NAS_OS, INFO,"LEAKED-RT-PUB", "Pub successful.");
+
+    net_publish_event(new_obj);
+
+    return STD_ERR_OK;
+}
+
 /*
  * Publish route from here is mainly to handle route delete cases.
  * When application try to delete a route and if it is already deleted in kernel
@@ -193,17 +247,8 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
 
             if (gw != CPS_API_ATTR_NULL) {
                 new_ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_NH_ADDR;
-
-                hal_ip_addr_t ip;
-                if(addr_len == HAL_INET4_LEN) {
-                    ip.af_index = AF_INET;
-                    memcpy(&(ip.u.v4_addr), cps_api_object_attr_data_bin(gw),addr_len);
-                } else {
-                    ip.af_index = AF_INET6;
-                    memcpy(&(ip.u.v6_addr), cps_api_object_attr_data_bin(gw),addr_len);
-                }
                 cps_api_object_e_add(new_obj, new_ids, ids_len, cps_api_object_ATTR_T_BIN,
-                                     &ip,sizeof(ip));
+                                     cps_api_object_attr_data_bin(gw),addr_len);
             }
 
             if (gwix != CPS_API_ATTR_NULL) {
@@ -240,6 +285,61 @@ static t_std_error nas_os_publish_route(int rt_msg_type, cps_api_object_t obj, b
 
     return STD_ERR_OK;
 }
+
+static t_std_error nas_os_publish_leaked_route_nexthop(int rt_msg_type, cps_api_object_t obj, bool is_rt_route_replace)
+{
+    static char buff[MAX_CPS_MSG_SIZE];
+
+    cps_api_operation_types_t op;
+    if(rt_msg_type == RTM_NEWROUTE) {
+        op = (is_rt_route_replace) ? cps_api_oper_SET : cps_api_oper_CREATE;
+    } else if(rt_msg_type == RTM_DELROUTE) {
+        op = cps_api_oper_DELETE;
+    } else {
+        EV_LOGGING (NAS_OS, ERR, "LEAKED-RT-PUB", "Invalid rt_msg_type:%d", rt_msg_type);
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+
+    cps_api_object_t new_obj = cps_api_object_init(buff,sizeof(buff));
+
+    cps_api_key_from_attr_with_qual(cps_api_object_key(new_obj), OS_RE_OS_LEAK_ROUTE_CONFIG_OBJ,
+                                    cps_api_qualifier_OBSERVED);
+    cps_api_object_set_type_operation(cps_api_object_key(new_obj), op);
+
+    const char *rt_vrf_name           = cps_api_object_get_data(obj,BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_VRF_NAME);
+    const char *nh_vrf_name           = cps_api_object_get_data(obj,BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_NH_VRF_NAME);
+
+    cps_api_object_attr_t af = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_AF);
+    cps_api_object_attr_t prefix   = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_ROUTE_PREFIX);
+    if ((af == CPS_API_ATTR_NULL) || (prefix == CPS_API_ATTR_NULL)) {
+        EV_LOGGING (NAS_OS, ERR, "LEAKED-RT-PUB", "Address family/Prefix is not present!");
+        return (STD_ERR(NAS_OS, FAIL, 0));
+    }
+    cps_api_object_attr_t pref_len = cps_api_object_attr_get(obj, BASE_ROUTE_ROUTE_NH_OPERATION_INPUT_PREFIX_LEN);
+
+    if (nh_vrf_name) {
+        cps_api_object_attr_add(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_SRC_VRF_NAME, nh_vrf_name, strlen(nh_vrf_name)+1);
+    } else {
+        cps_api_object_attr_add(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_SRC_VRF_NAME, NAS_DEFAULT_VRF_NAME, strlen(NAS_DEFAULT_VRF_NAME)+1);
+    }
+    if (rt_vrf_name) {
+        cps_api_object_attr_add(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_VRF_NAME, rt_vrf_name, strlen(rt_vrf_name)+1);
+    } else {
+        cps_api_object_attr_add(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_VRF_NAME, NAS_DEFAULT_VRF_NAME, strlen(NAS_DEFAULT_VRF_NAME)+1);
+    }
+    cps_api_object_attr_add_u32(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_AF, cps_api_object_attr_data_u32(af));
+
+    cps_api_object_attr_add(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_ROUTE_PREFIX,
+                            cps_api_object_attr_data_bin(prefix), cps_api_object_attr_len(prefix));
+
+    cps_api_object_attr_add_u32(new_obj, OS_RE_OS_LEAK_ROUTE_CONFIG_PREFIX_LEN, cps_api_object_attr_data_u32(pref_len));
+    EV_LOGGING(NAS_OS, INFO,"LEAKED-RT-PUB", "Pub successful.");
+
+    net_publish_event(new_obj);
+
+    return STD_ERR_OK;
+}
+
 
 /*
  * Publish route from here is mainly to handle route nexthop delete cases.
@@ -355,16 +455,8 @@ static t_std_error nas_os_publish_route_nexthop (int rt_msg_type, cps_api_object
             if (gw != CPS_API_ATTR_NULL) {
                 new_ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_NH_ADDR;
 
-                hal_ip_addr_t ip;
-                if(addr_len == HAL_INET4_LEN) {
-                    ip.af_index = AF_INET;
-                    memcpy(&(ip.u.v4_addr), cps_api_object_attr_data_bin(gw),addr_len);
-                } else {
-                    ip.af_index = AF_INET6;
-                    memcpy(&(ip.u.v6_addr), cps_api_object_attr_data_bin(gw),addr_len);
-                }
                 cps_api_object_e_add(new_obj, new_ids, ids_len, cps_api_object_ATTR_T_BIN,
-                                     &ip,sizeof(ip));
+                                     cps_api_object_attr_data_bin(gw),addr_len);
             }
 
             if (gwix != CPS_API_ATTR_NULL) {
@@ -440,7 +532,9 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, nas_rt_msg_type
         if (((vrf_name == NULL) && (strncmp(nh_vrf_name, NAS_DEFAULT_VRF_NAME, NAS_VRF_NAME_SZ))) ||
             (vrf_name && (strncmp(vrf_name, nh_vrf_name, NAS_VRF_NAME_SZ)))) {
             nas_os_publish_route((m_type == NAS_RT_DEL)?RTM_DELROUTE:RTM_NEWROUTE,
-                                 obj, false);
+                                 obj, ((m_type == NAS_RT_SET) ? true : false));
+            nas_os_publish_leaked_route((m_type == NAS_RT_DEL)?RTM_DELROUTE:RTM_NEWROUTE,
+                                        obj, false);
             return STD_ERR_OK;
         }
     }
@@ -718,10 +812,11 @@ cps_api_return_code_t nas_os_update_route (cps_api_object_t obj, nas_rt_msg_type
 
     do  {
 
+        uint16_t rt_flags = nlh->nlmsg_flags;
         rc = nl_do_set_request((vrf_name ? vrf_name : NAS_DEFAULT_VRF_NAME), nas_nl_sock_T_ROUTE,nlh,buff1,sizeof(buff1));
         nhm_count--;
         err_code = STD_ERR_EXT_PRIV (rc);
-        EV_LOGGING(NAS_OS, INFO,"ROUE_UPD","Netlink error_code %d", err_code);
+        EV_LOGGING(NAS_OS, INFO,"ROUE_UPD","Netlink error_code %d flags:0x%x", err_code, rt_flags);
         /*
          * Return success if the error is exist, in case of addition, or
          * no-exist, in case of deletion. This is because, kernel might have
@@ -812,7 +907,9 @@ t_std_error nas_os_update_route_nexthop (cps_api_object_t obj)
         if (((vrf_name == NULL) && (strncmp(nh_vrf_name, NAS_DEFAULT_VRF_NAME, NAS_VRF_NAME_SZ) != 0)) ||
             (vrf_name && (strncmp(vrf_name, nh_vrf_name, NAS_VRF_NAME_SZ)))) {
             nas_os_publish_route_nexthop((m_type == NAS_RT_DEL)?RTM_DELROUTE:RTM_NEWROUTE,
-                                         obj, false);
+                                         obj, true);
+            nas_os_publish_leaked_route_nexthop((m_type == NAS_RT_DEL)?RTM_DELROUTE:RTM_NEWROUTE,
+                                                obj, false);
             return STD_ERR_OK;
         }
     }

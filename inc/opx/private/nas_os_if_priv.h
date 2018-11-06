@@ -25,6 +25,7 @@
 #include "cps_api_object.h"
 #include "ds_common_types.h"
 #include "dell-base-common.h"
+#include "dell-base-interface-common.h"
 #include "std_error_codes.h"
 #include "nas_os_int_utils.h"
 #include "std_rw_lock.h"
@@ -39,6 +40,11 @@
 
 t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, bool* p_pub_evt,
                                     uint32_t vrf_id);
+extern "C" t_std_error os_get_interface_oper_status(const char *ifname, cps_api_object_t obj);
+extern "C" t_std_error os_get_interface_ethtool_cmd_data(const char *ifname, cps_api_object_t obj);
+extern "C" t_std_error os_set_interface_ethtool_cmd_data (const char *ifname, cps_api_object_t obj);
+extern "C" t_std_error os_get_interface_stats (const char *ifname, cps_api_object_t obj);
+
 extern "C"
 cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t ifix, bool get_all,
                                        uint_t if_type );
@@ -50,11 +56,15 @@ typedef struct {
     BASE_CMN_INTERFACE_TYPE_t if_type;
     std::string os_link_type; // Can be bond, bridge, vlan, dummy, tun
     hal_mac_addr_t phy_addr;
+    std::string if_name;
+    hal_ifindex_t master_idx; // If part of bridge or lag then stores master's index
+    hal_ifindex_t parent_idx; // used by VLAN and MACVLAN type of interface to store parent index
     bool oper; /* Operational status of the interface in OS, this field helps the Apps
                   (e.g nbr-mgr) that only depend on OS netlink events for any operations. */
 }if_info_t;
 
 using os_if_map_t = std::unordered_map <hal_ifindex_t, if_info_t>;
+using name_to_ifindex_map_t = std::unordered_map <std::string, hal_ifindex_t>;
 
 struct if_details {
     cps_api_operation_types_t _op;
@@ -66,38 +76,48 @@ struct if_details {
     std::string if_name;
     struct nlattr *_attrs[__IFLA_MAX];
     struct nlattr *_linkinfo[IFLA_INFO_MAX];
+    hal_ifindex_t master_idx; // If part of bridge or lag then stores master's index
+    hal_ifindex_t parent_idx; // used by VLAN and MACVLAN type of interface to store parent index
+
 };
 
 class INTERFACE {
 
     os_if_map_t if_map_;
+    name_to_ifindex_map_t name_ifindex_map_;
 
     std_rw_lock_t rw_lock;
 
     enum {
-        PHY=0, LAG, VLAN, MACVLAN, STG, IP, DUMMY, MAX
+        PHY=0, LAG, VLAN, MACVLAN, VXLAN, STG, IP, DUMMY, BRIDGE, MGMT, MAX
     };
     bool (INTERFACE::*fptr[MAX]) (if_details *, cps_api_object_t);
 
     bool os_interface_phy_attrs_handler(if_details *, cps_api_object_t obj) { return true; };
+    bool os_interface_bridge_attrs_handler(if_details *, cps_api_object_t obj);
     bool os_interface_vlan_attrs_handler(if_details *, cps_api_object_t obj);
+    bool os_interface_vxlan_attrs_handler(if_details *, cps_api_object_t obj);
     bool os_interface_lag_attrs_handler(if_details *, cps_api_object_t obj);
     bool os_interface_stg_attrs_handler(if_details *, cps_api_object_t obj);
     bool os_interface_macvlan_attrs_handler(if_details *, cps_api_object_t obj);
     bool os_interface_ip_attrs_handler(if_details *, cps_api_object_t obj) { return true; };
     bool os_interface_dummy_attrs_handler(if_details *, cps_api_object_t obj);
+    bool os_interface_mgmt_attrs_handler(if_details *, cps_api_object_t obj);
 
 public:
 
     INTERFACE () {
         fptr[PHY] = &INTERFACE::os_interface_phy_attrs_handler;
         fptr[LAG] = &INTERFACE::os_interface_lag_attrs_handler;
+        fptr[BRIDGE] = &INTERFACE::os_interface_bridge_attrs_handler;
         fptr[VLAN] = &INTERFACE::os_interface_vlan_attrs_handler;
+        fptr[VXLAN] = &INTERFACE::os_interface_vxlan_attrs_handler;
         fptr[MACVLAN] = &INTERFACE::os_interface_macvlan_attrs_handler;
         fptr[STG] = &INTERFACE::os_interface_stg_attrs_handler;
         fptr[IP] = &INTERFACE::os_interface_ip_attrs_handler;
         // "DUMMY" type is used to handle loopback interfaces
         fptr[DUMMY] = &INTERFACE::os_interface_dummy_attrs_handler;
+        fptr[MGMT] =  &INTERFACE::os_interface_mgmt_attrs_handler;
 
         std_rw_lock_create_default(&rw_lock);
     }
@@ -111,12 +131,15 @@ public:
     }
 
     int  if_info_update(hal_ifindex_t ifx, if_info_t& if_info);
+    bool  if_info_present(hal_ifindex_t ifx);
     bool if_info_setmask(hal_ifindex_t ifx, if_change_t mask_val);
     BASE_CMN_INTERFACE_TYPE_t if_info_get_type(hal_ifindex_t ifx);
+    std::string if_info_get_name(hal_ifindex_t ifx);
     if_change_t if_info_getmask(hal_ifindex_t ifx);
-    void if_info_delete(hal_ifindex_t ifx);
+    void if_info_delete(hal_ifindex_t ifx, std::string &name);
     bool if_info_get(hal_ifindex_t ifx, if_info_t& if_info);
     bool if_info_get_admin(hal_ifindex_t ifx, bool& admin);
+    bool get_ifindex_from_name(std::string &if_name, hal_ifindex_t &if_index);
     void for_each_mbr(std::function <void (int ix, if_info_t& if_info)> fn);
 };
 

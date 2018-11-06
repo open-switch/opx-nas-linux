@@ -34,6 +34,8 @@
 #include "nas_os_l3_utils.h"
 #include "std_ip_utils.h"
 #include "nas_vrf_utils.h"
+#include "std_system.h"
+#include "hal_if_mapping.h"
 
 #include <map>
 #include <sstream>
@@ -69,17 +71,26 @@ bool nas_os_is_reserved_ipv6(hal_ip_addr_t *p_ip_addr)
     return false;
 }
 
-extern "C" t_std_error nas_os_read_ipv6_status(char *name, int *ipv6_status) {
+extern "C" t_std_error nas_os_read_ipv6_status(const char *vrf_name, char *name, int *ipv6_status) {
     const std::string NETCONF_IPV6_CONF = "/proc/sys/net/ipv6/conf/";
+    int                 netns_handle = 0;
+    t_std_error rc = (STD_ERR(NAS_OS,FAIL, 0));
 
+    if ((strncmp(vrf_name, NAS_DEFAULT_VRF_NAME, NAS_VRF_NAME_SZ) != 0) &&
+        (std_sys_set_netns(vrf_name, &netns_handle) != STD_ERR_OK)) {
+        return rc;
+    }
     std::string disabled_ipv6 = NETCONF_IPV6_CONF + std::string(name) + "/disable_ipv6";
     FILE *fp = fopen(disabled_ipv6.c_str(),"r");
-    if(fp){
+    do {
+        if (fp == NULL) {
+            break;
+        }
         int ret = fscanf(fp, "%d",ipv6_status);
         /*If data read from file returned not 1 (the no. of argument read), return failure */
         if (ret != 1) {
             fclose(fp);
-            return (STD_ERR(NAS_OS,FAIL, 0));
+            break;
         }
 
         /* ipv6_status now reflects the disable_ipv6 status,
@@ -88,11 +99,12 @@ extern "C" t_std_error nas_os_read_ipv6_status(char *name, int *ipv6_status) {
             *ipv6_status = false;
         else
             *ipv6_status = true;
-
         fclose(fp);
-        return STD_ERR_OK;
-    }
-    return (STD_ERR(NAS_OS,FAIL, 0));
+        rc = STD_ERR_OK;
+    } while(0);
+    if (netns_handle)
+        std_sys_reset_netns (&netns_handle);
+    return rc;
 }
 
 extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj,
@@ -138,6 +150,25 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
     const char *vrf_name = nas_os_get_vrf_name(vrf_id);
     if (vrf_name == NULL) {
         return false;
+    }
+    /* Ignore the IP address event notification for sub-interaces. */
+    if (vrf_id == NAS_DEFAULT_VRF_ID) {
+        interface_ctrl_t intf_ctrl;
+        memset(&intf_ctrl, 0, sizeof(interface_ctrl_t));
+        intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
+        intf_ctrl.vrf_id = vrf_id;
+        intf_ctrl.if_index = ifmsg->ifa_index;
+        bool is_intf_chk_req = true;
+        if (((dn_hal_get_interface_info(&intf_ctrl)) == STD_ERR_OK) &&
+            (intf_ctrl.int_type == nas_int_type_MACVLAN)) {
+            /* Dont ignore the address update on MAC-VLAN sub-interface,
+             * since this is required for VRRPv3 functionality to work */
+            is_intf_chk_req = false;
+        }
+        if (is_intf_chk_req && (nas_rt_is_reserved_intf_idx(ifmsg->ifa_index,
+                                                            true))) {
+            return false;
+        }
     }
     cps_api_object_attr_add(obj, _ipmap.at(ifmsg->ifa_family).at(VRFNAME), vrf_name,
                             strlen(vrf_name)+1);
@@ -256,11 +287,12 @@ extern "C" bool nl_get_ip_info (int rt_msg_type, struct nlmsghdr *hdr, cps_api_o
              * if accept-dad= enable-dad-disable-ipv6-oper and MAC based duplicate LLA is found,
              * kernel changes the IPv6 status to disabled automatically, this should be notified
              * to the App to take appropriate action */
-            if (nas_os_read_ipv6_status(intf_name, &ipv6_enabled) == STD_ERR_OK) {
+            if (nas_os_read_ipv6_status(vrf_name, intf_name, &ipv6_enabled) == STD_ERR_OK) {
                 cps_api_object_attr_add_u32(obj, _ipmap.at(ifmsg->ifa_family).at(ENABLED),
                                             ipv6_enabled);
             } else {
-                EV_LOGGING(NAS_OS,ERR,"NAS-IP","IPv6 status read for the intf:%s failed!", intf_name);
+                EV_LOGGING(NAS_OS,ERR,"NAS-IP","IPv6 status read for the vrf-name:%s intf:%s failed!",
+                           vrf_name, intf_name);
             }
         }
     }
@@ -388,5 +420,4 @@ bool nl_netconf_get_all_request(int sock, int family,int req_id) {
     return nl_send_request(sock,RTM_GETNETCONF, NLM_F_ROOT| NLM_F_DUMP|NLM_F_REQUEST,
                            req_id,&ncm,sizeof(ncm));
 }
-
 

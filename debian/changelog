@@ -1,3 +1,27 @@
+opx-nas-linux (5.25.0) unstable; urgency=medium
+
+  * Feature: VxLAN Support
+  * Bugfix: Fixed issue of dst_ip not set to system
+  * Bugfix: vrf_name is not present in the route/nbr CPS objects.
+  * Bugfix: Fix false netlink event for member addition during member deletion time
+  * Bugfix: Handle the Ipv6 nexthop append and delete cases for leaked routes
+  * Bugfix: IP Proxy ARP is not working
+  * Bugfix: OSPF neighbor going down
+  * Update: Backend support to handle the leaf-list of interface names for flushing the neighbors
+  * Update: Outgoing service handler's outgoing IP services subnet setup to be handled within VrfOutgoingSvcsRule python methods
+  * Update: Add support for dst_ip filter type for COPP ACL
+  * Update: Oper status publish thru BASE_IF_LINUX_IF_INTERFACES_INTERFACE_IF_FLAGS CPS attribute from dst_ip filter type for COPP ACL
+  * Update: Add initialized value for event publish flag
+  * Update: Add output flag to interface netlink message handler to indicate if the netlink notification would be published as event
+  * Update: Add support for outgoing source address translation as part of ns-outgoing-service model
+  * Update: Support for L4 destination port range for CoPP ACL
+  * Update: Publish the IPv6 address del even if the get for intf-index to intf-name fails for now
+  * Update: Add default accept rule for lo interface to default netns
+  * Update: Get the admin status directly from kenel when reomving port
+  * Update: Optimize L2_port processing to eliminate redundant ms
+
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Tue, 06 Nov 2018 19:25:43 -0800
+
 opx-nas-linux (5.24.0+opx1) unstable; urgency=medium
 
   * Bugfix: Fix package dependency issue.

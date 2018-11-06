@@ -81,7 +81,8 @@ bool INTERFACE::os_interface_stg_attrs_handler(if_details *details, cps_api_obje
             int stp_state = *(int *)nla_data(brinfo[IFLA_BRPORT_STATE]);
             uint8_t cur_stp_state;
             /*
-             * Check if cached stp state is there, then revert the state back in kernel
+             * Check if cached stp state is there, then revert the state back in kernel if cached state
+             * is not matching with the current state in the kernel.
              */
             if(get_if_stp_state(details->_ifindex,&cur_stp_state) == STD_ERR_OK){
                 if( stp_state != cur_stp_state){
@@ -112,6 +113,11 @@ bool INTERFACE::os_interface_stg_attrs_handler(if_details *details, cps_api_obje
             }
 
             if(stp_state == os_stp_state_frwd){
+                /*
+                 * When stp state of interface becomes forwarding, check if there were
+                 * any pending failed dynamic macs on this interface and try to re-program
+                 * them.
+                 */
                 nas_os_mac_add_pending_mac_if_event(details->_ifindex);
             }
 

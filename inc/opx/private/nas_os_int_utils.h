@@ -27,6 +27,10 @@
 #include "cps_api_interface_types.h"
 #include "ds_common_types.h"
 #include "cps_api_object.h"
+#include "dell-base-common.h"
+#include "dell-base-interface-common.h"
+#include "ietf-interfaces.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -36,9 +40,30 @@ typedef enum {
     OS_IF_ADM_CHANGE  = 0x1,
     OS_IF_MTU_CHANGE  = 0x2,
     OS_IF_PHY_CHANGE  = 0x4,
+    OS_IF_MASTER_CHANGE  = 0x5,
     OS_IF_OPER_CHANGE = 0x8,
     OS_IF_CHANGE_ALL  = 0xf
 }if_change_t;
+
+typedef struct ethtool_cmd_data {
+    BASE_IF_SPEED_t          speed;
+    BASE_CMN_DUPLEX_TYPE_t   duplex;
+    bool                     autoneg;
+    bool                     supported_speed[BASE_IF_SPEED_MAX];
+} ethtool_cmd_data_t;
+
+typedef struct os_int_stats {
+    uint64_t     input_packets;
+    uint64_t     input_bytes;
+    uint64_t     input_multicast;
+    uint64_t     input_errors;
+    uint64_t     input_discards;
+    uint64_t     output_packets;
+    uint64_t     output_bytes;
+    uint64_t     output_multicast;
+    uint64_t     output_errors;
+    uint64_t     output_invalid_protocol;
+} os_int_stats_t;
 
 t_std_error nas_os_util_int_admin_state_get(const char *name,
         db_interface_state_t *state, db_interface_operational_state_t *ostate) ;
@@ -66,6 +91,14 @@ t_std_error os_intf_mac_addr_get(hal_ifindex_t ifix, hal_mac_addr_t mac);
 t_std_error nas_os_util_int_if_index_get(const char *vrf_name, const char *if_name, int *if_index);
 
 t_std_error nas_os_util_int_if_name_get(const char *vrf_name, int if_index, char *if_name);
+
+t_std_error nas_os_util_int_oper_status_get (const char *vrf_name, const char *name,
+        IF_INTERFACES_STATE_INTERFACE_OPER_STATUS_t *oper_state);
+
+t_std_error nas_os_util_int_ethtool_cmd_data_get (const char *vrf_name, const char *name, ethtool_cmd_data_t *eth_cmd);
+
+t_std_error nas_os_util_int_ethtool_cmd_data_set (const char *vrf_name, const char *name, ethtool_cmd_data_t *eth_cmd);
+t_std_error nas_os_util_int_stats_get (const char *vrf_name, const char *name, os_int_stats_t *stats);
 #ifdef __cplusplus
 }
 #endif

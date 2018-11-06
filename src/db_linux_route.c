@@ -83,6 +83,22 @@ bool nas_rt_is_reserved_intf(char *intf_name) {
     return false;
 }
 
+static bool nas_rt_is_internal_ip(hal_ip_addr_t *ip) {
+    if (ip->af_index == AF_INET) {
+        /* Ignore loopback IP address which is being used across VRFs */
+        if ((ip->u.v4_addr & 0xff) == 0x7f) {
+            return true;
+        }
+    } else if (ip->af_index == AF_INET6) {
+        /* Ignore unique IPv6 address which is being used across VRFs */
+        if (((ip->u.v6_addr[0] & 0xff) == 0xfd) &&
+            ((ip->u.v6_addr[1] & 0xff) == 0xa5)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /*
  * This function validates the given interface index for following:
  * Checks if its not a linux sub interface (only if input flag is true).
@@ -224,12 +240,18 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     if(attrs[RTA_DST]!=NULL) {
         /* Ignore the link local route here, we program the link local self IPv6
          * into the NPU thru IPv6 address publish flow */
+        hal_ip_addr_t ip;
         if (rtmsg->rtm_family == AF_INET6) {
-            hal_ip_addr_t ip;
             struct in6_addr *inp6 = (struct in6_addr *) nla_data((struct nlattr*)attrs[RTA_DST]);
             std_ip_from_inet6(&ip,inp6);
             if (STD_IP_IS_ADDR_LINK_LOCAL(&ip)) {
                 EV_LOGGING(NETLINK,DEBUG,"NL-ROUTE-PARSE","LLA skipped!");
+                return false;
+            }
+        } else if (rtmsg->rtm_family == AF_INET) {
+            struct in_addr *inp = (struct in_addr *) nla_data((struct nlattr*)attrs[RTA_DST]);
+            std_ip_from_inet(&ip,inp);
+            if (nas_rt_is_internal_ip(&ip)) {
                 return false;
             }
         }
@@ -304,6 +326,21 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     ids[1] = hop_count;
 
     if (attrs[RTA_GATEWAY]!=NULL) {
+        hal_ip_addr_t ip;
+        memset(&ip, 0, sizeof(ip));
+        if (rtmsg->rtm_family == AF_INET) {
+            struct in_addr *inp = (struct in_addr *) nla_data((struct nlattr*)attrs[RTA_GATEWAY]);
+            std_ip_from_inet(&ip,inp);
+            if (nas_rt_is_internal_ip(&ip)) {
+                return false;
+            }
+        } else if (rtmsg->rtm_family == AF_INET6) {
+            struct in6_addr *inp6 = (struct in6_addr *) nla_data((struct nlattr*)attrs[RTA_GATEWAY]);
+            std_ip_from_inet6(&ip,inp6);
+            if (nas_rt_is_internal_ip(&ip)) {
+                return false;
+            }
+        }
         ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_NH_ADDR;
         cps_api_object_e_add(obj, ids, ids_len, cps_api_object_ATTR_T_BIN,
                              nla_data((struct nlattr*)attrs[RTA_GATEWAY]),

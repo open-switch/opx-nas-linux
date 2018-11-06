@@ -17,8 +17,9 @@ This module provides support for caching VRF incoming & outgoing IP rules, as we
 configuration through iptables
 """
 
-from dn_base_vrf_tool import iplink_cmd, run_command, log_info, log_err, get_ip_str, rej_rule_mark_value, _vrf_name_to_id
-from dn_base_vrf_tool import process_outgoing_ip_svcs_sub_net_config
+from dn_base_vrf_tool import iplink_cmd, run_command, log_info, log_err, get_ip_str,\
+                             rej_rule_mark_value, vrf_chain_name, _vrf_name_to_id
+from dn_base_vrf_tool import process_outgoing_ip_svcs_sub_net_config, get_veth_ip_str
 from dn_base_id_tool import IdGenerator
 import cps_object
 import socket
@@ -30,7 +31,10 @@ import binascii
 from StringIO import StringIO
 from enum import IntEnum
 import re
+import netaddr
+import ipaddress
 
+DEFAULT_VRF_ID = 0
 MGMT_VRF_ID = 1024
 
 """ Object to define VRF services rule definitions like
@@ -89,6 +93,27 @@ class VrfIncomingSvcsRule(object):
                 return False
         return True
 
+    def normalize_ip_prefix(self, ip_attr, prefix_attr):
+        if ip_attr not in vars(self) or prefix_attr not in vars(self):
+            return
+        ip = vars(self)[ip_attr]
+        prefix_len = vars(self)[prefix_attr]
+        if ip is not None and prefix_len is not None:
+            ip_net = netaddr.IPNetwork('%s/%d' % (socket.inet_ntop(self.af, ip),
+                                                  prefix_len))
+            ip = ip_net.cidr.ip.packed
+        # anywhere IP address
+        elif ip is None or ip == '\x00' * len(ip):
+            prefix_len = 0
+            if ip is None:
+                ip_str = '0.0.0.0' if self.af == socket.AF_INET else '::'
+                ip = socket.inet_pton(self.af, ip_str)
+        else:
+            return
+        self.__setattr__(ip_attr, ip)
+        self.__setattr__(prefix_attr, prefix_len)
+
+
     def __init__(self, rule_type, vrf_name, action, af, src_ip = None, src_prefix_len = None,
                  protocol = None, dst_port = None, dst_ip = None, dst_prefix_len = None, low_dst_port = None,
                  high_dst_port = None, seq_num = 0, rule_id = None, high_prio = False,
@@ -126,6 +151,8 @@ class VrfIncomingSvcsRule(object):
         self.seq_num = seq_num
         self.action = action
         self.grp_priority = high_prio
+        self.packet_count = None
+        self.byte_count = None
         if self.action == VrfSvcsRuleAction.RULE_ACTION_DNAT and self.dst_ip is None:
             log_err('Destination IP is mandatory for DNAT action')
             raise ValueError
@@ -134,6 +161,8 @@ class VrfIncomingSvcsRule(object):
             self.action = VrfSvcsRuleAction.RULE_ACTION_REJECT
         self.rule_id = rule_id
         self.in_intf = in_intf
+        self.normalize_ip_prefix('src_ip', 'src_prefix_len')
+        self.normalize_ip_prefix('dst_ip', 'dst_prefix_len')
 
     def __setattr__(self, key, val):
         if key == 'grp_priority' and val is not None:
@@ -232,7 +261,7 @@ class VrfIncomingSvcsRule(object):
                          (' DST_PORT %d' % self.dst_port if self.dst_port is not None else ''),
                          (' DST_PORT RANGE %d-%d' % (self.low_dst_port, self.high_dst_port) \
                             if self.low_dst_port is not None else ''),
-                         (' IIF %s' % self.in_intf if self.in_intf is not None else '')))
+                         (' IIF %s%s' % (('not ' if self.negative else ''), self.in_intf) if self.in_intf is not None else '')))
         return ret_str
 
     def to_cps_obj(self):
@@ -250,7 +279,9 @@ class VrfIncomingSvcsRule(object):
             'action': 'action',
             'seq_num': 'seq-num',
             'in_intf': 'ifname',
-            'rule_id': 'id'}
+            'rule_id': 'id',
+            'packet_count': 'matched-packets',
+            'byte_count': 'matched-bytes'}
         obj = cps_object.CPSObject('vrf-firewall/ns-incoming-service')
         for attr_name, attr_val in vars(self).items():
             if attr_name in cps_attr_map and attr_val is not None:
@@ -268,6 +299,12 @@ class VrfIncomingSvcsRule(object):
                 if (attr_name == 'dst_ip' or attr_name == 'dst_prefix_len') and \
                         self.rule_type == VrfSvcsRuleType.RULE_TYPE_IP:
                     # Only show dst_ip for ACL rule
+                    continue
+                if attr_name == 'dst_ip':
+                    attr_val = binascii.hexlify(attr_val)
+                if attr_name == 'packet_count' and attr_val is None:
+                    continue
+                if attr_name == 'byte_count' and attr_val is None:
                     continue
                 obj.add_attr(cps_attr_map[attr_name], attr_val)
         return obj
@@ -365,8 +402,19 @@ class VrfIncomingSvcsRuleList(list):
 
 #IP tables handler for both incoming & outgoing service configurations
 class IptablesHandler:
-    @staticmethod
-    def is_vrf_valid(vrf_name):
+    PKT_CNT_TK_ID = 0
+    BYTE_CNT_TK_ID = 1
+    TARGET_TK_ID = 2
+    PROTO_TK_ID = 3
+    IN_IF_TK_ID = 4
+    OUT_IF_TK_ID = 5
+    SRC_IP_TK_ID = 6
+    DST_IP_TK_ID = 7
+    OPT_TK_ID = 8
+    MIN_TK_NUM = 9
+
+    @classmethod
+    def is_vrf_valid(cls, vrf_name):
         cmd = [iplink_cmd, 'netns', 'show']
         res = []
         if run_command(cmd, res) != 0:
@@ -382,24 +430,72 @@ class IptablesHandler:
                 return True
         return False
 
-    @staticmethod
-    def get_chain_name(rule):
-        if rule.rule_type == VrfSvcsRuleType.RULE_TYPE_IP:
-            chain_name = 'INPUT' if rule.vrf_name == 'default' else 'VRF'
-        elif rule.rule_type == VrfSvcsRuleType.RULE_TYPE_SNAT:
+    @classmethod
+    def get_chain_name(cls, vrf_name, rule_type):
+        if rule_type == VrfSvcsRuleType.RULE_TYPE_IP:
+            chain_name = 'INPUT' if vrf_name == 'default' else vrf_chain_name
+        elif rule_type == VrfSvcsRuleType.RULE_TYPE_OUT_IP:
+            chain_name = 'PREROUTING'
+        elif rule_type == VrfSvcsRuleType.RULE_TYPE_SNAT:
             chain_name = 'POSTROUTING'
         else:
-            chain_name = 'PREROUTING'
+            chain_name = vrf_chain_name
         return chain_name
 
-    @staticmethod
-    def proc_rule(op, rule, idx = None):
+    @classmethod
+    def get_ipt_cmd_prefix(cls, rule_type, af, vrf_name):
+        iptables = 'iptables' if af == socket.AF_INET else 'ip6tables'
+        if vrf_name == 'default':
+            ipt_prefix = ['/sbin/%s' % iptables]
+            #tbl_name = (None if rule_type == VrfSvcsRuleType.RULE_TYPE_IP else 'raw')
+            if rule_type == VrfSvcsRuleType.RULE_TYPE_IP:
+                tbl_name = None
+            elif rule_type == VrfSvcsRuleType.RULE_TYPE_SNAT:
+                tbl_name = 'nat'
+            else :
+                tbl_name = 'raw'
+        else:
+            ipt_prefix = [iplink_cmd, 'netns', 'exec', vrf_name, iptables]
+            #tbl_name = ('nat' if rule_type == VrfSvcsRuleType.RULE_TYPE_IP else 'raw')
+            if rule_type == VrfSvcsRuleType.RULE_TYPE_IP or\
+                rule_type == VrfSvcsRuleType.RULE_TYPE_OUT_IP or\
+                rule_type == VrfSvcsRuleType.RULE_TYPE_SNAT:
+                tbl_name = 'nat'
+            else :
+                tbl_name = 'raw'
+        if tbl_name is not None:
+            ipt_prefix += ['-t', tbl_name]
+        return ipt_prefix
+
+    @classmethod
+    def find_stats_info(cls, pattern, line):
+        """Method to parse regex matching return value"""
+        match = re.match(pattern, line)
+        if match is None:
+            return (None, None)
+        match = match.group()
+        stats_pattern = re.compile(r'\d+')
+        stats_list = stats_pattern.findall(match)
+        #number at first position is packet count and the one at second position is byte count.
+        return (stats_list[0], stats_list[1])
+
+    @classmethod
+    def parse_rule_stats(cls, result):
+        packets, bytes = cls.find_stats_info(r'\s+\d+\s+\d+\s+', result)
+        return (packets, bytes)
+
+    @classmethod
+    def proc_rule(cls, op, rule, idx = None):
         if (op.lower() == 'delete' and rule.vrf_name != 'default' and
-            not IptablesHandler.is_vrf_valid(rule.vrf_name)):
+            not cls.is_vrf_valid(rule.vrf_name)):
             log_info('VRF %s is not opened, bypass iptables setting.' % rule.vrf_name)
             return True
 
-        #@@@TODO - check if this below check is really needed
+        if (op.lower() == 'get' and rule.vrf_name != 'default' and
+            not IptablesHandler.is_vrf_valid(rule.vrf_name)):
+            log_info('VRF %s is not opened, bypass iptables get.' % rule.vrf_name)
+            return True
+
         """ outgoing IP services rules are not allowed in default VRF """
         if rule.vrf_name == 'default' and rule.rule_type == VrfSvcsRuleType.RULE_TYPE_OUT_IP:
             log_info('Invalid Rule. rule type %s not supported in VRF:%s.' % (rule.rule_type, rule.vrf_name))
@@ -408,29 +504,8 @@ class IptablesHandler:
         if op == 'replace' and idx is None:
             log_err('Missing rule index for replace operation')
             return False
-        iptables = 'iptables' if rule.af == socket.AF_INET else 'ip6tables'
 
-        # Command line prefix and table name
-        if rule.vrf_name == 'default':
-            ipt_prefix = ['/sbin/%s' % iptables]
-            #tbl_name = (None if rule.rule_type == VrfSvcsRuleType.RULE_TYPE_IP else 'raw')
-            if rule.rule_type == VrfSvcsRuleType.RULE_TYPE_IP:
-                tbl_name = None
-            elif rule.rule_type == VrfSvcsRuleType.RULE_TYPE_SNAT:
-                tbl_name = 'nat'
-            else :
-                tbl_name = 'raw'
-        else:
-            ipt_prefix = [iplink_cmd, 'netns', 'exec', rule.vrf_name, iptables]
-            #tbl_name = ('nat' if rule.rule_type == VrfSvcsRuleType.RULE_TYPE_IP else 'raw')
-            if rule.rule_type == VrfSvcsRuleType.RULE_TYPE_IP or\
-                rule.rule_type == VrfSvcsRuleType.RULE_TYPE_OUT_IP or\
-                rule.rule_type == VrfSvcsRuleType.RULE_TYPE_SNAT:
-                tbl_name = 'nat'
-            else :
-                tbl_name = 'raw'
-        if tbl_name is not None:
-            ipt_prefix += ['-t', tbl_name]
+        ipt_prefix = cls.get_ipt_cmd_prefix(rule.rule_type, rule.af, rule.vrf_name)
 
         # Set protocol related filtering options
         flt_args = []
@@ -449,25 +524,34 @@ class IptablesHandler:
             flt_args += ['--match', 'multiport', '--dports',
                          '%s:%s' % (str(rule.low_dst_port), str(rule.high_dst_port))]
 
-        if (rule.rule_type == VrfSvcsRuleType.RULE_TYPE_SNAT or rule.rule_type == VrfSvcsRuleType.RULE_TYPE_ACL) and \
-                    rule.dst_ip is not None:
+        if (rule.rule_type == VrfSvcsRuleType.RULE_TYPE_SNAT or\
+            rule.rule_type == VrfSvcsRuleType.RULE_TYPE_ACL or \
+            (rule.vrf_name == 'default' and \
+             rule.rule_type == VrfSvcsRuleType.RULE_TYPE_IP)) and rule.dst_ip is not None:
             flt_args += ['-d', '%s%s' % (socket.inet_ntop(rule.af, rule.dst_ip),
                                         ('/%d' % rule.dst_prefix_len if rule.dst_prefix_len is not None else ''))]
 
         # Set interface filtering options
         if rule.rule_type == VrfSvcsRuleType.RULE_TYPE_IP:
+            # Allow the IP services only from mgmt and data VRFs if configured, any IP services received
+            # in front panel ports will be ignored.
             if rule.vrf_name == 'default':
-                flt_args += ['!', '-i', 'vdef-nsid%d' % MGMT_VRF_ID]
+                if rule.in_intf is not None:
+                    flt_args += ['-i', rule.in_intf]
+                else:
+                    flt_args += ['!', '-i', 'vdst-nsid+']
         elif rule.rule_type == VrfSvcsRuleType.RULE_TYPE_OUT_IP:
             vrf_id = None
             vrf_id = _vrf_name_to_id.get(rule.vrf_name, None)
             if vrf_id is not None:
-                flt_args += ['-i', 'veth-nsid%d'%vrf_id]
+                flt_args += ['-i', 'vdst-nsid%d'%DEFAULT_VRF_ID]
+                # Do the DNAT operation for IP services destined to interval veth IP,
+                # all the other traffic forwarding via veth should not affect this DNAT rule.
+                flt_args += ['-d', '%s' % (get_veth_ip_str(rule.af, rule.vrf_name, False))]
         elif rule.rule_type == VrfSvcsRuleType.RULE_TYPE_SNAT:
-            #in management vrf, apply SNAT rules on interfaces other than internal veth interfaces.
-            #@@TODO - check how to handle for data vrf
-            if rule.vrf_name == 'management':
-                flt_args += ['!', '-o', 'veth-nsid%d' % MGMT_VRF_ID]
+            #in management/data vrf, apply SNAT rules on interfaces other than internal veth interfaces.
+            if rule.vrf_name != 'default':
+                flt_args += ['!', '-o', 'vdst-nsid%d'%DEFAULT_VRF_ID]
         else:
             if rule.in_intf is not None:
                 if rule.negative:
@@ -488,7 +572,7 @@ class IptablesHandler:
             flt_args += ['--to-source', '%s' % (socket.inet_ntop(rule.af, rule.out_src_ip))]
 
         # Chain configuration
-        chain_name = IptablesHandler.get_chain_name(rule)
+        chain_name = cls.get_chain_name(rule.vrf_name, rule.rule_type)
         if op.lower() == 'insert':
             if idx is None:
                 chain_args = ['-A', chain_name]
@@ -509,6 +593,23 @@ class IptablesHandler:
         elif op.lower() == 'check':
             chain_args = ['-C', chain_name]
             cmd = ipt_prefix + chain_args + flt_args
+        elif op.lower() == 'get':
+            if idx is None:
+                log_err('Invalid idx for operation %s' % op)
+                return False
+            chain_args = ['-xvL', chain_name, '%d' % (idx + 1)]
+            cmd = ipt_prefix + chain_args
+
+            log_info('GET CMD: %s' % ' '.join(cmd))
+            res = []
+            if run_command(cmd, res, op.lower() != 'check') != 0:
+                log_err('Invalid idx for operation:%s, error:%s' % (op, res))
+                return False
+            else:
+                if res[0] is not None:
+                    rule.packet_count, rule.byte_count = cls.parse_rule_stats(res[0])
+                log_info('Rule stats, packet_count:%s, byte_count:%s' %(rule.packet_count, rule.byte_count))
+                return True
         else:
             log_err('Invalid operation %s' % op)
             return False
@@ -517,6 +618,140 @@ class IptablesHandler:
         res = []
         return run_command(cmd, res, op.lower() != 'check') == 0
 
+    @classmethod
+    def get_l4_port_num(cls, port_str):
+        if port_str.isdigit():
+            port_num = int(port_str)
+        else:
+            try:
+                port_num = socket.getservbyname(port_str)
+            except socket.error:
+                return None
+        return port_num
+
+    @classmethod
+    def get_ip_prefix(cls, af, ip_str):
+        if ip_str == 'anywhere':
+            return (None, None)
+        else:
+            try:
+                ip_mask = ip_str.split('/')
+                ip_addr = socket.inet_pton(af, ip_mask[0])
+                if len(ip_mask) > 1:
+                    prefix_len = int(ip_mask[1])
+                else:
+                    prefix_len = ipaddress.IPV4LENGTH if af == socket.AF_INET else ipaddress.IPV6LENGTH
+            except ValueError, socket.error:
+                return (None, None)
+        return (ip_addr, prefix_len)
+
+    @classmethod
+    def ipt_tokens_to_rule(cls, rule_type, af, vrf_name, tokens):
+        if len(tokens) < cls.MIN_TK_NUM:
+            return None
+        log_info('TOKENS: %s' % tokens)
+        dst_ip = None
+        dst_prefix_len = None
+        dst_port = None
+        low_port = high_port = None
+        if tokens[cls.TARGET_TK_ID] == 'ACCEPT':
+            action = VrfSvcsRuleAction.RULE_ACTION_ALLOW
+        elif tokens[cls.TARGET_TK_ID] == 'DROP':
+            action = VrfSvcsRuleAction.RULE_ACTION_DENY
+        elif tokens[cls.TARGET_TK_ID] == 'MARK':
+            mo = re.search('MARK\s+set\s+(\S+)', tokens[cls.OPT_TK_ID])
+            if mo is None or len(mo.groups()) < 1:
+                return None
+            try:
+                mark_num = int(mo.groups()[0], 16)
+            except ValueError:
+                return None
+            if mark_num != rej_rule_mark_value:
+                return None
+            action = VrfSvcsRuleAction.RULE_ACTION_REJECT
+        elif tokens[cls.TARGET_TK_ID] == 'DNAT':
+            mo = re.search('to:(\S+)', tokens[cls.OPT_TK_ID])
+            if mo is None or len(mo.groups()) < 1:
+                return None
+            try:
+                dst_ip = socket.inet_pton(af, mo.groups()[0])
+            except socket.error:
+                return None
+            action = VrfSvcsRuleAction.RULE_ACTION_DNAT
+        else:
+            log_err('Invalid target %s' % tokens[cls.TARGET_TK_ID])
+            return None
+        protocol = None
+        proto_type_map = {'tcp': VrfSvcsRuleProto.RULE_PROTO_TCP,
+                          'udp': VrfSvcsRuleProto.RULE_PROTO_UDP,
+                          'icmp': VrfSvcsRuleProto.RULE_PROTO_ICMP}
+        if tokens[cls.PROTO_TK_ID] in proto_type_map:
+            protocol = proto_type_map[tokens[cls.PROTO_TK_ID]]
+        if tokens[cls.IN_IF_TK_ID] == 'any':
+            in_intf = None
+        else:
+            in_intf = tokens[cls.IN_IF_TK_ID]
+        if (rule_type == VrfSvcsRuleType.RULE_TYPE_IP and vrf_name == 'default' and
+            in_intf == '!vdst-nsid+'):
+            in_intf = None
+        src_ip, src_prefix_len = cls.get_ip_prefix(af, tokens[cls.SRC_IP_TK_ID])
+        if rule_type == VrfSvcsRuleType.RULE_TYPE_ACL:
+            dst_ip, dst_prefix_len = cls.get_ip_prefix(af, tokens[cls.DST_IP_TK_ID])
+        mo = re.search('dpt:(\S+)', tokens[cls.OPT_TK_ID])
+        if mo is not None and mo.groups() > 0:
+            dst_port = cls.get_l4_port_num(mo.groups()[0])
+            if dst_port is None:
+                log_err('Failed to get L4 destination port from token %s' % tokens[cls.OPT_TK_ID])
+                return None
+        mo = re.search('multiport\s+dports\s+(\S+):(\S+)', tokens[cls.OPT_TK_ID])
+        if mo is not None and mo.groups() >= 2:
+            low_port = cls.get_l4_port_num(mo.groups()[0])
+            high_port = cls.get_l4_port_num(mo.groups()[1])
+            if low_port is None or high_port is None:
+                log_err('Failed to get L4 destination port range from token %s' % tokens[cls.OPT_TK_ID])
+                return None
+        rule = VrfIncomingSvcsRule(rule_type, vrf_name, action, af, src_ip = src_ip, src_prefix_len = src_prefix_len,
+                                   protocol = protocol, dst_port = dst_port,
+                                   dst_ip = dst_ip, dst_prefix_len = dst_prefix_len, in_intf = in_intf,
+                                   low_dst_port = low_port, high_dst_port = high_port)
+        log_info('RULE: %s' % rule)
+        return rule
+
+    @classmethod
+    def get_rule_from_ipt(cls, rule_type, af, vrf_name, rule_list):
+        cmd = cls.get_ipt_cmd_prefix(rule_type, af, vrf_name)
+        cmd += ['-L', cls.get_chain_name(vrf_name, rule_type), '-v']
+        log_info('GET_CMD: %s' % ' '.join(cmd))
+        res = []
+        if run_command(cmd, res) != 0:
+            log_err('Failed to read iptables rules')
+            return False
+        start = False
+        for line in res:
+            if start:
+                max_split = cls.MIN_TK_NUM if af == socket.AF_INET else cls.MIN_TK_NUM - 1
+                tokens = line.split(None, max_split)
+                if len(tokens) < cls.MIN_TK_NUM - 1:
+                    log_err('Invalid number of tokens in line: %s' % tokens)
+                    continue
+                if af == socket.AF_INET:
+                    # OPT field
+                    del tokens[4]
+                if len(tokens) < cls.MIN_TK_NUM:
+                    # add empty optional field
+                    tokens.append('')
+                rule = cls.ipt_tokens_to_rule(rule_type, af, vrf_name, tokens)
+                if rule is None:
+                    log_err('Failed to get ACL rule from tokens: %s' % tokens)
+                    continue
+                rule_list.append(rule)
+            else:
+                ret_val = re.match('pkts\s+bytes\s+target\s+prot\s+opt\s+in\s+out\s+source\s+destination',
+                                   line.lstrip())
+                if ret_val is not None:
+                    start = True
+
+        return True
 
 class VrfIncomingSvcsRuleCache:
     # map: af, vrf_name => rule_list
@@ -607,6 +842,7 @@ class VrfIncomingSvcsRuleCache:
                 if rule_id in rule_list.rule_id_map:
                     idx = rule_list.rule_id_map[rule_id]
                     ret_val = (rule_list[idx], idx)
+                    IptablesHandler.proc_rule('get', rule_list[idx], idx)
                     break
             if ret_val is not None:
                 break
@@ -614,6 +850,7 @@ class VrfIncomingSvcsRuleCache:
                 if rule_id in rule_list.rule_id_map:
                     idx = rule_list.rule_id_map[rule_id]
                     ret_val = (rule_list[idx], idx)
+                    IptablesHandler.proc_rule('get', rule_list[idx], idx)
                     break
             if ret_val is not None:
                 break
@@ -632,6 +869,7 @@ class VrfIncomingSvcsRuleCache:
         except ValueError:
             cls.mutex.release()
             return None
+        cls.mutex.release()
         return rule_list[rule.vrf_name][idx]
 
     @classmethod
@@ -813,6 +1051,9 @@ class VrfIncomingSvcsRuleCache:
                     for rule in rule_list:
                         if not rule.match(**params):
                             continue
+                        if rule.rule_id is not None and rule.rule_id in rule_list.rule_id_map:
+                            idx = rule_list.rule_id_map[rule.rule_id]
+                            IptablesHandler.proc_rule('get', rule, idx)
                         ret_list.append(copy.deepcopy(rule))
             if rule_type is None or rule_type == VrfSvcsRuleType.RULE_TYPE_ACL:
                 for vrf, rule_list in cls.acl_rules[af].items():
@@ -821,9 +1062,45 @@ class VrfIncomingSvcsRuleCache:
                     for rule in rule_list:
                         if not rule.match(**params):
                             continue
+                        if rule.rule_id is not None and rule.rule_id in rule_list.rule_id_map:
+                            idx = rule_list.rule_id_map[rule.rule_id]
+                            IptablesHandler.proc_rule('get', rule, idx)
                         ret_list.append(copy.deepcopy(rule))
         cls.mutex.release()
         return ret_list
+
+    @classmethod
+    def check_ipt_rules(cls, rule_type, af, vrf_name):
+        log_info('Checking if rules in cache are in sync with system')
+        cls.mutex.acquire()
+        if rule_type == VrfSvcsRuleType.RULE_TYPE_IP and vrf_name in cls.ip_rules[af]:
+            rule_list = cls.ip_rules[af][vrf_name]
+        elif rule_type == VrfSvcsRuleType.RULE_TYPE_ACL and vrf_name in cls.acl_rules[af]:
+            rule_list = cls.acl_rules[af][vrf_name]
+        else:
+            rule_list = []
+        ipt_rule_list = []
+        if not IptablesHandler.get_rule_from_ipt(rule_type, af, vrf_name, ipt_rule_list):
+            log_err('Failed to get iptables rule for rule_type %d af %d vrf %s' %
+                    (rule_type, af, vrf_name))
+            cls.mutex.release()
+            return False
+        is_sync = (rule_list == ipt_rule_list)
+        if not is_sync:
+            log_err('Rules of cache is not sync with those in system: TYPE %d AF %d VRF %s' %
+                     (rule_type, af, vrf_name))
+            log_info('-------------------------------')
+            log_info('%d rules in cache' % len(rule_list))
+            log_info('-------------------------------')
+            for idx in range(len(rule_list)):
+                log_info('%3d: %s' % (idx, rule_list[idx]))
+            log_info('-------------------------------')
+            log_info('%d rules in system' % len(ipt_rule_list))
+            log_info('-------------------------------')
+            for idx in range(len(ipt_rule_list)):
+                log_info('%3d: %s' % (idx, ipt_rule_list[idx]))
+        cls.mutex.release()
+        return is_sync
 
 def process_vrf_svcs_rule_add(rule_type, vrf_name, action, af, **params):
     try:
@@ -944,12 +1221,13 @@ class VrfOutgoingSvcsRule(object):
         self.action = action
         self.seq_num = seq_num
         self.grp_priority = high_prio
+        self.packet_count = None
+        self.byte_count = None
 
-        # @@TODO - generate private_ip & private_port for IP rule
         self.private_ip = private_ip
         self.private_port = private_port
 
-        # @@TODO - following attributes are added to outgoing service rule,
+        # following attributes are added to outgoing service rule,
         # just to keep the rule common b/w incoming & outgoing service rule.
         self.src_ip = None
         if self.rule_type == VrfSvcsRuleType.RULE_TYPE_SNAT:
@@ -1357,6 +1635,7 @@ class VrfOutgoingSvcsRuleCache:
         except ValueError:
             cls.mutex.release()
             return None
+        cls.mutex.release()
         return rule_list[rule.vrf_name][idx]
 
     @classmethod
@@ -1627,5 +1906,4 @@ def process_vrf_outgoing_svcs_clear_rules(vrf_name = None):
         logging.exception(ex)
         return False
     return True
-
 
