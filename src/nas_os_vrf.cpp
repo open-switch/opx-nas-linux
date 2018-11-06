@@ -44,6 +44,10 @@ static std_rw_lock_t vrf_lock = PTHREAD_RWLOCK_INITIALIZER;
 static auto &vrf_map = *new std::unordered_map<std::string, uint32_t>;
 static auto &vrf_id_map = *new std::unordered_map<uint32_t, std::string>;
 
+#define NAS_VRF_OP_VRF_UPDATE             1
+#define NAS_VRF_OP_MGMT_VRF_INTF_UPDATE   2
+#define NAS_VRF_OP_DATA_VRF_INTF_UPDATE   3
+
 static bool nas_vrf_notify_vrf_config (uint32_t vrf_id, const char * vrf_name, bool is_add)
 {
     cps_api_transaction_params_t params;
@@ -94,13 +98,13 @@ static bool nas_vrf_notify_vrf_config (uint32_t vrf_id, const char * vrf_name, b
 
 /* This function commits the VRF configurations to OS and also,
  * updates the interface object with the router interface information. */
-static t_std_error nas_os_cps_commit(cps_api_object_t vrf_intf_obj, cps_api_object_t cps_obj, nas_rt_msg_type op,
-                                     uint32_t *p_intf_index) {
+static t_std_error nas_os_cps_commit(int msg_type, cps_api_object_t vrf_intf_obj,
+                                     cps_api_object_t cps_obj_os, nas_rt_msg_type op) {
     cps_api_transaction_params_t tran;
     cps_api_return_code_t err_code = cps_api_ret_code_ERR;
     t_std_error rc = (STD_ERR(NAS_OS, FAIL, 0));
 
-    cps_api_object_guard obj_g (cps_obj);
+    cps_api_object_guard obj_g (cps_obj_os);
 
     if ((err_code = cps_api_transaction_init(&tran)) != cps_api_ret_code_OK)
     {
@@ -115,7 +119,7 @@ static t_std_error nas_os_cps_commit(cps_api_object_t vrf_intf_obj, cps_api_obje
     switch (op)
     {
         case NAS_RT_ADD:
-            if ((err_code = cps_api_create(&tran, cps_obj)) != cps_api_ret_code_OK)
+            if ((err_code = cps_api_create(&tran, cps_obj_os)) != cps_api_ret_code_OK)
             {
                 EV_LOGGING(NAS_OS, ERR,"VRF-OS-CFG","Failed to add CREATE Object to Transaction");
                 return rc;
@@ -123,7 +127,7 @@ static t_std_error nas_os_cps_commit(cps_api_object_t vrf_intf_obj, cps_api_obje
             break;
 
         case NAS_RT_DEL:
-            if ((err_code = cps_api_delete(&tran, cps_obj)) != cps_api_ret_code_OK)
+            if ((err_code = cps_api_delete(&tran, cps_obj_os)) != cps_api_ret_code_OK)
             {
                 EV_LOGGING(NAS_OS, ERR,"VRF-OS-CFG","Failed to add DELETE Object to Transaction");
                 return rc;
@@ -131,7 +135,7 @@ static t_std_error nas_os_cps_commit(cps_api_object_t vrf_intf_obj, cps_api_obje
             break;
 
         case NAS_RT_SET:
-            if ((err_code = cps_api_set (&tran, cps_obj)) != cps_api_ret_code_OK)
+            if ((err_code = cps_api_set (&tran, cps_obj_os)) != cps_api_ret_code_OK)
             {
                 EV_LOGGING(NAS_OS, ERR,"VRF-OS-CFG","Failed to add SET Object to Transaction");
                 return rc;
@@ -153,40 +157,44 @@ static t_std_error nas_os_cps_commit(cps_api_object_t vrf_intf_obj, cps_api_obje
     /* Return return code with success and MAC-VLAN information or
      * return code with failure to application only for add case,
      * delete case, just return success/failure */
-    if (vrf_intf_obj && (op != NAS_RT_DEL)) {
-        /* Construct the router interface information specific to VRF */
-        if (p_intf_index == nullptr) {
-            return rc;
-        }
+    if (((msg_type == NAS_VRF_OP_DATA_VRF_INTF_UPDATE) || (msg_type == NAS_VRF_OP_MGMT_VRF_INTF_UPDATE))
+        && (op != NAS_RT_DEL)) {
         uint32_t if_index = 0;
         cps_api_object_attr_t if_index_attr =
-            cps_api_object_attr_get(cps_obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_IFINDEX);
+            cps_api_object_attr_get(cps_obj_os, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_IFINDEX);
         if (if_index_attr) {
             if_index = cps_api_object_attr_data_u32(if_index_attr);
-            *p_intf_index = if_index;
         } else {
             EV_LOGGING(NAS_OS, ERR, "VRF-OS-CFG","If-index is not present");
             return rc;
         }
-        const char *if_name = (const char *)cps_api_object_get_data(cps_obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_IFNAME);
-        const char *mac_addr = (const char *)cps_api_object_get_data(cps_obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_MAC_ADDR);
+        const char *if_name = (const char *)cps_api_object_get_data(cps_obj_os, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_IFNAME);
+        const char *mac_addr = (const char *)cps_api_object_get_data(cps_obj_os, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_MAC_ADDR);
         if ((if_name == nullptr) || (mac_addr == nullptr)) {
             EV_LOGGING(NAS_OS, ERR, "VRF-OS-CFG","If-name or MAC not present");
             return rc;
         }
-        cps_api_object_attr_add_u32(vrf_intf_obj, VRF_MGMT_INTF_BIND_NI_OUTPUT_IFINDEX, if_index);
-        cps_api_object_attr_add(vrf_intf_obj, VRF_MGMT_INTF_BIND_NI_OUTPUT_IFNAME, (const char*)if_name,
-                                strlen(if_name)+1);
-        cps_api_object_attr_add(vrf_intf_obj, VRF_MGMT_INTF_BIND_NI_OUTPUT_MAC_ADDR, (const char*)mac_addr,
-                                strlen(mac_addr)+1);
+        if (msg_type == NAS_VRF_OP_DATA_VRF_INTF_UPDATE) {
+            cps_api_object_attr_add_u32(vrf_intf_obj, VRF_MGMT_INTF_BIND_NI_OUTPUT_IFINDEX, if_index);
+            cps_api_object_attr_add(vrf_intf_obj, VRF_MGMT_INTF_BIND_NI_OUTPUT_IFNAME, (const char*)if_name,
+                                    strlen(if_name)+1);
+            cps_api_object_attr_add(vrf_intf_obj, VRF_MGMT_INTF_BIND_NI_OUTPUT_MAC_ADDR, (const char*)mac_addr,
+                                    strlen(mac_addr)+1);
+        } else {
+            cps_api_object_attr_add_u32(vrf_intf_obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_IFINDEX, if_index);
+            cps_api_object_attr_add(vrf_intf_obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_IFNAME, (const char*)if_name,
+                                    strlen(if_name)+1);
+            cps_api_object_attr_add(vrf_intf_obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_MAC_ADDR, (const char*)mac_addr,
+                                    strlen(mac_addr)+1);
+        }
         EV_LOGGING(NAS_OS, INFO, "VRF-OS-CFG","Router interface info. name:%s index:%d mac:%s", if_name, if_index, mac_addr);
     }
-    cps_api_key_set(cps_api_object_key(cps_obj),CPS_OBJ_KEY_INST_POS,
+    cps_api_key_set(cps_api_object_key(cps_obj_os),CPS_OBJ_KEY_INST_POS,
                     cps_api_qualifier_OBSERVED);
-    if (nas_os_publish_event(cps_obj) != cps_api_ret_code_OK) {
+    if (nas_os_publish_event(cps_obj_os) != cps_api_ret_code_OK) {
         EV_LOGGING(NAS_OS, ERR, "VRF-OS-CFG", "VRF publish failed!");
     }
-    cps_api_key_set(cps_api_object_key(cps_obj),CPS_OBJ_KEY_INST_POS,
+    cps_api_key_set(cps_api_object_key(cps_obj_os),CPS_OBJ_KEY_INST_POS,
                     cps_api_qualifier_TARGET);
 
     return STD_ERR_OK;
@@ -212,7 +220,7 @@ static t_std_error nas_os_program_vrf(const char *ni_name, nas_rt_msg_type op, u
     cps_api_object_attr_add(cps_obj, NI_NETWORK_INSTANCES_NETWORK_INSTANCE_NAME, (const char*)ni_name,
                             strlen(ni_name)+1);
     cps_api_object_attr_add_u32(cps_obj, VRF_MGMT_NI_NETWORK_INSTANCES_NETWORK_INSTANCE_VRF_ID, vrf_id);
-    if (nas_os_cps_commit(nullptr, cps_obj, op, nullptr) != STD_ERR_OK) {
+    if (nas_os_cps_commit(NAS_VRF_OP_VRF_UPDATE, nullptr, cps_obj, op) != STD_ERR_OK) {
         return rc;
     }
     EV_LOGGING(NAS_OS, INFO,"VRF-OS-CFG","Transaction Successfully completed. Exit");
@@ -240,7 +248,7 @@ t_std_error nas_os_program_vrf_mgmt_intf(cps_api_object_t obj, const char *ni_na
                             strlen(if_name)+1);
     cps_api_object_attr_add(cps_obj, NI_IF_INTERFACES_INTERFACE_BIND_NI_NAME, (const char*)ni_name,
                             strlen(ni_name)+1);
-    if (nas_os_cps_commit(nullptr, cps_obj, op, nullptr) != STD_ERR_OK) {
+    if (nas_os_cps_commit(NAS_VRF_OP_MGMT_VRF_INTF_UPDATE, obj, cps_obj, op) != STD_ERR_OK) {
         return rc;
     }
 
@@ -269,8 +277,7 @@ t_std_error nas_os_program_vrf_intf(cps_api_object_t obj, const char *ni_name, c
                             strlen(if_name)+1);
     cps_api_object_attr_add(cps_obj, NI_IF_INTERFACES_INTERFACE_BIND_NI_NAME, (const char*)ni_name,
                             strlen(ni_name)+1);
-    uint32_t sub_if_index = 0;
-    if (nas_os_cps_commit(obj, cps_obj, op, &sub_if_index) != STD_ERR_OK) {
+    if (nas_os_cps_commit(NAS_VRF_OP_DATA_VRF_INTF_UPDATE, obj, cps_obj, op) != STD_ERR_OK) {
         return rc;
     }
 

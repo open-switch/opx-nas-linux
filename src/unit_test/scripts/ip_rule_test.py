@@ -7,7 +7,7 @@ import random
 import copy
 import re
 
-vrf_name_list = ['default', 'management', 'vrf_test']
+vrf_name_list = ['test_default', 'test_management', 'test_vrf']
 test_rule_count = 20
 
 def local_log_err(msg):
@@ -20,38 +20,31 @@ orig_run_command = cfg.run_command
 
 def local_run_command(cmd, resp, log_fail = True):
     global orig_run_command
-    print 'CMD: %s' % ' '.join(cmd)
-    if cmd[0] == '/sbin/ip' and cmd[1] == 'netns' and cmd[2] == 'exec':
-        cmd[3] = vrf_prefix + cmd[3]
-    elif cmd[0] == '/sbin/iptables' or cmd[0] == '/sbin/ip6tables':
-        cmd = ['/sbin/ip', 'netns', 'exec', vrf_prefix + 'default'] + cmd
-    else:
-        return 0
+    if cmd[0] == '/sbin/iptables' or cmd[0] == '/sbin/ip6tables':
+        cmd = ['/sbin/ip', 'netns', 'exec', 'test_default'] + cmd
+    print 'RUN_CMD: %s' % ' '.join(cmd)
     ret_val = orig_run_command(cmd, resp)
     if log_fail and ret_val != 0:
         print '*** Command execution failed ***'
         print ' '.join(cmd)
         for r in resp:
             print r
-        return ret_val
-    return 0
+    return ret_val
 
 cfg.log_err = local_log_err
 #cfg.log_info = local_log_info
 cfg.run_command = local_run_command
 
-vrf_prefix = 'test_'
-
 # Initiate namespace for testing
 def test_init_netns():
     print '*** Initiate network namespace ***'
-    for vrf_name in vrf_name_list:
-        ni_name = vrf_prefix + vrf_name
+    for ni_name in vrf_name_list:
         resp = []
         assert orig_run_command(['/sbin/ip', 'netns', 'add', ni_name], resp) == 0
         for ipt in ['iptables', 'ip6tables']:
-            resp = []
-            assert orig_run_command(['/sbin/ip', 'netns', 'exec', ni_name, ipt, '-t', 'nat', '-N', 'VRF'], resp) == 0
+            for table_name in ['nat', 'raw']:
+                resp = []
+                assert orig_run_command(['/sbin/ip', 'netns', 'exec', ni_name, ipt, '-t', table_name, '-N', 'VRF'], resp) == 0
 
 def get_rand_list_item(lst, remove = False):
     if len(lst) == 0:
@@ -292,7 +285,7 @@ def generate_random_rules(max_rule_num):
     prefix6_list = [16, 24, 32, 64, 128]
     bool_list = [True, False]
     rule_id_list = range(10000, 10200)
-    intf_list = [None, 'vdef-nsid1024', 'lo']
+    intf_list = [None, 'vdst-nsid0', 'lo']
     rules = []
     for idx in xrange(max_rule_num):
         vrf_name = get_rand_list_item(vrf_name_list)
@@ -379,9 +372,39 @@ def test_ipt_handler():
     for rule in rule_list:
         print 'Check rule: %s' % rule
         assert cfg.IptablesHandler.proc_rule('check', rule)
+
+    get_rule_list = []
+    for rule_type in [cfg.VrfSvcsRuleType.RULE_TYPE_ACL, cfg.VrfSvcsRuleType.RULE_TYPE_IP]:
+        for af in [socket.AF_INET, socket.AF_INET6]:
+            for vrf_name in vrf_name_list:
+                assert cfg.IptablesHandler.get_rule_from_ipt(rule_type, af, vrf_name, get_rule_list)
+    assert set(get_rule_list) == set(rule_list), 'mismatched: kernel_rules=%d set_rules=%d' % \
+                                                 (len(get_rule_list), len(rule_list))
+
+    for rule_type in [cfg.VrfSvcsRuleType.RULE_TYPE_ACL, cfg.VrfSvcsRuleType.RULE_TYPE_IP]:
+        for af in [socket.AF_INET, socket.AF_INET6]:
+            for vrf_name in vrf_name_list:
+                get_rule_list = []
+                assert cfg.IptablesHandler.get_rule_from_ipt(rule_type, af, vrf_name, get_rule_list)
+                rule_num = len(get_rule_list)
+                for rule_idx in xrange(rule_num):
+                    rule = get_rule_list[rule_idx]
+                    assert cfg.IptablesHandler.proc_rule('get', rule, rule_idx)
+                    print 'Stats of rule type %d af %d vrf %s idx %d: packet_count %s byte_count %s' % (
+                          rule_type, af, vrf_name, rule_idx, rule.packet_count, rule.byte_count)
+                    assert int(rule.packet_count) == 0
+                    assert int(rule.byte_count) == 0
+
     for rule in rule_list:
         print 'Delete rule: %s' % rule
         assert cfg.IptablesHandler.proc_rule('delete', rule)
+
+    get_rule_list = []
+    for rule_type in [cfg.VrfSvcsRuleType.RULE_TYPE_ACL, cfg.VrfSvcsRuleType.RULE_TYPE_IP]:
+        for af in [socket.AF_INET, socket.AF_INET6]:
+            for vrf_name in vrf_name_list:
+                assert cfg.IptablesHandler.get_rule_from_ipt(rule_type, af, vrf_name, get_rule_list)
+    assert len(get_rule_list) == 0
 
 def test_rule_cache():
     bool_list = [True, False]
@@ -400,6 +423,13 @@ def test_rule_cache():
             exp_rule_id += 1
         assert rule.rule_id not in rule_id_list
         rule_id_list.add(rule.rule_id)
+
+    for af in [socket.AF_INET, socket.AF_INET6]:
+        for vrf_name in cfg.VrfIncomingSvcsRuleCache.acl_rules[af]:
+            assert cfg.VrfIncomingSvcsRuleCache.check_ipt_rules(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, af, vrf_name)
+        for vrf_name in cfg.VrfIncomingSvcsRuleCache.ip_rules[af]:
+            assert cfg.VrfIncomingSvcsRuleCache.check_ipt_rules(cfg.VrfSvcsRuleType.RULE_TYPE_IP, af, vrf_name)
+
     max_prio_rule_idx = {}
     min_reg_rule_idx = {}
     rule_key_count = {}
@@ -542,28 +572,108 @@ def test_rule_cache():
         assert len(cfg.VrfIncomingSvcsRuleCache.ip_rules[af]) == 0
     assert cfg.VrfIncomingSvcsRuleCache.id_generator.avail_id == 1
 
+def test_ipt_rule_check():
+    print 'Test system rule check with cache'
+    rule_list = generate_random_rules(test_rule_count)
+    # test for 0 ip address matching
+    rule_list.append(cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'test_management',
+                                             cfg.VrfSvcsRuleAction.RULE_ACTION_ALLOW, socket.AF_INET,
+                                             src_ip = socket.inet_pton(socket.AF_INET, '0.0.0.0'),
+                                             src_prefix_len = 0, seq_num = 9998))
+    rule_list.append(cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'test_management',
+                                             cfg.VrfSvcsRuleAction.RULE_ACTION_ALLOW, socket.AF_INET6,
+                                             src_ip = socket.inet_pton(socket.AF_INET6, '::'),
+                                             src_prefix_len = 0, seq_num = 9999))
+    print 'Install ACL rules to system:'
+    for rule in rule_list:
+        print str(rule)
+        assert cfg.VrfIncomingSvcsRuleCache.insert_rule(rule)
+    print 'Checking installed ACL rules'
+    for af in [socket.AF_INET, socket.AF_INET6]:
+        for vrf_name in cfg.VrfIncomingSvcsRuleCache.acl_rules[af]:
+            assert cfg.VrfIncomingSvcsRuleCache.check_ipt_rules(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, af, vrf_name)
+        for vrf_name in cfg.VrfIncomingSvcsRuleCache.ip_rules[af]:
+            assert cfg.VrfIncomingSvcsRuleCache.check_ipt_rules(cfg.VrfSvcsRuleType.RULE_TYPE_IP, af, vrf_name)
+    print '%d rules in cache and system are synchronized' % len(rule_list)
+
+    # Get installed rules from system
+    get_rule_list = []
+    for rule_type in [cfg.VrfSvcsRuleType.RULE_TYPE_ACL, cfg.VrfSvcsRuleType.RULE_TYPE_IP]:
+        for af in [socket.AF_INET, socket.AF_INET6]:
+            for vrf_name in vrf_name_list:
+                assert cfg.IptablesHandler.get_rule_from_ipt(rule_type, af, vrf_name, get_rule_list)
+    assert len(get_rule_list) == len(rule_list)
+    print 'ACL rules read from system:'
+    for rule in get_rule_list:
+        print str(rule)
+
+    rule_idx_list = range(len(rule_list))
+    cache_del_rules = []
+    ipt_del_rules = []
+    sync_key_set = set()
+    for num in range(len(rule_list) / 2):
+        idx = get_rand_list_item(rule_idx_list, True)
+        rule = rule_list[idx]
+        if num <= len(rule_list) / 4:
+            cache_del_rules.append(rule)
+        else:
+            ipt_del_rules.append(rule)
+        sync_key_set.add((rule.rule_type, rule.af, rule.vrf_name))
+    for rule in cache_del_rules:
+        if rule.rule_type == cfg.VrfSvcsRuleType.RULE_TYPE_ACL:
+            rule_list = cfg.VrfIncomingSvcsRuleCache.acl_rules[rule.af][rule.vrf_name]
+        else:
+            rule_list = cfg.VrfIncomingSvcsRuleCache.ip_rules[rule.af][rule.vrf_name]
+        assert rule_list.remove(rule) is not None
+        assert cfg.VrfIncomingSvcsRuleCache.id_generator.release_id(rule.rule_id)
+    for rule in ipt_del_rules:
+        assert cfg.IptablesHandler.proc_rule('delete', rule)
+    for rule_type, af, vrf_name in sync_key_set:
+        print 'Expect failure for checking rules for TYPE %d AF %d VRF %s' % (rule_type, af, vrf_name)
+        assert not cfg.VrfIncomingSvcsRuleCache.check_ipt_rules(rule_type, af, vrf_name)
+
+    # Clear all rules from cache and system
+    for rule in ipt_del_rules:
+        if rule.rule_type == cfg.VrfSvcsRuleType.RULE_TYPE_ACL:
+            rule_list = cfg.VrfIncomingSvcsRuleCache.acl_rules[rule.af][rule.vrf_name]
+        else:
+            rule_list = cfg.VrfIncomingSvcsRuleCache.ip_rules[rule.af][rule.vrf_name]
+        assert rule_list.remove(rule) is not None
+        assert cfg.VrfIncomingSvcsRuleCache.id_generator.release_id(rule.rule_id)
+    for rule in cache_del_rules:
+        assert cfg.IptablesHandler.proc_rule('delete', rule)
+    cfg.VrfIncomingSvcsRuleCache.clear_all_rules()
+
+    # Check if system rule cleared
+    rule_list = []
+    for rule_type in [cfg.VrfSvcsRuleType.RULE_TYPE_ACL, cfg.VrfSvcsRuleType.RULE_TYPE_IP]:
+        for af in [socket.AF_INET, socket.AF_INET6]:
+            for vrf_name in vrf_name_list:
+                assert cfg.IptablesHandler.get_rule_from_ipt(rule_type, af, vrf_name, rule_list)
+    assert len(rule_list) == 0
+
 def test_rule_api():
-    rid1 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'management',
+    rid1 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'test_management',
                                          cfg.VrfSvcsRuleAction.RULE_ACTION_DENY,
                                          socket.AF_INET,
                                          src_ip = socket.inet_pton(socket.AF_INET, '1.1.1.0'), src_prefix_len = 24,
                                          dst_ip = socket.inet_pton(socket.AF_INET, '8.8.8.0'), dst_prefix_len = 24,
                                          seq_num = 100)
     assert rid1 is not None
-    rid2 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'management',
+    rid2 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'test_management',
                                          cfg.VrfSvcsRuleAction.RULE_ACTION_ALLOW,
                                          socket.AF_INET6,
                                          src_ip = socket.inet_pton(socket.AF_INET6, '1:1::'), src_prefix_len = 64,
                                          dst_ip = socket.inet_pton(socket.AF_INET6, '2:2::'), dst_prefix_len = 64,
                                          seq_num = 101)
     assert rid2 is not None
-    rid3 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_IP, 'management',
+    rid3 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_IP, 'test_management',
                                          cfg.VrfSvcsRuleAction.RULE_ACTION_DNAT,
                                          socket.AF_INET,
                                          protocol = cfg.VrfSvcsRuleProto.RULE_PROTO_TCP, dst_port = 1234,
                                          dst_ip = socket.inet_pton(socket.AF_INET, '3.3.3.3'))
     assert rid3 is not None
-    rid4 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_IP, 'management',
+    rid4 = cfg.process_vrf_svcs_rule_add(cfg.VrfSvcsRuleType.RULE_TYPE_IP, 'test_management',
                                          cfg.VrfSvcsRuleAction.RULE_ACTION_DNAT,
                                          socket.AF_INET6,
                                          protocol = cfg.VrfSvcsRuleProto.RULE_PROTO_TCP, dst_port = 1235,
@@ -572,10 +682,10 @@ def test_rule_api():
 
     assert cfg.process_vrf_svcs_rule_set(rid1, src_ip = socket.inet_pton(socket.AF_INET, '2.2.2.0'))
     assert cfg.process_vrf_svcs_rule_set(rid2, seq_num = 200)
-    assert not cfg.process_vrf_svcs_rule_del(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'management',
+    assert not cfg.process_vrf_svcs_rule_del(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'test_management',
                                              cfg.VrfSvcsRuleAction.RULE_ACTION_DENY, socket.AF_INET,
                                              src_ip = socket.inet_pton(socket.AF_INET, '1.1.1.0'), src_prefix_len = 24)
-    assert cfg.process_vrf_svcs_rule_del(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'management',
+    assert cfg.process_vrf_svcs_rule_del(cfg.VrfSvcsRuleType.RULE_TYPE_ACL, 'test_management',
                                          cfg.VrfSvcsRuleAction.RULE_ACTION_DENY, socket.AF_INET,
                                          src_ip = socket.inet_pton(socket.AF_INET, '2.2.2.0'), src_prefix_len = 24,
                                          dst_ip = socket.inet_pton(socket.AF_INET, '8.8.8.0'), dst_prefix_len = 24)
@@ -588,13 +698,12 @@ def test_rule_api():
     assert cfg.process_vrf_svcs_rule_del_by_id(rid4)
 
 def test_show_ipt_rules():
-    for vrf_name in vrf_name_list:
-        ni_name = vrf_prefix + vrf_name
+    for ni_name in vrf_name_list:
         for ipt in ['iptables', 'ip6tables']:
             for tbl in ['raw', 'nat']:
                 resp = []
                 assert orig_run_command(['/sbin/ip', 'netns', 'exec', ni_name, ipt, '-t', tbl, '-L', '-v'], resp) == 0
-                print '+++ Rule of vrf %s of %s table %s +++' % (vrf_name, ipt, tbl)
+                print '+++ Rule of vrf %s of %s table %s +++' % (ni_name, ipt, tbl)
                 for r in resp:
                     print r
 
@@ -602,8 +711,7 @@ def test_show_ipt_rules():
 def test_deinit_netns():
     print '*** Cleanup network namespace ***'
     resp = []
-    for vrf_name in vrf_name_list:
-        ni_name = vrf_prefix + vrf_name
+    for ni_name in vrf_name_list:
         resp = []
         assert orig_run_command(['/sbin/ip', 'netns', 'delete', ni_name], resp) == 0
 

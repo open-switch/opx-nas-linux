@@ -27,14 +27,19 @@
 #include <gtest/gtest.h>
 #include <iostream>
 
+static bool run_test_mode = false;
 
 bool nas_linux_stg_set(){
-
-    std::cout<<"Please Enter Interface Index and its stp state to be changed"<<std::endl;
     int ifindex;
     unsigned int  state;
-    std::cin>>ifindex;
-    std::cin>>state;
+    if (!run_test_mode) {
+        std::cout<<"Please Enter Interface Index and its stp state to be changed"<<std::endl;
+        std::cin>>ifindex;
+        std::cin>>state;
+    } else {
+        ifindex = 20;
+        state = BASE_STG_INTERFACE_STATE_FORWARDING;
+    }
     cps_api_object_t obj = cps_api_object_create();
     cps_api_object_attr_add_u32(obj,BASE_STG_ENTRY_INTF_IF_INDEX_IFINDEX,ifindex);
     cps_api_object_attr_add_u32(obj,BASE_STG_ENTRY_INTF_STATE,state);
@@ -49,13 +54,19 @@ bool nas_linux_stg_set(){
 
 bool nas_linux_vlan_stg_set(){
 
-    std::cout<<"Please Enter Interface Index, VLAN ID and its stp state to be changed"<<std::endl;
     int ifindex;
     unsigned int  state;
     int vlan;
-    std::cin>>ifindex;
-    std::cin>>vlan;
-    std::cin>>state;
+    if (!run_test_mode) {
+        std::cout<<"Please Enter Interface Index, VLAN ID and its stp state to be changed"<<std::endl;
+        std::cin>>ifindex;
+        std::cin>>vlan;
+        std::cin>>state;
+    } else {
+        ifindex = 20;
+        vlan = 1;
+        state = BASE_STG_INTERFACE_STATE_FORWARDING;
+    }
 
     cps_api_object_t obj = cps_api_object_create();
     cps_api_object_attr_add_u32(obj,BASE_STG_ENTRY_INTF_IF_INDEX_IFINDEX,ifindex);
@@ -78,7 +89,14 @@ TEST(nas_linux_stg_test, update_stp_state) {
 
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
+
+  printf("\r\n Executing: args:%d %s %s \r\n", argc, argv[0], argv[1]);
+
+  if ((argc > 1) && (strncmp(argv[1], "run-test",8) == 0)){
+      /* run_test mode enable */
+      run_test_mode = true;
+  }
+
   return RUN_ALL_TESTS();
 }
-
 

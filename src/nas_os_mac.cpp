@@ -319,6 +319,13 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
     EV_LOGGING(NAS_OS,INFO,"NAS-L2-MAC","Op:%s MAC:%s VLAN:%s Key:%s mbr:%d",
                     ((op == cps_api_oper_DELETE) ? "Del" : "Add/Set"), mac_buff, vlan_name, key.c_str(), ifindex);
     if (is_static) {
+        /*
+         * In case of static mac, when mac is programmed in the kernel expectation is that mac
+         * will not move since it is programmed as static. However, kernel moves the mac when
+         * same mac is learned on a different interface. To prevent this application programmed
+         * static macs are cached and when we get a mac move notification from kernel we check this
+         * cache and re-program the mac to its correct interface
+         */
         std_rw_lock_write_guard l(&static_mac_lock);
 
         if(op == cps_api_oper_DELETE) {
@@ -340,6 +347,12 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
                 req->ndm_ifindex,op);
 
         if(!is_static){
+            /*
+             * When mac programmed to kernel is dynamic, kernel will reject the mac programming
+             * if stp state of the interface the mac being programmed to is not learning or forwarding.
+             * In this case cache the failed dynamic mac and when the interface becomes forwarding in kernel
+             * and we get a netlink notification re-program the mac in the kernel.
+             */
              std_rw_lock_write_guard l(&dynamic_mac_lock);
 
              if(op == cps_api_oper_DELETE || op == cps_api_oper_SET) {

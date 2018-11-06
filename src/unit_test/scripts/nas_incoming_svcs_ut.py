@@ -95,7 +95,7 @@ def exec_shell(cmd):
 def test_pre_req_cfg(clear = False, mgmt_ip = '10.11.70.22/8'):
     #config test pre requisite - manangement vrf
     mode = 'OPX'
-    ret = exec_shell('os10-show-version | grep \"OS_NAME.*Enterprise\"')
+    ret = exec_shell('opx-show-version | grep \"OS_NAME.*Enterprise\"')
     if ret:
         mode = 'DoD'
 
@@ -340,6 +340,17 @@ def run_test_incoming_svcs():
         incoming_svcs_test(False, "create", "-n", "management", "-s", "24.24.24.0/24", "-p", "tcp", "-dp", "128", "-f", "ipv4", "-i", "101", "-a", "deny")
         incoming_svcs_test(False, "delete", "-n", "management", "-s", "24.24.24.0/24", "-p", "tcp", "-dp", "128", "-f", "ipv4", "-iif", "!eth0", "-a", "allow")
         incoming_svcs_test(False, "delete", "-n", "management", "-s", "24.24.24.0/24", "-p", "tcp", "-dp", "128", "-f", "ipv4", "-i", "101", "-a", "deny")
+
+        # test for dst_ip
+        incoming_svcs_test(False,  "create", "-s", "10.11.8.12/32", "-f", "ipv4", "-p", "icmp", "-d", "10.11.70.22/32", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False,  "create", "-n", "management", "-s", "10.11.8.12/32", "-f", "ipv4", "-p", "icmp", "-d", "10.11.70.22/32", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False,  "info", "-s", "10.11.8.12/32", "-f", "ipv4", "-p", "icmp", "-d", "10.11.70.22/32", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False,  "info", "-n", "management", "-s", "10.11.8.12/32", "-f", "ipv4", "-p", "icmp", "-d", "10.11.70.22/32", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False,  "delete", "-s", "10.11.8.12/32", "-f", "ipv4", "-p", "icmp", "-d", "10.11.70.22/32", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False,  "delete", "-n", "management", "-s", "10.11.8.12/32", "-f", "ipv4", "-p", "icmp", "-d", "10.11.70.22/32", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(True,  "info", "-s", "10.11.8.12/32", "-f", "ipv4", "-p", "icmp", "-d", "10.11.70.22/32", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(True,  "info", "-n", "management", "-s", "10.11.8.12/32", "-f", "ipv4", "-p", "icmp", "-d", "10.11.70.22/32", "-iif", "eth0", "-a", "allow")
+
 
     except RuntimeError as ex:
         print 'UT failed: %s' % ex

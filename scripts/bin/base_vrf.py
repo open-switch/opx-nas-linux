@@ -24,8 +24,10 @@ import logging
 import dn_base_vrf_tool
 import systemd.daemon
 import os
+import threading
 from shutil import rmtree
-from dn_base_vrf_tool import log_err, log_info, get_ip_str, process_pkt_reject_rule
+from dn_base_vrf_tool import log_err, log_info, get_ip_str, process_vrf_top_chain_rule, get_vrf_intf_to_dst_vrf,\
+                             _veth_ip_get
 from dn_base_vrf_svcs_config import VrfSvcsRuleType,\
                                     VrfSvcsRuleAction,\
                                     VrfSvcsRuleProto,\
@@ -38,13 +40,14 @@ from dn_base_vrf_svcs_config import VrfSvcsRuleType,\
                                     process_vrf_outgoing_svcs_rule_add,\
                                     process_vrf_outgoing_svcs_rule_del,\
                                     process_vrf_outgoing_svcs_rule_del_by_id,\
-                                    process_vrf_outgoing_svcs_rule_get, \
-                                    process_vrf_outgoing_svcs_clear_rules
+                                    process_vrf_outgoing_svcs_rule_get
 
 _vrf_key = cps.key_from_name('target', 'vrf-mgmt/ni/network-instances/network-instance')
 _vrf_intf_key = cps.key_from_name('target', 'vrf-mgmt/ni/if/interfaces/interface')
 _vrf_incoming_svc_config_key = cps.key_from_name('target', 'vrf-firewall/ns-incoming-service')
 _vrf_outgoing_svc_config_key = cps.key_from_name('target', 'vrf-firewall/ns-outgoing-service')
+_vrf_get_intf_key = cps.key_from_name('target', 'vrf-mgmt/get-vrf-internal-binding')
+_vrf_intf_ip_key = cps.key_from_name('target', 'vrf-mgmt/src-ip-config')
 
 _protocol = {
     1: 'tcp',
@@ -64,6 +67,7 @@ _af = {
 }
 
 _vrf_default_rule = {}
+_vrf_mutex = 0
 
 def incoming_ip_svcs_attr(t):
     return 'vrf-firewall/ns-incoming-service/' + t
@@ -81,34 +85,44 @@ def vrf_mgmt_ni_attr(t):
 def ip_ni_attr(t):
     return 'ni/network-instances/network-instance/' + t
 
-def create_vrf_default_rules(vrf_name, vrf_id = None, rule_id_list = None):
+def create_default_lo_pkts_rule():
+    loopback_ip_str = '127.0.0.1'
+    loopback_intf = 'lo'
+
+    rule_id = process_vrf_svcs_rule_add(VrfSvcsRuleType.RULE_TYPE_IP, 'default',
+                                        VrfSvcsRuleAction.RULE_ACTION_ALLOW, socket.AF_INET,
+                                        src_ip = socket.inet_pton(socket.AF_INET, loopback_ip_str), src_prefix_len = 32,
+                                        dst_ip = socket.inet_pton(socket.AF_INET, loopback_ip_str), dst_prefix_len = 32,
+                                        high_prio = True, in_intf = loopback_intf)
+    if rule_id is None:
+        log_err('Failed to create default rule to accept pkts on lo')
+        return (False, rule_id)
+    return (True, rule_id)
+
+def create_vrf_default_rules(vrf_name, rule_id_list = None):
     for af in [socket.AF_INET, socket.AF_INET6]:
         any_ip_str = '0.0.0.0' if af == socket.AF_INET else '::'
-        intf_list = []
-        if vrf_name == 'default':
-            if vrf_id is None:
-                intf_list.append('lo')
-            else:
-                intf_list.append('vdef-nsid%s' % str(vrf_id))
-        else:
-            if vrf_id is None:
-                return False
-            intf_list.append('lo')
-            intf_list.append('veth-nsid%s' % str(vrf_id))
-        for intf in intf_list:
-            rule_id = process_vrf_svcs_rule_add(VrfSvcsRuleType.RULE_TYPE_ACL, vrf_name,
-                                                VrfSvcsRuleAction.RULE_ACTION_ALLOW, af,
-                                                src_ip = socket.inet_pton(af, any_ip_str), src_prefix_len = 0,
-                                                high_prio = True, in_intf = intf)
-            if rule_id is None:
-                log_err('Failed to create default ACL rules: VRF %s af %d intf %s' % (vrf_name, af, intf))
-                return False
-            if rule_id_list is not None:
-                log_info('Default rule created: VRF %s af %d intf %s ID %d' % (vrf_name, af, intf, rule_id))
-                rule_id_list.append(rule_id)
+        intf = 'vdst-nsid+'
+        rule_id = process_vrf_svcs_rule_add(VrfSvcsRuleType.RULE_TYPE_ACL, vrf_name,
+                                            VrfSvcsRuleAction.RULE_ACTION_ALLOW, af,
+                                            src_ip = socket.inet_pton(af, any_ip_str), src_prefix_len = 0,
+                                            high_prio = True, in_intf = intf)
+        if rule_id is None:
+            log_err('Failed to create default ACL rules: VRF %s af %d intf %s' % (vrf_name, af, intf))
+            return False
+        if rule_id_list is not None:
+            log_info('Default rule created: VRF %s af %d intf %s ID %d' % (vrf_name, af, intf, rule_id))
+            rule_id_list.append(rule_id)
     return True
 
 def set_vrf_cb(methods, params):
+    global _vrf_mutex
+    _vrf_mutex.acquire()
+    ret_val = set_vrf_cb_int(methods, params)
+    _vrf_mutex.release()
+    return ret_val
+
+def set_vrf_cb_int(methods, params):
     obj = cps_object.CPSObject(obj=params['change'])
     vrf_name = None
 
@@ -137,9 +151,9 @@ def set_vrf_cb(methods, params):
             if dn_base_vrf_tool.process_vrf_config(True, vrf_name, vrf_id):
                 # Create default rules for VRF
                 _vrf_default_rule[vrf_name] = []
-                if not create_vrf_default_rules(vrf_name, vrf_id, _vrf_default_rule[vrf_name]):
+                if not create_vrf_default_rules(vrf_name, _vrf_default_rule[vrf_name]):
                     log_err('Failed to create default ACL rules for VRF %s to VRF ns' % vrf_name)
-                if not create_vrf_default_rules('default', vrf_id, _vrf_default_rule[vrf_name]):
+                if not create_vrf_default_rules('default', _vrf_default_rule[vrf_name]):
                     log_err('Failed to create default ACL rules for VRF %s to default ns' % vrf_name)
                 return True
             log_msg = 'VRF config create failed - VRF Name:' + vrf_name
@@ -164,6 +178,13 @@ def set_vrf_cb(methods, params):
     return False
 
 def set_vrf_intf_cb(methods, params):
+    global _vrf_mutex
+    _vrf_mutex.acquire()
+    ret_val = set_vrf_intf_cb_int(methods, params)
+    _vrf_mutex.release()
+    return ret_val
+
+def set_vrf_intf_cb_int(methods, params):
     obj = cps_object.CPSObject(obj=params['change'])
     if_name = None
     vrf_name = None
@@ -187,11 +208,11 @@ def set_vrf_intf_cb(methods, params):
             if operation == 'delete':
                 op = False
 
-            log_msg = 'VRF ' + vrf_name + 'intf ' + if_name + 'request ' + operation
+            log_msg = 'VRF ' + vrf_name + ' intf ' + if_name + ' request ' + operation
             log_info(log_msg)
             ret_val, v_if_name, v_if_index, v_mac_str = dn_base_vrf_tool.process_vrf_intf_config(op, if_name, vrf_name)
             if ret_val is True:
-                if op and vrf_name != dn_base_vrf_tool._mgmt_vrf_name:
+                if op:
                     cps_obj = cps_object.CPSObject(module='vrf-mgmt/ni/if/interfaces/interface', qual='target',
                                            data={intf_attr('name'):if_name,
                                            ni_intf_attr('bind-ni-name'):vrf_name,
@@ -490,11 +511,16 @@ def config_incoming_ip_svcs_int(methods, params):
     return True
 
 def config_incoming_ip_svcs_cb(methods, params):
+    global _vrf_mutex
+    _vrf_mutex.acquire()
+    ret_val = False
     try:
-        return config_incoming_ip_svcs_int(methods, params)
+        ret_val = config_incoming_ip_svcs_int(methods, params)
     except Exception as ex:
         logging.exception(ex)
-        return False
+        ret_val = False
+    _vrf_mutex.release()
+    return ret_val
 
 def config_outgoing_ip_svcs_int(methods, params):
     obj = cps_object.CPSObject(obj=params['change'])
@@ -646,12 +672,12 @@ def config_outgoing_ip_svcs_int(methods, params):
             return False
         elif operation == 'create':
             ret_val, private_ip, private_port  = process_vrf_outgoing_svcs_rule_add(rule_type, vrf_name, action, af,
-                                                    dst_ip = public_ip, protocol = protocol,
-                                                    dst_port = public_port,
-                                                    out_src_ip = outgoing_source_ip,
-                                                    private_ip = private_ip,
-                                                    private_port = private_port,
-                                                    rule_id = rule_id)
+                                                dst_ip = public_ip, protocol = protocol,
+                                                dst_port = public_port,
+                                                out_src_ip = outgoing_source_ip,
+                                                private_ip = private_ip,
+                                                private_port = private_port,
+                                                rule_id = rule_id)
 
             log_info('%s in adding outgoing %s: VRF %s AF %s%s%s%s%s%s%s%s%s' % (
                     ('Success' if ret_val is not None else 'Failure'),
@@ -718,11 +744,16 @@ def config_outgoing_ip_svcs_int(methods, params):
     return False
 
 def config_outgoing_ip_svcs_cb(methods, params):
+    global _vrf_mutex
+    _vrf_mutex.acquire()
+    ret_val = False
     try:
-        return config_outgoing_ip_svcs_int(methods, params)
+        ret_val = config_outgoing_ip_svcs_int(methods, params)
     except Exception as ex:
         logging.exception(ex)
-        return False
+        ret_val = False
+    _vrf_mutex.release()
+    return ret_val
 
 def sigterm_hdlr(signum, frame):
     global shutdown
@@ -790,11 +821,16 @@ def get_incoming_ip_svcs_int(methods, params):
     return process_vrf_svcs_rule_get(resp, **args)
 
 def get_incoming_ip_svcs_cb(methods, params):
+    global _vrf_mutex
+    _vrf_mutex.acquire()
+    ret_val = False
     try:
-        return get_incoming_ip_svcs_int(methods, params)
+        ret_val = get_incoming_ip_svcs_int(methods, params)
     except Exception as ex:
         logging.exception(ex)
-        return False
+        ret_val = False
+    _vrf_mutex.release()
+    return ret_val
 
 def get_outgoing_ip_svcs_int(methods, params):
     log_info('Callback for outgoing IP service reading')
@@ -866,11 +902,159 @@ def get_outgoing_ip_svcs_int(methods, params):
 
 
 def get_outgoing_ip_svcs_cb(methods, params):
+    global _vrf_mutex
+    _vrf_mutex.acquire()
+    ret_val = False
     try:
-        return get_outgoing_ip_svcs_int (methods, params)
+        ret_val = get_outgoing_ip_svcs_int (methods, params)
     except Exception as ex:
         logging.exception(ex)
+        ret_val = False
+    _vrf_mutex.release()
+    return ret_val
+
+def get_vrf_intf_cb(methods, params):
+    global _vrf_mutex
+    _vrf_mutex.acquire()
+    ret_val = get_vrf_intf_cb_int(methods, params)
+    _vrf_mutex.release()
+    return ret_val
+
+def get_vrf_intf_cb_int(methods, params):
+    obj = cps_object.CPSObject(obj=params['filter'])
+    resp = params['list']
+
+    src_vrf_name = None
+    dst_vrf_name = None
+    try:
+        src_vrf_name = obj.get_attr_data('vrf-mgmt/get-vrf-internal-binding/input/ni-name')
+        dst_vrf_name = obj.get_attr_data('vrf-mgmt/get-vrf-internal-binding/input/dst-ni-name')
+    except ValueError as e:
+        log_msg = 'Missing mandatory attribute ' + e.args[0]
+        log_err(log_msg)
         return False
+
+    ret_val, veth_intf = get_vrf_intf_to_dst_vrf(src_vrf_name, dst_vrf_name)
+    if ret_val == False:
+        return False
+
+    cps_obj = cps_object.CPSObject(module='vrf-mgmt/get-vrf-internal-binding', qual='target',
+                                   data={'vrf-mgmt/get-vrf-internal-binding/output/ifname':veth_intf})
+    resp.append(cps_obj.get())
+    return True
+
+def set_vrf_intf_ip_cb(methods, params):
+    global _vrf_mutex
+    _vrf_mutex.acquire()
+    ret_val = set_vrf_intf_ip_cb_int(methods, params)
+    _vrf_mutex.release()
+    return ret_val
+
+def set_vrf_intf_ip_cb_int(methods, params):
+    obj = cps_object.CPSObject(obj=params['change'])
+
+    if params['operation'] != 'rpc':
+        log_err('oper is not RPC')
+        return False
+
+    operation = 1
+    vrf_name = None
+    af = None
+    ip = None
+
+    try:
+        operation = obj.get_attr_data('vrf-mgmt/src-ip-config/input/operation')
+        vrf_name = obj.get_attr_data('vrf-mgmt/src-ip-config/input/ni-name')
+        af = obj.get_attr_data('vrf-mgmt/src-ip-config/input/af')
+        ip = obj.get_attr_data('vrf-mgmt/src-ip-config/input/src-ip')
+    except ValueError as e:
+        log_msg = 'Missing mandatory attribute ' + e.args[0]
+        log_err(log_msg)
+        return False
+
+    # Operation types
+    #BASE_CMN_OPERATION_TYPE_CREATE=1
+    #BASE_CMN_OPERATION_TYPE_DELETE=2
+    #BASE_CMN_OPERATION_TYPE_UPDATE=3
+    is_add = True
+    if operation == 3:
+        log_msg = 'Update operation is not supported!'
+        log_err(log_msg)
+        return False
+    elif operation == 2:
+        is_add = False
+
+    if af != socket.AF_INET and af != socket.AF_INET6:
+        log_msg = 'Invalid address family' + str(af)
+        log_err(log_msg)
+        return False
+
+    ip = binascii.unhexlify(ip)
+    ip = socket.inet_ntop(af, ip)
+    family = 'ipv4'
+    if af == socket.AF_INET6:
+        family = 'ipv6'
+
+    if dn_base_vrf_tool.process_src_ip_config(vrf_name, is_add, family, ip):
+        return True
+
+    return False
+
+""" Handle the leaked VRF configuration to add the route in the VRF with
+    veth end IP (in the parent VRF) as the next-hop.
+"""
+_leaked_rt_key = cps.key_from_name('observed', 'os-re/os-leak-route-config')
+def handle_leaked_rt_event():
+    _leaked_rt_evt_handle = cps.event_connect()
+    cps.event_register(_leaked_rt_evt_handle, _leaked_rt_key)
+
+    while True:
+        leaked_rt_evt = cps.event_wait(_leaked_rt_evt_handle)
+        obj = cps_object.CPSObject(obj=leaked_rt_evt)
+        if obj is None:
+            continue
+
+        if not 'operation' in leaked_rt_evt.keys():
+            continue
+
+        op = None
+        if leaked_rt_evt['operation'] == 'create':
+            op = 'add'
+        if leaked_rt_evt['operation'] == 'delete':
+            op = 'del'
+
+        src_vrf_name = None
+        af = None
+        prefix = None
+        prefix_len = 0
+        dst_vrf_name = None
+        try:
+            dst_vrf_name = obj.get_attr_data('os-re/os-leak-route-config/vrf-name')
+            af = obj.get_attr_data('os-re/os-leak-route-config/af')
+            prefix = obj.get_attr_data('os-re/os-leak-route-config/route-prefix')
+            prefix = binascii.unhexlify(prefix)
+            prefix = get_ip_str(af, prefix)
+            prefix_len = obj.get_attr_data('os-re/os-leak-route-config/prefix-len')
+            src_vrf_name = obj.get_attr_data('os-re/os-leak-route-config/src-vrf-name')
+        except ValueError as e:
+            log_err('Error - Mandatatory object attributes are not present for route leak configuration!')
+            continue
+
+        global _vrf_mutex
+        _vrf_mutex.acquire()
+        ret_val, nexthop_ip, nexthop_ip6 = _veth_ip_get(dst_vrf_name, src_vrf_name, True)
+        _vrf_mutex.release()
+        if ret_val is False:
+            log_err('veth info. not found while handling src-vrf:%s af:%s prefix:%s/%s dst-vrd:%s'\
+                    % (src_vrf_name, str(af), prefix, str(prefix_len), dst_vrf_name))
+            continue
+        if af == socket.AF_INET6:
+            nexthop_ip = nexthop_ip6
+        if dn_base_vrf_tool.process_leaked_rt_config(op, af, dst_vrf_name, prefix,\
+                                                     prefix_len, nexthop_ip) != True:
+            log_err('VRF route leaking configuration failed op:%s src-vrf:%s af:%s prefix:%s/%s dst-vrd:%s'\
+                    % (op, src_vrf_name, str(af), prefix, str(prefix_len), dst_vrf_name))
+            continue
 
 if __name__ == '__main__':
 
@@ -888,6 +1072,8 @@ if __name__ == '__main__':
         pass
 
     handle = cps.obj_init()
+
+    _vrf_mutex = threading.Lock()
 
     d = {}
     d['transaction'] = set_vrf_cb
@@ -907,12 +1093,26 @@ if __name__ == '__main__':
     d['transaction'] = config_outgoing_ip_svcs_cb
     cps.obj_register(handle, _vrf_outgoing_svc_config_key, d)
 
+    d = {}
+    d['get'] = get_vrf_intf_cb
+    cps.obj_register(handle, _vrf_get_intf_key, d)
+
+    d = {}
+    d['transaction'] = set_vrf_intf_ip_cb
+    cps.obj_register(handle, _vrf_intf_ip_key, d)
+
     log_msg = 'CPS IP VRF registration done'
     log_info(log_msg)
 
-    dft_rule_ids = []
-    create_vrf_default_rules('default', rule_id_list = dft_rule_ids)
-    process_pkt_reject_rule(True, 'default')
+    process_vrf_top_chain_rule(True, 'default')
+    # Create the rule to accept the loopback pkts by default i.e snmpwalk destined
+    # to loopback IP (127.0.0.1) when pinning is on to accept mgmt pkts only from mgmt VRF.
+    lo_pkts_ret_val, rule_id = create_default_lo_pkts_rule()
+    #Start leaked route event handle thread to program leaked routes into the OS.
+    leaked_rt_cfg_thread = threading.Thread(target=handle_leaked_rt_event,\
+                                      name="VRF_Leaked_Rt_Cfg")
+    leaked_rt_cfg_thread.setDaemon(True)
+    leaked_rt_cfg_thread.start()
 
     # Notify systemd: Daemon is ready
     systemd.daemon.notify("READY=1")
@@ -922,10 +1122,10 @@ if __name__ == '__main__':
         signal.pause()
 
     systemd.daemon.notify("STOPPING=1")
+    if lo_pkts_ret_val:
+        process_vrf_svcs_rule_del_by_id(rule_id)
+
     # cleanup code here
     # No need to specifically call sys.exit(0).
     # That's the default behavior in Python.
-    process_pkt_reject_rule(False, 'default')
-    for rule_id in dft_rule_ids:
-        log_info('Delete default ACl rule %d' % rule_id)
-        process_vrf_svcs_rule_del_by_id(rule_id)
+    process_vrf_top_chain_rule(False, 'default')

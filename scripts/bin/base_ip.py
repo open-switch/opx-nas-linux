@@ -433,8 +433,10 @@ def set_ip_unreach_cb(methods, params):
     enable = ip_unreach_attr('enable')
     af = ip_unreach_attr('af')
     ifname = ip_unreach_attr('ifname')
+    vrf_name = ip_unreach_attr('vrf-name')
 
     dev = None
+    vrf = None
 
     try:
         operation = obj.get_attr_data(operation)
@@ -444,6 +446,11 @@ def set_ip_unreach_cb(methods, params):
         log_msg = 'Missing mandatory attribute ' + e.args[0]
         log_err(log_msg)
         return False
+    try:
+        vrf = obj.get_attr_data(vrf_name)
+    except:
+        pass
+        vrf = 'default'
 
     # Operation types
     #BASE_CMN_OPERATION_TYPE_CREATE=1
@@ -468,7 +475,7 @@ def set_ip_unreach_cb(methods, params):
         pass
         log_info('Ifname is not present in the object')
 
-    if dn_base_ip_tbl_tool.ip_tables_unreach_rule(is_add, enable, af, dev):
+    if dn_base_ip_tbl_tool.ip_tables_unreach_rule(vrf, is_add, enable, af, dev):
         return True
     log_msg = 'Failed to execute IP unreachable request ' + str(is_add) + str(af) \
               + 'enable' + str(enable) + 'ifname' + ifname
@@ -485,6 +492,19 @@ def _create_neigh_flush_ip_and_prefix_from_attr(ip_addr, prefix_len, af):
     if prefix_len is not None:
         addr = addr + '/' + str(prefix_len)
     return addr
+
+def _nbr_flush_handle(vrf_name, af, if_name):
+    obj = cps_object.CPSObject(module='base-route/nbr-flush')
+    obj.add_attr("base-route/nbr-flush/input/vrf-name", str(vrf_name))
+    obj.add_attr("base-route/nbr-flush/input/af", af)
+    # Incase of leaked VRF neigh flush, this 'dev' wont be present
+    # in the leaked VRF and hence flush_ip_neigh is expected to fail.
+    if if_name is not None:
+        obj.add_attr("base-route/nbr-flush/input/ifname", if_name)
+    l = []
+    tr_obj = {'change': obj.get(), 'operation': 'rpc'}
+    l.append(tr_obj)
+    return cps.transaction(l)
 
 def flush_ip_neigh_cb(methods, params):
     obj = cps_object.CPSObject(obj=params['change'])
@@ -543,14 +563,23 @@ def flush_ip_neigh_cb(methods, params):
     if ip_addr is not None:
         addr = _create_neigh_flush_ip_and_prefix_from_attr(ip_addr, prefix_len, af)
 
-    if dn_base_ip_tool.flush_ip_neigh(_ip_af[af], dev, addr, str(vrf_name)):
-        return True
-    log_msg = 'Failed to execute IP neigh flush request vrf-name:' + str(vrf_name)\
+    log_msg = 'IP neigh flush request vrf-name:' + str(vrf_name)\
               + ' af:' + str(af) + ' ifname:' + str(dev)\
               + ' to addr:' + str(addr)
-    log_err(log_msg)
-
-    return False
+    log_info(log_msg)
+    if dev is not None:
+        for ifname in dev:
+            if dn_base_ip_tool.is_intf_exist_in_vrf(str(vrf_name), ifname):
+                val = dn_base_ip_tool.flush_ip_neigh(_ip_af[af], ifname, addr, str(vrf_name))
+            else:
+                val = _nbr_flush_handle(str(vrf_name), af, ifname)
+    else:
+        val = dn_base_ip_tool.flush_ip_neigh(_ip_af[af], dev, addr, str(vrf_name))
+        if val is False:
+            log_err("IP neigh flush on VRF:%s af:%s addr:%s failed"% (str(vrf_name),\
+                                                                      str(af), str(addr)))
+        val = _nbr_flush_handle(str(vrf_name), af, dev)
+    return val
 
 def proxy_arp_attr(t):
     return 'base-route/proxy-arp-config/' + t
@@ -647,6 +676,13 @@ if __name__ == '__main__':
                                       name="IPv6_Intf_LLA_Cfg")
     lla_cfg_thread.setDaemon(True)
     lla_cfg_thread.start()
+
+    #Start ipv6 address event handle thread to handle the DAD failures
+    lla_cfg_thread = threading.Thread(target=dn_base_ip_tool.handle_addr_event,\
+                                      name="IPv6_Addr_Dad_Handle")
+    lla_cfg_thread.setDaemon(True)
+    lla_cfg_thread.start()
+
 
     # Notify systemd: Daemon is ready
     systemd.daemon.notify("READY=1")

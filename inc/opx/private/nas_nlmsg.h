@@ -156,8 +156,8 @@ static inline void nla_for_each_attr(struct nlattr *head, int len,
  */
 #define nla_for_each_nested(pos, nla, rem) \
         for (pos =  (nlattr*)(nla_data(nla)), rem =  nla_len(nla); \
-	     nla_ok(pos, rem); \
-	     pos = (nlattr*)(nla_next(pos, &(rem))))
+         nla_ok(pos, rem); \
+         pos = (nlattr*)(nla_next(pos, &(rem))))
 
 /**
  * Get the netlink attribute's data

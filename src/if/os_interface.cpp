@@ -20,15 +20,17 @@
 
 #include "private/nas_os_if_priv.h"
 #include "private/os_if_utils.h"
+#include "private/os_interface_cache_utils.h"
+#include "private/nas_os_if_conversion_utils.h"
 #include "private/nas_os_l3_utils.h"
 
 #include "netlink_tools.h"
 #include "nas_nlmsg.h"
 #include "nas_nlmsg_object_utils.h"
-#include "nas_os_vlan_utils.h"
 #include "nas_os_int_utils.h"
 #include "nas_os_interface.h"
 #include "vrf-mgmt.h"
+#include "std_utils.h"
 
 #include "cps_api_operation.h"
 #include "cps_api_object_key.h"
@@ -99,11 +101,49 @@ static bool is_reserved_interface (if_details &details)
 
 }
 
-static bool is_sub_interface(if_details &details)
+
+std::string nas_os_if_name_get(hal_ifindex_t ifix) {
+    INTERFACE *fill = os_get_if_db_hdlr();
+
+    if (!fill) return nullptr;
+
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS-CACHE", "get name  for ifindex %d", ifix);
+    return (fill->if_info_get_name(ifix));
+}
+
+t_std_error os_intf_type_get(hal_ifindex_t ifix, BASE_CMN_INTERFACE_TYPE_t *if_type) {
+    INTERFACE *fill = os_get_if_db_hdlr();
+
+    if (!fill) return STD_ERR(INTERFACE,FAIL,0);
+
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS-CACHE", "get type  for ifindex %d", ifix);
+    BASE_CMN_INTERFACE_TYPE_t  _type;
+    _type = fill->if_info_get_type(ifix);
+    if ( _type != BASE_CMN_INTERFACE_TYPE_NULL) {
+        EV_LOGGING(NAS_OS, INFO, "NAS-OS-CACHE", "get type  %d for ifindex %d", _type, ifix );
+        *if_type = _type;
+        return STD_ERR_OK;
+    }
+    return STD_ERR(INTERFACE,FAIL,0);
+}
+static auto info_kind_to_intf_type  = new std::unordered_map<std::string,BASE_CMN_INTERFACE_TYPE_t>
 {
-    if(details.if_name.find_first_of(".") != std::string::npos)
-        return true;
-    return false;
+    {"tun", BASE_CMN_INTERFACE_TYPE_L3_PORT},
+    {"bond", BASE_CMN_INTERFACE_TYPE_LAG},
+    {"bridge", BASE_CMN_INTERFACE_TYPE_BRIDGE},
+    {"vlan", BASE_CMN_INTERFACE_TYPE_VLAN_SUBINTF},
+    {"macvlan", BASE_CMN_INTERFACE_TYPE_MACVLAN},
+    {"vxlan", BASE_CMN_INTERFACE_TYPE_VXLAN},
+    {"dummy", BASE_CMN_INTERFACE_TYPE_LOOPBACK},
+};
+static t_std_error nas_os_info_kind_to_intf_type(const char *info_kind, BASE_CMN_INTERFACE_TYPE_t *if_type)
+{
+    auto it = info_kind_to_intf_type->find(std::string(info_kind));
+    if(it != info_kind_to_intf_type->end()){
+        *if_type = it->second;
+        return STD_ERR_OK;
+    }
+    return STD_ERR(INTERFACE,FAIL,0);
 }
 
 static bool get_if_detail_from_netlink (int sock, int rt_msg_type, struct nlmsghdr *hdr, void *data,
@@ -138,6 +178,19 @@ static bool get_if_detail_from_netlink (int sock, int rt_msg_type, struct nlmsgh
     if (nla_parse(details->_attrs,__IFLA_MAX,head,nla_len)!=0) {
         EV_LOGGING(NAS_OS, ERR,"NL-PARSE","Failed to parse attributes");
         return false;
+    }
+    return true;
+}
+
+bool nas_os_if_index_get(std::string &if_name , hal_ifindex_t &index) {
+
+    INTERFACE *fill = os_get_if_db_hdlr();
+    if (!fill) return false;
+
+    if_info_t ifinfo;
+    if(!fill->get_ifindex_from_name(if_name, index)) {
+        /*  if not present then check in the kernel */
+        index = cps_api_interface_name_to_if_index(if_name.c_str());
     }
     return true;
 }
@@ -221,19 +274,27 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
         details._op = it->second;
     }
 
-    cps_api_operation_types_t _if_op = details._op;
-
     details._flags = ifmsg->ifi_flags;
-
     details._type = BASE_CMN_INTERFACE_TYPE_L3_PORT;
-
     details._ifindex = ifmsg->ifi_index;
 
+    // Check if the interface already exists in the local database.
+    // If present then mark it as SET operation otherwise CREATE operation.
+    if (details._op == cps_api_oper_CREATE) {
+        bool present = false;
+        if (nas_os_check_intf_exists(details._ifindex, &present) != STD_ERR_OK) {
+            EV_LOGGING(NAS_OS, ERR, "NET-MAIN", " Failed to get cached info");
+            return false;
+        }
+        if (present) { details._op = cps_api_oper_SET; }
+    }
+    cps_api_operation_types_t _if_op = details._op;
     cps_api_object_attr_add_u32(obj,BASE_IF_LINUX_IF_INTERFACES_INTERFACE_IF_FLAGS, details._flags);
 
     cps_api_object_attr_add_u32(obj,IF_INTERFACES_INTERFACE_ENABLED,
         (ifmsg->ifi_flags & IFF_UP) ? true :false);
 
+    ifinfo.parent_idx = 0;
     ifinfo.ev_mask = OS_IF_CHANGE_NONE;
     ifinfo.admin = (ifmsg->ifi_flags & IFF_UP) ? true :false;
     ifinfo.oper = (ifmsg->ifi_flags & IFF_RUNNING) ? true :false;
@@ -278,107 +339,119 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
         ifinfo.mtu = *mtu;
     }
 
+    if (details._attrs[IFLA_LINK] != NULL) {
+        EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Rcvd Link index index %d",
+                *(int *)nla_data(details._attrs[IFLA_LINK]));
+    }
+
     if(details._attrs[IFLA_MASTER]!=NULL) {
             /* This gives us the bridge index, which should be sent to
              * NAS for correlation  */
-        EV_LOG(INFO, NAS_OS, 3, "NET-MAIN", "Rcvd master index %d",
+        EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Rcvd master index %d",
                 *(int *)nla_data(details._attrs[IFLA_MASTER]));
 
         cps_api_object_attr_add_u32(obj,BASE_IF_LINUX_IF_INTERFACES_INTERFACE_IF_MASTER,
                                    *(int *)nla_data(details._attrs[IFLA_MASTER]));
     }
-
-    if (details._info_kind != nullptr && (!strncmp(details._info_kind, "bridge", 6))) {
-        EV_LOG(INFO,NAS_OS,3, "NET-MAIN", "Bridge intf index is %d ",
-                details._ifindex);
-        details._type = BASE_CMN_INTERFACE_TYPE_L2_PORT;
+    if (details._info_kind != nullptr) {
+        if ( nas_os_info_kind_to_intf_type(details._info_kind, &details._type) != STD_ERR_OK) {
+            EV_LOGGING(NAS_OS, ERR, "NET-MAIN", "info kind not known %s",details._info_kind);
+        }
+    } else {
+        // In case if info_kind not present in the netlink event then look into
+        // the local cache.
+        EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "info kind not present in netlink %d",details._ifindex);
+        if (os_intf_type_get(details._ifindex, &details._type) != STD_ERR_OK) {
+                EV_LOGGING(NAS_OS, ERR, "NET-MAIN", "unknown interface %d", details._ifindex);
+        }
     }
 
     INTERFACE *fill = os_get_if_db_hdlr();
     if_change_t mask = OS_IF_CHANGE_NONE;
     if(fill && !(fill->if_hdlr(&details, obj))) {
-        EV_LOGGING(NAS_OS, ERR, "NL-PARSE", "Failure on sub-interface handling");
+        EV_LOGGING(NAS_OS, INFO, "NL-PARSE", "Failure on sub-interface handling");
         return STD_ERR(INTERFACE, FAIL, 0); // Return in case of sub-interfaces etc (Handler will return false)
     }
 
     ifinfo.if_type = details._type;
-    if (!fill)
-        track_change = OS_IF_CHANGE_ALL;
-    else
-        track_change = fill->if_info_update(ifmsg->ifi_index, ifinfo);
-
-    /*
-     * Delete the interface from cache if interface type is not vlan or lag
-     * If lag, check for lag member delete vs actual bond interface delete.
-     */
-    EV_LOGGING(NAS_OS,INFO,"NET-MAIN","ifidx %d, if-type %d track %d",
-                            ifmsg->ifi_index,details._type, track_change);
-
-    if(_if_op == cps_api_oper_DELETE) {
-        if((details._type != BASE_CMN_INTERFACE_TYPE_VLAN)&&
-           (details._type != BASE_CMN_INTERFACE_TYPE_LAG)&&
-           (details._type != BASE_CMN_INTERFACE_TYPE_MACVLAN)) {
-            if(fill) fill->if_info_delete(ifmsg->ifi_index);
-            //Need not publish if sub-interface
-            if(is_sub_interface(details)) {
-                if (p_pub_evt != NULL) {
-                    *p_pub_evt = false;
-                }
-                return STD_ERR_OK;
-            }
-        } else if(details._type == BASE_CMN_INTERFACE_TYPE_LAG &&
-                (!strncmp(details._info_kind, "bond", 4))) {
-            if(fill) fill->if_info_delete(ifmsg->ifi_index);
-        }
-    }
+    ifinfo.if_name = details.if_name;
+    ifinfo.parent_idx = details.parent_idx;
 
     bool evt_publish = true;
-
-    if(details._type != BASE_CMN_INTERFACE_TYPE_L3_PORT && details._attrs[IFLA_MASTER]!=NULL) {
-        /*
-         * Use master for Vlan and Lag
-         */
-        char if_name[HAL_IF_NAME_SZ+1];
-        int ifix = *(int *)nla_data(details._attrs[IFLA_MASTER]);
-        if (cps_api_interface_if_index_to_name(ifix,if_name,  sizeof(if_name))==NULL) {
-            EV_LOGGING(NAS_OS, ERR, "NL-PARSE", "Failed to convert ifindex %d to name", ifix);
-            return STD_ERR(INTERFACE, FAIL, 0);
+    /* Dont update the intf cache for non-default VRF since if-index can be same in multiple VRFs */
+    if (vrf_id == NAS_DEFAULT_VRF_ID) {
+        if (!fill) {
+            track_change = OS_IF_CHANGE_ALL;
+        } else {
+            track_change = fill->if_info_update(ifmsg->ifi_index, ifinfo);
         }
-        // Delete the previously filled attributes in case of Vlan/Lag member add/del
-        cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_MTU);
-        cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_PHYS_ADDRESS);
-        cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_NAME);
-        cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_ENABLED);
-        cps_api_object_attr_delete(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
-        cps_api_object_attr_add(obj, IF_INTERFACES_INTERFACE_NAME, if_name, (strlen(if_name)+1));
-        cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,ifix);
-    } else if (!track_change) {
-        /*
-         * If track change is false, check for interface type - Return false ONLY in the individual update case
-         * If the handler has identified it as VLAN or Bond member addition, then continue with publishing
-         */
-        if (details._op != cps_api_oper_DELETE && details._type != BASE_CMN_INTERFACE_TYPE_VLAN) {
 
-            /*
-             * Avoid filtering netlink events for reserved interface (eth0/mgmtxxx-xx).
-             * check if its not a reserved interface return false otherwise contiue publishing
-             * the CPS interface object.
-             */
-            if (!is_reserved_interface(details)) {
-                evt_publish = false;
+        /*
+         * Delete the interface from cache if interface type is not vlan or lag
+         * If lag, check for lag member delete vs actual bond interface delete.
+         */
+        EV_LOGGING(NAS_OS,INFO,"NET-MAIN","ifidx %d, if-type %d track %d",
+                   ifmsg->ifi_index,details._type, track_change);
+
+        if(_if_op == cps_api_oper_DELETE) {
+            if((details._type != BASE_CMN_INTERFACE_TYPE_L2_PORT)&&
+               (details._type != BASE_CMN_INTERFACE_TYPE_LAG)&&
+               (details._type != BASE_CMN_INTERFACE_TYPE_MACVLAN)) {
+                if(fill) fill->if_info_delete(ifmsg->ifi_index, details.if_name);
+            } else if(details._type == BASE_CMN_INTERFACE_TYPE_LAG &&
+                      (!strncmp(details._info_kind, "bond", 4))) {
+                if(fill) fill->if_info_delete(ifmsg->ifi_index, details.if_name);
             }
         }
 
-    // If mask is set to disable admin state publish event, remove the attribute
-    } else if(fill && (mask = fill->if_info_getmask(ifmsg->ifi_index))) {
-        EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Masking set for %d, mask %d, track_chg %d",
-                                 ifmsg->ifi_index, mask, track_change);
-        if(track_change != OS_IF_ADM_CHANGE && mask == OS_IF_ADM_CHANGE)
+        if((details._type == BASE_CMN_INTERFACE_TYPE_L2_PORT) ||
+           ((details._type == BASE_CMN_INTERFACE_TYPE_LAG) && (details._attrs[IFLA_MASTER]!=NULL))) {
+            /*
+             * If member addition/deletion in the LAG or bridge
+             */
+            int ifix = *(int *)nla_data(details._attrs[IFLA_MASTER]);
+            std::string if_name = nas_os_if_name_get(ifix);
+            if (if_name.empty()) {
+                EV_LOGGING(NAS_OS,ERR,"NET-MAIN"," Interface not present, index %d ", ifix);
+                return STD_ERR(INTERFACE, FAIL, 0);
+            }
+            EV_LOGGING(NAS_OS,INFO,"NET-MAIN"," ifidx %d Remove attrs in case of member add/del to master %s",
+                       ifmsg->ifi_index, if_name.c_str());
+            // Delete the previously filled attributes in case of Vlan/Lag member add/del
+            cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_MTU);
+            cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_PHYS_ADDRESS);
+            cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_NAME);
             cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_ENABLED);
-        else if (mask == OS_IF_ADM_CHANGE)
-            evt_publish = false;
-    }
+            cps_api_object_attr_delete(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
+            cps_api_object_attr_add(obj, IF_INTERFACES_INTERFACE_NAME, if_name.c_str(), (strlen(if_name.c_str())+1));
+            cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,ifix);
+        } else if (!track_change) {
+            /*
+             * If track change is false, check for interface type - Return false ONLY in the individual update case
+             * If the handler has identified it as VLAN or Bond member addition, then continue with publishing
+             */
+            if (details._op != cps_api_oper_DELETE && details._type != BASE_CMN_INTERFACE_TYPE_L2_PORT) {
 
+                /*
+                 * Avoid filtering netlink events for reserved interface (eth0/mgmtxxx-xx).
+                 * check if its not a reserved interface return false otherwise contiue publishing
+                 * the CPS interface object.
+                 */
+                if (!is_reserved_interface(details)) {
+                    evt_publish = false;
+                }
+            }
+
+            // If mask is set to disable admin state publish event, remove the attribute
+        } else if(fill && (mask = fill->if_info_getmask(ifmsg->ifi_index))) {
+            EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Masking set for %d, mask %d, track_chg %d",
+                       ifmsg->ifi_index, mask, track_change);
+            if(track_change != OS_IF_ADM_CHANGE && mask == OS_IF_ADM_CHANGE)
+                cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_ENABLED);
+            else if (mask == OS_IF_ADM_CHANGE)
+                evt_publish = false;
+        }
+    }
     if (p_pub_evt != NULL) {
         *p_pub_evt = evt_publish;
     }
@@ -399,6 +472,9 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
             cps_api_qualifier_OBSERVED);
     cps_api_object_set_type_operation(cps_api_object_key(obj),details._op);
     cps_api_object_attr_add_u32(obj, BASE_IF_LINUX_IF_INTERFACES_INTERFACE_DELL_TYPE, details._type);
+    EV_LOGGING(NAS_OS, INFO, "NET-MAIN"," NAS  OS interface event type \n %s",
+            (track_change ==OS_IF_CHANGE_ALL) ? "Change all" : "Interface Update");
+    EV_LOGGING(NAS_OS, INFO, "NET-MAIN"," NAS  OS interface event publish\n %s", cps_api_object_to_c_string(obj).c_str());
 
     return STD_ERR_OK;
 }
@@ -424,7 +500,7 @@ static bool os_interface_info_to_object(hal_ifindex_t ifix, if_info_t& ifinfo, c
 {
     char if_name[HAL_IF_NAME_SZ+1];
     if(cps_api_interface_if_index_to_name(ifix, if_name, sizeof(if_name)) == NULL) {
-        EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Failure getting interface name for %d", ifix);
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failure getting interface name for %d", ifix);
         return false;
     } else
         cps_api_object_attr_add(obj, IF_INTERFACES_INTERFACE_NAME, if_name, (strlen(if_name)+1));
@@ -440,6 +516,7 @@ static bool os_interface_info_to_object(hal_ifindex_t ifix, if_info_t& ifinfo, c
     cps_api_object_attr_add(obj,DELL_IF_IF_INTERFACES_INTERFACE_PHYS_ADDRESS,_p,strlen(_p)+1);
     cps_api_object_attr_add_u32(obj, DELL_IF_IF_INTERFACES_INTERFACE_MTU,
                                 (ifinfo.mtu  + NAS_LINK_MTU_HDR_SIZE));
+    cps_api_object_attr_add_u32(obj, BASE_IF_LINUX_IF_INTERFACES_INTERFACE_DELL_TYPE, ifinfo.if_type);
     return true;
 }
 
@@ -452,7 +529,7 @@ static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal
 
     if_info_t ifinfo;
     if(!get_all && fill->if_info_get(ifix, ifinfo)) {
-        EV_LOG(INFO,NAS_OS,3, "NET-MAIN", "Get ifinfo for %d", ifix);
+        EV_LOGGING(NAS_OS, INFO,"NET-MAIN", "Get ifinfo for %d", ifix);
 
         cps_api_object_t obj = cps_api_object_create();
         if(obj == nullptr) return cps_api_ret_code_ERR;
@@ -475,7 +552,7 @@ static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal
                 return;
             }
 
-            EV_LOG(INFO,NAS_OS,3, "NET-MAIN", "Get all ifinfo for %d", idx);
+            EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Get all ifinfo for %d", idx);
 
             cps_api_object_t obj = cps_api_object_create();
             if(obj == nullptr) return;
@@ -483,7 +560,22 @@ static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal
                 cps_api_object_delete(obj);
                 return;
             }
-
+            cps_api_object_attr_t attr_id = cps_api_object_attr_get(obj,
+                    BASE_IF_LINUX_IF_INTERFACES_INTERFACE_DELL_TYPE);
+            if (attr_id != NULL) {
+                BASE_CMN_INTERFACE_TYPE_t type = (BASE_CMN_INTERFACE_TYPE_t)
+                                                  cps_api_object_attr_data_uint(attr_id);
+                if (type == BASE_CMN_INTERFACE_TYPE_MANAGEMENT) {
+                    attr_id = cps_api_object_attr_get(obj, IF_INTERFACES_INTERFACE_NAME);
+                    if (attr_id != NULL) {
+                        char if_name[HAL_IF_NAME_SZ+1];
+                        safestrncpy(if_name, (const char*)cps_api_object_attr_data_bin(attr_id),
+                                HAL_IF_NAME_SZ);
+                        os_get_interface_ethtool_cmd_data(if_name, obj);
+                        os_get_interface_oper_status(if_name, obj);
+                    }
+                }
+            }
             cps_api_object_set_type_operation(cps_api_object_key(obj),cps_api_oper_NULL);
             if (cps_api_object_list_append(*list,obj)) {
                 return;
@@ -491,13 +583,13 @@ static cps_api_return_code_t _get_db_interface( cps_api_object_list_t *list, hal
                 cps_api_object_delete(obj);
                 return;
             }
+
         });
         return cps_api_ret_code_OK;
     }
 
     return cps_api_ret_code_ERR;
 }
-
 cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t ifix,
                                        bool get_all, uint_t if_type )
 {
@@ -536,6 +628,22 @@ cps_api_return_code_t _get_interfaces( cps_api_object_list_t list, hal_ifindex_t
         cps_api_object_t ret = cps_api_object_list_get(list,ix);
         STD_ASSERT(ret!=NULL);
         cps_api_object_set_type_operation(cps_api_object_key(ret),cps_api_oper_NULL);
+        cps_api_object_attr_t attr_id = cps_api_object_attr_get(ret,
+                BASE_IF_LINUX_IF_INTERFACES_INTERFACE_DELL_TYPE);
+        if (attr_id != NULL) {
+           BASE_CMN_INTERFACE_TYPE_t type = (BASE_CMN_INTERFACE_TYPE_t)
+                                              cps_api_object_attr_data_uint(attr_id);
+           if (type == BASE_CMN_INTERFACE_TYPE_MANAGEMENT) {
+               attr_id = cps_api_object_attr_get(ret, IF_INTERFACES_INTERFACE_NAME);
+               if (attr_id != NULL) {
+                   char if_name[HAL_IF_NAME_SZ+1];
+                   safestrncpy(if_name, (const char*)cps_api_object_attr_data_bin(attr_id),
+                           HAL_IF_NAME_SZ);
+                   os_get_interface_ethtool_cmd_data(if_name, ret);
+                   os_get_interface_oper_status(if_name, ret);
+               }
+           }
+        }
     }
 
     close(if_sock);
@@ -565,7 +673,7 @@ t_std_error os_interface_object_reg(cps_api_operation_handle_t handle) {
 
     char buff[CPS_API_KEY_STR_MAX];
     if (!cps_api_key_from_attr_with_qual(&f.key, BASE_IF_LINUX_IF_INTERFACES_INTERFACE,cps_api_qualifier_TARGET)) {
-        EV_LOG(ERR,INTERFACE,0,"NAS-IF-REG","Could not translate %d to key %s",
+        EV_LOGGING(NAS_OS, ERR,"NAS-IF-REG","Could not translate %d to key %s",
             (int)(BASE_IF_LINUX_IF_INTERFACES_INTERFACE),cps_api_key_print(&f.key,buff,sizeof(buff)-1));
         return STD_ERR(INTERFACE,FAIL,0);
     }
@@ -607,5 +715,130 @@ extern "C" t_std_error os_intf_mac_addr_get(hal_ifindex_t ifix, hal_mac_addr_t m
     }
     return STD_ERR(INTERFACE,FAIL,0);
 }
+extern "C" t_std_error os_get_interface_oper_status(const char *ifname, cps_api_object_t obj)
+{
+    IF_INTERFACES_STATE_INTERFACE_OPER_STATUS_t oper_status;
+    cps_api_object_attr_t   attr = cps_api_object_attr_get(obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_VRF_ID);
+    uint32_t                vrf_id = NAS_DEFAULT_VRF_ID;
+    const char              *vrf_name = NULL;
 
+    if (attr != NULL) {
+        vrf_id = cps_api_object_attr_data_uint(attr);
+        vrf_name = nas_os_get_vrf_name(vrf_id);
+    }
 
+    t_std_error ret = nas_os_util_int_oper_status_get(vrf_name, ifname, &oper_status);
+    if (ret == STD_ERR_OK) {
+        cps_api_object_attr_add_u32(obj, IF_INTERFACES_STATE_INTERFACE_OPER_STATUS, oper_status);
+    }
+    return ret;
+}
+
+extern "C"  t_std_error os_get_interface_ethtool_cmd_data(const char *ifname, cps_api_object_t obj)
+{
+    ethtool_cmd_data_t eth_cmd;
+    uint32_t           idx = 0;
+    cps_api_object_attr_t   attr = cps_api_object_attr_get(obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_VRF_ID);
+    uint32_t           vrf_id = NAS_DEFAULT_VRF_ID;
+    const char  *vrf_name = NULL;
+
+    if (attr != NULL) {
+        vrf_id = cps_api_object_attr_data_uint(attr);
+        vrf_name = nas_os_get_vrf_name(vrf_id);
+    }
+    memset(&eth_cmd, 0, sizeof(eth_cmd));
+
+    t_std_error ret = nas_os_util_int_ethtool_cmd_data_get(vrf_name, ifname, &eth_cmd);
+    if (ret == STD_ERR_OK) {
+        cps_api_object_attr_add_u32(obj, DELL_IF_IF_INTERFACES_INTERFACE_SPEED,
+                eth_cmd.speed);
+        cps_api_object_attr_add_u32(obj, DELL_IF_IF_INTERFACES_STATE_INTERFACE_DUPLEX,
+                eth_cmd.duplex);
+        cps_api_object_attr_add(obj, DELL_IF_IF_INTERFACES_STATE_INTERFACE_AUTO_NEGOTIATION,
+                &eth_cmd.autoneg, sizeof(eth_cmd.autoneg));
+        for (idx = 0; idx < BASE_IF_SPEED_MAX; idx++) {
+            if (eth_cmd.supported_speed[idx] == true) {
+                cps_api_object_attr_add_u32(obj,
+                        DELL_IF_IF_INTERFACES_STATE_INTERFACE_SUPPORTED_SPEED, idx);
+            }
+        }
+    }
+    return ret;
+}
+
+extern "C"  t_std_error os_set_interface_ethtool_cmd_data (const char *ifname, cps_api_object_t obj)
+{
+    ethtool_cmd_data_t  eth_cmd;
+    t_std_error         ret = STD_ERR_OK;
+    cps_api_object_attr_t sp_attr, dup_attr, an_attr;
+
+    cps_api_object_attr_t   attr = cps_api_object_attr_get(obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_VRF_ID);
+    uint32_t           vrf_id = NAS_DEFAULT_VRF_ID;
+    const char         *vrf_name = NULL;
+
+    if (attr != NULL) {
+        vrf_id = cps_api_object_attr_data_uint(attr);
+        vrf_name = nas_os_get_vrf_name(vrf_id);
+    }
+    memset(&eth_cmd, 0, sizeof(eth_cmd));
+
+    sp_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_SPEED);
+    dup_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_DUPLEX);
+    an_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_AUTO_NEGOTIATION);
+
+    eth_cmd.speed = BASE_IF_SPEED_AUTO;
+    eth_cmd.duplex = BASE_CMN_DUPLEX_TYPE_AUTO;
+    eth_cmd.autoneg = true;
+    if (sp_attr != NULL) {
+        eth_cmd.speed = (BASE_IF_SPEED_t)cps_api_object_attr_data_uint(sp_attr);
+    }
+    if (dup_attr != NULL) {
+        eth_cmd.duplex = (BASE_CMN_DUPLEX_TYPE_t)cps_api_object_attr_data_uint(dup_attr);
+    }
+    if (an_attr != NULL) {
+        eth_cmd.autoneg = cps_api_object_attr_data_uint(an_attr);
+    }
+
+    ret = nas_os_util_int_ethtool_cmd_data_set(vrf_name, ifname, &eth_cmd);
+
+    return ret;
+}
+
+extern "C"  t_std_error os_get_interface_stats (const char *ifname, cps_api_object_t obj)
+{
+    os_int_stats_t data;
+    uint32_t       vrf_id = NAS_DEFAULT_VRF_ID;
+    const char     *vrf_name = NULL;
+
+    cps_api_object_attr_t   attr = cps_api_object_attr_get(obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_VRF_ID);
+    if (attr != NULL) {
+        vrf_id = cps_api_object_attr_data_uint(attr);
+        vrf_name = nas_os_get_vrf_name(vrf_id);
+    }
+    memset(&data, 0, sizeof(data));
+
+    t_std_error ret = nas_os_util_int_stats_get(vrf_name, ifname, &data);
+    if (ret == STD_ERR_OK) {
+        cps_api_object_attr_add_u64(obj, DELL_IF_IF_INTERFACES_STATE_INTERFACE_STATISTICS_IN_PKTS,
+                data.input_packets);
+        cps_api_object_attr_add_u64(obj, IF_INTERFACES_STATE_INTERFACE_STATISTICS_IN_OCTETS,
+                data.input_bytes);
+        cps_api_object_attr_add_u64(obj, IF_INTERFACES_STATE_INTERFACE_STATISTICS_IN_MULTICAST_PKTS,
+                data.input_multicast);
+        cps_api_object_attr_add_u64(obj, IF_INTERFACES_STATE_INTERFACE_STATISTICS_IN_ERRORS,
+                data.input_errors);
+        cps_api_object_attr_add_u64(obj, IF_INTERFACES_STATE_INTERFACE_STATISTICS_IN_DISCARDS,
+                data.input_discards);
+        cps_api_object_attr_add_u64(obj, DELL_IF_IF_INTERFACES_STATE_INTERFACE_STATISTICS_OUT_PKTS,
+                data.output_packets);
+        cps_api_object_attr_add_u64(obj, IF_INTERFACES_STATE_INTERFACE_STATISTICS_OUT_OCTETS,
+                data.output_bytes);
+        cps_api_object_attr_add_u64(obj, IF_INTERFACES_STATE_INTERFACE_STATISTICS_OUT_MULTICAST_PKTS,
+                data.output_multicast);
+        cps_api_object_attr_add_u64(obj, IF_INTERFACES_STATE_INTERFACE_STATISTICS_OUT_ERRORS,
+                data.output_errors);
+        cps_api_object_attr_add_u64(obj, IF_INTERFACES_STATE_INTERFACE_STATISTICS_OUT_DISCARDS,
+                data.output_invalid_protocol);
+    }
+    return ret;
+}
