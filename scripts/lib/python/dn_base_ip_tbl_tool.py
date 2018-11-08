@@ -18,6 +18,7 @@
 import subprocess
 import socket
 
+iplink_cmd = '/sbin/ip'
 ipv4_tables_cmd = '/sbin/iptables'
 ipv6_tables_cmd = '/sbin/ip6tables'
 
@@ -36,7 +37,7 @@ def run_command(cmd, respose):
     return retval
 
 
-def ip_tables_unreach_rule(is_add, enable, family, dev):
+def ip_tables_unreach_rule(vrf, is_add, enable, family, dev):
     res = []
     ip_table = None
     proto = None
@@ -62,14 +63,21 @@ def ip_tables_unreach_rule(is_add, enable, family, dev):
     else:
         action = 'DROP'
 
+    cmd = None
     if dev != None:
-        if run_command([ip_table, operation, 'OUTPUT', '-o', dev, '-p', proto,\
-                       proto_type, 'destination-unreachable', '-j', action], res) == 0:
-            return True
+        if vrf == 'default':
+            cmd = [ip_table, operation, 'OUTPUT', '-o', dev, '-p', proto, proto_type, 'destination-unreachable', '-j', action]
+        else:
+            cmd = [iplink_cmd, 'netns', 'exec', vrf, ip_table, operation, 'OUTPUT', '-o', dev,\
+                  '-p', proto, proto_type, 'destination-unreachable', '-j', action]
     else:
-        if run_command([ip_table, operation, 'OUTPUT', '-p', proto,\
-                       proto_type, 'destination-unreachable', '-j', action], res) == 0:
-            return True
+        if vrf == 'default':
+            cmd = [ip_table, operation, 'OUTPUT', '-p', proto, proto_type, 'destination-unreachable', '-j', action]
+        else:
+            cmd = [iplink_cmd, 'netns', 'exec', vrf, ip_table, operation, 'OUTPUT', '-p',\
+                  proto, proto_type, 'destination-unreachable', '-j', action]
+    if run_command(cmd, res) == 0:
+        return True
 
     return False
 

@@ -213,7 +213,7 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
             intf_ctrl.if_index = ndmsg->ndm_ifindex;
 
             if ((dn_hal_get_interface_info(&intf_ctrl)) != STD_ERR_OK) {
-                EV_LOGGING(NETLINK, ERR,"NH-NBR-EVENT", "VRF-id:%d if-index:%d not present in intf DB",
+                EV_LOGGING(NETLINK, INFO,"NH-NBR-EVENT", "VRF-id:%d if-index:%d not present in intf DB",
                            vrf_id, ndmsg->ndm_ifindex);
                 return false;
             }

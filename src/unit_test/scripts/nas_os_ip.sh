@@ -13,6 +13,6 @@
 # See the Apache Version 2.0 License for specific language governing
 # permissions and limitations under the License.
 
-. /etc/opx/opx-environment.sh
+export PYTHONPATH=/usr/lib/x86_64-linux-gnu/:/usr/lib/x86_64-linux-gnu/opx/
 
 /usr/bin/python /usr/bin/nas_os_ip.py

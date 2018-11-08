@@ -14,7 +14,9 @@ LD_HARDEN_FLAGS=-Wl,-z,defs -Wl,-z,now
 
 libopx_nas_linux_la_SOURCES=src/nas_os_int_utils.c src/nas_os_vlan_utils.c src/db_linux_interface.c src/net_main.cpp src/netlink_tools.c src/db_linux_route.c src/ds_linux_init.c src/ds_interface_name_tools.c src/ds_api_linux_neigh.c src/nas_os_vlan.cpp src/nas_os_lag.c src/nas_os_interface.cpp src/nas_os_stg.cpp src/nas_os_l3.c src/nas_os_ip.cpp src/nas_os_mac.cpp src/netlink_stats.cpp src/if/os_interface_macvlan.cpp src/nas_os_mcast_snoop.cpp src/nas_os_vrf.cpp
 
-libopx_nas_linux_la_SOURCES+=src/if/os_interface_cache.cpp src/if/os_interface_lag.cpp src/if/os_interface_vlan.cpp src/if/os_interface.cpp src/if/os_interface_stg.cpp src/if/os_interface_loopback.cpp
+libopx_nas_linux_la_SOURCES+=src/if/os_interface_cache.cpp src/if/os_interface_lag.cpp src/if/os_interface_vlan.cpp src/if/os_interface.cpp src/if/os_interface_stg.cpp src/if/os_interface_loopback.cpp src/if/os_interface_bridge.cpp src/if/os_interface_cache_utils.cpp src/if/os_interface_vxlan.cpp \
+src/if/os_interface_mgmt.cpp
+
 
 libopx_nas_linux_la_CPPFLAGS= -D_FILE_OFFSET_BITS=64 -I$(top_srcdir)/inc/opx -I$(top_srcdir)/inc/opx/private -I$(includedir)/opx $(COMMON_HARDEN_FLAGS)
 

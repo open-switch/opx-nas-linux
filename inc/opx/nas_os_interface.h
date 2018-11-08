@@ -120,6 +120,56 @@ int nas_os_nl_get_nflog_params  (uint8_t *buf, int size,
                                  nas_nflog_params_t *p_nas_nflog_params);
 
 /**
+ * Get the NAS OS object with operational state attribute set from OS interface
+ * based on the name provided
+ *
+ * @param ifname - the name of the interface
+ * @param obj the object to return
+ * @return STD_ERR_OK if successcul otherwise an error
+ */
+t_std_error nas_os_get_interface_oper_status (const char *ifname, cps_api_object_t obj);
+
+/**
+ * Get the NAS OS object with speed, duplex and autoneg attributes set from OS
+ * interface, based on the name provided
+ *
+ * @param ifname - the name of the interface
+ * @param obj the object to return
+ * @return STD_ERR_OK if successcul otherwise an error
+ */
+t_std_error nas_os_get_interface_ethtool_cmd_data(const char *ifname, cps_api_object_t obj);
+
+/**
+ * Set speed/duplex/autoneg config in kernel which is provided in NAS OS object
+ * based on the interface name
+ *
+ * @param ifname - the name of the interface
+ * @param obj - speed/duplex/autoneg config
+ * @return STD_ERR_OK if successcul otherwise an error
+ */
+t_std_error nas_os_set_interface_ethtool_cmd_data (const char *ifname, cps_api_object_t obj);
+
+/**
+ * Look through the management interface object and set the retrieved attribute
+ * into the kernel for management interface
+ *
+ * @param obj the object hold the attributes to look at
+ * @param id the attribute ID to update
+ * @return STD_ERR_OK if the request was successful otherwise a specific return code
+ */
+t_std_error nas_os_mgmt_interface_set_attribute(cps_api_object_t obj,cps_api_attr_id_t id);
+
+/**
+ * Get the NAS OS object with statistics attributes set from OS inetrface based
+ * on the name provided
+ *
+ * @param ifname - the name of the interface
+ * @param obj the object to return
+ * @return STD_ERR_OK if successcul otherwise an error
+ */
+t_std_error nas_os_get_interface_stats (const char *ifname, cps_api_object_t obj);
+
+/**
  *  \}
  */
 

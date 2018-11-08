@@ -42,6 +42,8 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 
+static bool run_test_mode = false;
+
 #define FIB_DEFAULT_VRF_NAME           "default"
 static const char *test_phy_intf_1  = "e101-007-0";
 static const char *test_vlan_intf_1 = "br121";
@@ -496,7 +498,7 @@ TEST(std_route_test, del_neighbor) {
 TEST(std_route_test, add_ip_and_check_self_ip_pub) {
     char cmd_str[200];
 
-    if(system("os10-logging enable NETLINK info"));
+    if(system("opx-logging enable NETLINK info"));
     if(system("kill -USR1 `pidof base_nas`"));
 
     memset(cmd_str, 0, sizeof(cmd_str));
@@ -506,12 +508,17 @@ TEST(std_route_test, add_ip_and_check_self_ip_pub) {
     int ret = system(cmd_str);
     ASSERT_TRUE (ret == 0);
 
+    /* In Stretch kernel doesn't notify IPv6 route with /128 prefix length,
+     * hence this test is not valid anymore in Stretch.
+     */
+    /*
     memset(cmd_str, 0, sizeof(cmd_str));
     system("ip -6 addr add 1::1/64 dev e101-008-0");
     sleep(3);
     snprintf (cmd_str, 150, "journalctl -u base_nas_svc --since \"4 seconds ago\" | grep \"Self IP route ignored\" | grep \"op:Add route:1::1/128\"");
     ret = system(cmd_str);
     ASSERT_TRUE (ret == 0);
+    */
 
     memset(cmd_str, 0, sizeof(cmd_str));
     system("ip addr del 8.1.1.2/24 dev e101-008-0");
@@ -520,14 +527,19 @@ TEST(std_route_test, add_ip_and_check_self_ip_pub) {
     ret = system(cmd_str);
     ASSERT_TRUE (ret == 0);
 
+    /* In Stretch kernel doesn't notify IPv6 route with /128 prefix length,
+     * hence this test is not valid anymore in Stretch.
+     */
+    /*
     memset(cmd_str, 0, sizeof(cmd_str));
     system("ip -6 addr del 1::1/64 dev e101-008-0");
     sleep(3);
     snprintf (cmd_str, 150, "journalctl -u base_nas_svc --since \"4 seconds ago\" | grep \"Self IP route ignored\" | grep \"op:Del route:1::1/128\"");
     ret = system(cmd_str);
     ASSERT_TRUE (ret == 0);
+    */
 
-    if(system("os10-logging disable NETLINK info"));
+    if(system("opx-logging disable NETLINK info"));
     if(system("kill -USR1 `pidof base_nas`"));
 }
 
@@ -608,6 +620,8 @@ TEST(std_nas_route_test, nas_os_rt_cfg_ut_2) {
 TEST(std_nas_route_test, nas_os_rt_cfg_ut_3) {
     cps_api_return_code_t rc;
 
+    if (run_test_mode) return;
+
     /* config test pre-requisite */
     nas_rt_lnx_intf_admin_cfg (1, test_phy_intf_1);
 
@@ -661,6 +675,8 @@ TEST(std_nas_route_test, nas_os_rt_cfg_ut_3) {
 TEST(std_nas_route_test, nas_os_rt_cfg_ut_4) {
     cps_api_return_code_t rc;
 
+    if (run_test_mode) return;
+
     /* config test pre-requisite */
     nas_rt_lnx_vlan_intf_cfg (1, test_vlan_intf_1, test_vlan_id_1, test_vlan_intf_mem_port_1);
     nas_rt_lnx_intf_admin_cfg (1, test_vlan_intf_1);
@@ -710,6 +726,8 @@ TEST(std_nas_route_test, nas_os_rt_cfg_ut_4) {
 TEST(std_nas_route_test, nas_os_rt_cfg_ut_5) {
     cps_api_return_code_t rc;
 
+    if (run_test_mode) return;
+
     /* config test pre-requisite */
     nas_rt_lnx_intf_admin_cfg (1, test_phy_intf_1);
 
@@ -748,6 +766,8 @@ TEST(std_nas_route_test, nas_os_rt_cfg_ut_5) {
 //followed by ip address change, route add for connected route.
 TEST(std_nas_route_test, nas_os_rt_cfg_ut_6) {
     cps_api_return_code_t rc;
+
+    if (run_test_mode) return;
 
     /* config test pre-requisite */
     nas_rt_lnx_intf_admin_cfg (1, test_phy_intf_1);
@@ -829,6 +849,8 @@ TEST(std_nas_route_test, nas_os_v6_rt_cfg_ut_1) {
 TEST(std_nas_route_test, nas_os_v6_rt_cfg_ut_2) {
     cps_api_return_code_t rc;
 
+    if (run_test_mode) return;
+
     /* config test pre-requisite */
     nas_rt_lnx_intf_admin_cfg (1, test_phy_intf_1);
 
@@ -870,6 +892,8 @@ TEST(std_nas_route_test, nas_os_v6_rt_cfg_ut_2) {
 //validate connected route after admin down event
 TEST(std_nas_route_test, nas_os_v6_rt_cfg_ut_3) {
     cps_api_return_code_t rc;
+
+    if (run_test_mode) return;
 
     /* config test pre-requisite */
     nas_rt_lnx_intf_admin_cfg (1, test_phy_intf_1);
@@ -923,6 +947,8 @@ TEST(std_nas_route_test, nas_os_v6_rt_cfg_ut_3) {
 TEST(std_nas_route_test, nas_os_v6_rt_cfg_ut_4) {
     cps_api_return_code_t rc;
 
+    if (run_test_mode) return;
+
     /* config test pre-requisite */
     nas_rt_lnx_vlan_intf_cfg (1, test_vlan_intf_1, test_vlan_id_1, test_vlan_intf_mem_port_1);
     nas_rt_lnx_intf_admin_cfg (1, test_vlan_intf_1);
@@ -972,6 +998,8 @@ TEST(std_nas_route_test, nas_os_v6_rt_cfg_ut_4) {
 TEST(std_nas_route_test, nas_os_v6_rt_cfg_ut_5) {
     cps_api_return_code_t rc;
 
+    if (run_test_mode) return;
+
     /* config test pre-requisite */
     nas_rt_lnx_intf_admin_cfg (1, test_phy_intf_1);
 
@@ -1011,6 +1039,8 @@ TEST(std_nas_route_test, nas_os_v6_rt_cfg_ut_5) {
 //followed by ip address change, route add for connected route.
 TEST(std_nas_route_test, nas_os_v6_rt_cfg_ut_6) {
     cps_api_return_code_t rc;
+
+    if (run_test_mode) return;
 
     /* config test pre-requisite */
     nas_rt_lnx_intf_admin_cfg (1, test_phy_intf_1);
@@ -1085,7 +1115,7 @@ static cps_api_return_code_t nas_os_vrf_cfg (const char *vrf_name, bool is_add)
 }
 
 TEST(std_nas_route_test, nas_os_verify_lla) {
-    int ret = system("os10-show-version | grep \"OS_NAME.*Enterprise\"");
+    int ret = system("opx-show-version | grep \"OS_NAME.*Enterprise\"");
     if (ret == 0) {
         FILE *fp;
 
@@ -1175,6 +1205,15 @@ TEST(std_nas_route_test, nas_os_verify_proxy_arp) {
 
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
+
+
+  printf("\r\n Executing: args:%d %s %s \r\n", argc, argv[0], argv[1]);
+
+  if ((argc > 1) && (strncmp(argv[1], "run-test",8) == 0)){
+      /* run_test mode enable */
+      run_test_mode = true;
+  }
+
 
   /* configure the test pre-requisites */
   printf("___________________________________________\n");

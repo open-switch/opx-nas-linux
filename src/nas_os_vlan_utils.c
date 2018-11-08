@@ -24,10 +24,11 @@
 #include "nas_os_vlan_utils.h"
 #include "ds_api_linux_interface.h"
 #include "event_log.h"
+#include "std_utils.h"
 #include <stdio.h>
 #include <string.h>
 
-
+// TODO deprecate all calls to this function
 void nas_os_get_vlan_if_name(char *if_name, int len, hal_vlan_id_t vlan_id, char *vlan_name)
 {
     if(vlan_id != 0) {
@@ -38,6 +39,7 @@ void nas_os_get_vlan_if_name(char *if_name, int len, hal_vlan_id_t vlan_id, char
     }
 }
 
+// TODO deprecate all calls to this function
 bool nas_os_physical_to_vlan_ifindex(hal_ifindex_t intf_index, hal_vlan_id_t vlan_id,
                                             bool to_vlan,hal_ifindex_t * index){
     char intf_name[HAL_IF_NAME_SZ+1];
@@ -65,7 +67,23 @@ bool nas_os_physical_to_vlan_ifindex(hal_ifindex_t intf_index, hal_vlan_id_t vla
     return true;
 }
 
+/* This utility converts the sub interface name to phy if_index i.e e101-001-0.202 to ifindex of e101-001-0 */
+bool nas_os_sub_intf_to_phy_intf_name(char *sub_intf_name,  char * phy_intf_name) {
+
+    if (( sub_intf_name == NULL ) || (phy_intf_name == NULL)) {
+        return false;
+    }
+    char *converted_intf_name = NULL;
+    char *saveptr = NULL;
+
+    converted_intf_name = strtok_r(sub_intf_name,".",&saveptr);
+    if(converted_intf_name == NULL)
+        return false;
+    safestrncpy(phy_intf_name, converted_intf_name, HAL_IF_NAME_SZ);
+    return true;
+}
 /* This utility converts the sub interface name to if_index i.e e101-001-0.202 to ifindex of e101-001-0 */
+// TODO To be deprecated
 bool nas_os_sub_intf_name_to_intf_ifindex(char *sub_intf_name, hal_ifindex_t * index){
     char *converted_intf_name = NULL;
     char *saveptr = NULL;
@@ -84,10 +102,4 @@ bool nas_os_sub_intf_name_to_intf_ifindex(char *sub_intf_name, hal_ifindex_t * i
 
     return true;
 }
-
-
-
-
-
-
 

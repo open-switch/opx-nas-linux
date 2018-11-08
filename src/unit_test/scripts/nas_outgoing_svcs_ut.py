@@ -75,7 +75,7 @@ def exec_shell(cmd):
 def test_pre_req_cfg(clear = False, mgmt_ip = '10.11.70.22/8'):
     #config test pre requisite - manangement vrf
     mode = 'OPX'
-    ret = exec_shell('os10-show-version | grep \"OS_NAME.*Enterprise\"')
+    ret = exec_shell('opx-show-version | grep \"OS_NAME.*Enterprise\"')
     if ret:
         mode = 'DoD'
 
@@ -93,6 +93,17 @@ def test_pre_req_cfg(clear = False, mgmt_ip = '10.11.70.22/8'):
                          'interface mgmt1/1/1',
                          'ip address ' + mgmt_ip,
                          'end']
+
+            #configure data VRF test pre requisites via CLI
+            data_vrf_cmd_list =  ['configure terminal',
+                                  'interface vlan 1201',
+                                  'no ip address',
+                                  'no ip vrf forwarding ',
+                                  'exit',
+                                  'no interface vlan 1201',
+                                  'no ip vrf test-vrf',
+                                  'exit',
+                                  'end']
         else:
             cmd_list =  ['configure terminal',
                          'interface mgmt1/1/1',
@@ -105,8 +116,20 @@ def test_pre_req_cfg(clear = False, mgmt_ip = '10.11.70.22/8'):
                          'interface mgmt1/1/1',
                          'ip address ' + mgmt_ip,
                          'end']
+
+            #configure data VRF test pre requisites via CLI
+            data_vrf_cmd_list =  ['configure terminal',
+                                  'ip vrf test-vrf',
+                                  'exit',
+                                  'interface vlan 1201',
+                                  'ip vrf forwarding test-vrf',
+                                  'ip address 121.121.121.1/24',
+                                  'end']
+
         cfg_file = open('/tmp/test_pre_req', 'w')
         for item in cmd_list:
+            print>>cfg_file, item
+        for item in data_vrf_cmd_list:
             print>>cfg_file, item
         cfg_file.close()
         exec_shell('sudo -u admin clish --b /tmp/test_pre_req')
@@ -281,17 +304,17 @@ def run_test_outgoing_svcs():
         # test for service binding rules - outgoing service DNAT rules
         outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "udp", "-d", "121")
         outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "tcp", "-d", "122")
-        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "udp", "-d", "121", "--private-ip", "127.100.100.2", "--private-port", "62000")
-        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "tcp", "-d", "122", "--private-ip", "127.100.100.2", "--private-port", "62001")
+        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "udp", "-d", "121", "--private-ip", "127.100.100.1", "--private-port", "62000")
+        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "tcp", "-d", "122", "--private-ip", "127.100.100.1", "--private-port", "62001")
         outgoing_svcs_test(False, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "udp", "-d", "121")
         outgoing_svcs_test(False, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "tcp", "-d", "122")
-        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "udp", "-d", "121", "--private-ip", "127.100.100.2", "--private-port", "62000")
-        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "tcp", "-d", "122", "--private-ip", "127.100.100.2", "--private-port", "62001")
+        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "udp", "-d", "121", "--private-ip", "127.100.100.1", "--private-port", "62000")
+        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.11.1", "-p", "tcp", "-d", "122", "--private-ip", "127.100.100.1", "--private-port", "62001")
 
         # test for service binding rule & SNAT rule
         outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.12.1", "-p", "udp", "-d", "123")
         outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.12.1", "-p", "udp", "-d", "123", "-sip", "8.1.1.7")
-        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.12.1", "-p", "udp", "-d", "123", "--private-ip", "127.100.100.2", "--private-port", "62000")
+        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.12.1", "-p", "udp", "-d", "123", "--private-ip", "127.100.100.1", "--private-port", "62000")
         outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.12.1", "-p", "udp", "-d", "123", "-sip", "8.1.1.7")
         outgoing_svcs_test(False, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.12.1", "-p", "udp", "-d", "123")
         outgoing_svcs_test(False, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.12.1", "-p", "udp", "-d", "123", "-sip", "8.1.1.7")
@@ -301,7 +324,7 @@ def run_test_outgoing_svcs():
         # test for service binding rule & SNAT rule and operations involving service binding rules
         outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.13.1", "-p", "tcp", "-d", "124")
         outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.13.1", "-p", "tcp", "-d", "124", "-sip", "8.1.1.8")
-        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.13.1", "-p", "tcp", "-d", "124", "--private-ip", "127.100.100.2", "--private-port", "62000")
+        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.13.1", "-p", "tcp", "-d", "124", "--private-ip", "127.100.100.1", "--private-port", "62000")
         outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.13.1", "-p", "tcp", "-d", "124", "-sip", "8.1.1.8")
         outgoing_svcs_test(False, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.13.1", "-p", "tcp", "-d", "124")
         #delete of service binding rule should not delete outgoing source ip rule
@@ -313,29 +336,136 @@ def run_test_outgoing_svcs():
 
         # test for service binding rule & delete operations
         outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "udp", "-d", "131")
-        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "udp", "-d", "131", "--private-ip", "127.100.100.2", "--private-port", "62000")
+        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "udp", "-d", "131", "--private-ip", "127.100.100.1", "--private-port", "62000")
         outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "tcp", "-d", "132")
-        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "tcp", "-d", "132", "--private-ip", "127.100.100.2", "--private-port", "62001")
+        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "tcp", "-d", "132", "--private-ip", "127.100.100.1", "--private-port", "62001")
 
         #delete previously created rules and check same private IP/port is allocated for the rule that is created after this
         outgoing_svcs_test(False, "delete", "1")
-        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "udp", "-d", "131", "--private-ip", "127.100.100.2", "--private-port", "62000")
+        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "udp", "-d", "131", "--private-ip", "127.100.100.1", "--private-port", "62000")
 
         outgoing_svcs_test(False, "create", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133")
-        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.2", "--private-port", "62000")
-        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.2", "--private-port", "62001")
+        outgoing_svcs_test(False, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.1", "--private-port", "62000")
+        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.1", "--private-port", "62001")
         outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.3", "--private-port", "62000")
 
         outgoing_svcs_test(False, "delete", "2")
-        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "tcp", "-d", "132", "--private-ip", "127.100.100.2", "--private-port", "62001")
+        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.14.1", "-p", "tcp", "-d", "132", "--private-ip", "127.100.100.1", "--private-port", "62001")
 
         #delete with invalid private IP, private port combination (negative test)
-        outgoing_svcs_test(True, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.2", "--private-port", "62001")
+        outgoing_svcs_test(True, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.1", "--private-port", "62001")
         outgoing_svcs_test(True, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.3", "--private-port", "62000")
         #delete with valid private IP, private port combination
-        outgoing_svcs_test(False, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.2", "--private-port", "62000")
-        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.2", "--private-port", "62000")
+        outgoing_svcs_test(False, "delete", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.1", "--private-port", "62000")
+        outgoing_svcs_test(True, "info", "-n", "management", "-f", "ipv4", "-dip", "1.1.15.1", "-p", "tcp", "-d", "133", "--private-ip", "127.100.100.1", "--private-port", "62000")
 
+        # test for data vrf SNAT rules
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.16.1", "-p", "udp", "-d", "144", "-sip", "9.1.1.7")
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.17.1", "-p", "udp", "-d", "145", "-sip", "9.1.1.8")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.16.1", "-p", "udp", "-d", "144", "-sip", "9.1.1.7")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.16.1", "-p", "udp", "-d", "144", "-sip", "9.1.1.7")
+        outgoing_svcs_test(True, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.16.1", "-p", "udp", "-d", "144", "-sip", "9.1.1.7")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.16.1", "-p", "udp", "-d", "144", "-sip", "9.1.1.7")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.17.1", "-p", "udp", "-d", "145", "-sip", "9.1.1.8")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.17.1", "-p", "udp", "-d", "145", "-sip", "9.1.1.8")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.17.1", "-p", "udp", "-d", "145", "-sip", "9.1.1.8")
+
+        # test for data vrf tcp protocol
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.18.1", "-p", "tcp", "-d", "41", "-sip", "11.1.1.1")
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "2.2.18.2", "-p", "tcp", "-d", "51", "-sip", "12.1.1.1")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.18.1", "-p", "tcp", "-d", "41", "-sip", "11.1.1.1")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "2.2.18.2", "-p", "tcp", "-d", "51", "-sip", "12.1.1.1")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.18.1", "-p", "tcp", "-d", "41", "-sip", "11.1.1.1")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "2.2.18.2", "-p", "tcp", "-d", "51", "-sip", "12.1.1.1")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.18.1", "-p", "tcp", "-d", "41", "-sip", "11.1.1.1")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "2.2.18.2", "-p", "tcp", "-d", "51", "-sip", "12.1.1.1")
+
+        # test for data vrf different protocol
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.19.1", "-p", "udp", "-d", "41", "-sip", "13.1.1.1")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.19.1", "-p", "udp", "-d", "41", "-sip", "13.1.1.1")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.19.1", "-p", "udp", "-d", "41", "-sip", "13.1.1.1")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.19.1", "-p", "udp", "-d", "41", "-sip", "13.1.1.1")
+
+        # Negative test for data vrf config with vrf name and delete/get w/o vrf-name
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.20.1", "-p", "udp", "-d", "42", "-sip", "14.1.1.1")
+        outgoing_svcs_test(True, "info", "-n", "default", "-f", "ipv4", "-dip", "1.1.20.1", "-p", "udp", "-d", "42", "-sip", "14.1.1.1")
+        outgoing_svcs_test(True, "info", "-f", "ipv4", "-dip", "1.1.20.1", "-p", "udp", "-d", "42", "-sip", "14.1.1.1")
+        outgoing_svcs_test(True, "delete", "-n", "default", "-f", "ipv4", "-dip", "1.1.20.1", "-p", "udp", "-d", "42", "-sip", "14.1.1.1")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.20.1", "-p", "udp", "-d", "42", "-sip", "14.1.1.1")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.20.1", "-p", "udp", "-d", "42", "-sip", "14.1.1.1")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.20.1", "-p", "udp", "-d", "42", "-sip", "14.1.1.1")
+
+        ## Negative test for data vrf
+        # Duplicate create (this rule should be created by application as default)
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.21.1", "-p", "tcp", "-d", "46", "-sip", "15.1.1.1")
+        outgoing_svcs_test(True, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.21.1", "-p", "tcp", "-d", "46", "-sip", "15.1.1.1")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.21.1", "-p", "tcp", "-d", "46", "-sip", "15.1.1.1")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.21.1", "-p", "tcp", "-d", "46", "-sip", "15.1.1.1")
+        # Delete non-existent rule
+        outgoing_svcs_test(True, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.21.1", "-p", "tcp", "-d", "46", "-sip", "15.1.1.1")
+
+        ## test for data vrf service binding rules
+
+        # test for data vrf service binding rules - outgoing service DNAT rules
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.22.1", "-p", "udp", "-d", "121")
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.22.1", "-p", "tcp", "-d", "122")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.22.1", "-p", "udp", "-d", "121", "--private-ip", "127.101.100.1", "--private-port", "62000")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.22.1", "-p", "tcp", "-d", "122", "--private-ip", "127.101.100.1", "--private-port", "62001")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.22.1", "-p", "udp", "-d", "121")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.22.1", "-p", "tcp", "-d", "122")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.22.1", "-p", "udp", "-d", "121", "--private-ip", "127.101.100.1", "--private-port", "62000")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.22.1", "-p", "tcp", "-d", "122", "--private-ip", "127.101.100.1", "--private-port", "62001")
+
+        # test for service binding rule & SNAT rule
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.23.1", "-p", "udp", "-d", "123")
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.23.1", "-p", "udp", "-d", "123", "-sip", "16.1.1.1")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.23.1", "-p", "udp", "-d", "123", "--private-ip", "127.101.100.1", "--private-port", "62000")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.23.1", "-p", "udp", "-d", "123", "-sip", "16.1.1.1")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.23.1", "-p", "udp", "-d", "123")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.23.1", "-p", "udp", "-d", "123", "-sip", "16.1.1.1")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.23.1", "-p", "udp", "-d", "123")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.23.1", "-p", "udp", "-d", "123", "-sip", "16.1.1.1")
+
+        # test for data vrf service binding rule & SNAT rule and operations involving service binding rules
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.24.1", "-p", "tcp", "-d", "124")
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.24.1", "-p", "tcp", "-d", "124", "-sip", "17.1.1.1")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.24.1", "-p", "tcp", "-d", "124", "--private-ip", "127.101.100.1", "--private-port", "62000")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.24.1", "-p", "tcp", "-d", "124", "-sip", "17.1.1.1")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.24.1", "-p", "tcp", "-d", "124")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.24.1", "-p", "tcp", "-d", "124", "-sip", "17.1.1.1")
+
+        #data vrf test for delete of service binding rule should not delete outgoing source ip rule
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.25.1", "-p", "tcp", "-d", "124", "-sip", "18.1.1.1")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.25.1", "-p", "tcp", "-d", "124", "-sip", "18.1.1.1")
+        outgoing_svcs_test(True, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.25.1", "-p", "tcp", "-d", "124")
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.25.1", "-p", "tcp", "-d", "124", "-sip", "18.1.1.1")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.25.1", "-p", "tcp", "-d", "124")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.25.1", "-p", "tcp", "-d", "124", "-sip", "18.1.1.1")
+
+        # test for data vrf service binding rule & delete operations
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.26.1", "-p", "udp", "-d", "131")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.26.1", "-p", "udp", "-d", "131", "--private-ip", "127.101.100.1", "--private-port", "62000")
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.26.1", "-p", "tcp", "-d", "132")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.26.1", "-p", "tcp", "-d", "132", "--private-ip", "127.101.100.1", "--private-port", "62001")
+
+        #delete previously created rules and check same private IP/port is allocated for the rule that is created after this
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.26.1", "-p", "udp", "-d", "131")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.26.1", "-p", "udp", "-d", "131", "--private-ip", "127.101.100.1", "--private-port", "62000")
+
+        outgoing_svcs_test(False, "create", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.27.1", "-p", "tcp", "-d", "133")
+        outgoing_svcs_test(False, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.27.1", "-p", "tcp", "-d", "133", "--private-ip", "127.101.100.1", "--private-port", "62000")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.27.1", "-p", "tcp", "-d", "133", "--private-ip", "127.101.100.1", "--private-port", "62001")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.27.1", "-p", "tcp", "-d", "133", "--private-ip", "127.101.100.3", "--private-port", "62000")
+
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.26.1", "-p", "tcp", "-d", "132", "--private-ip", "127.101.100.1", "--private-port", "62001")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.26.1", "-p", "tcp", "-d", "132", "--private-ip", "127.101.100.1", "--private-port", "62001")
+
+        #delete with invalid private IP, private port combination (negative test)
+        outgoing_svcs_test(True, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.27.1", "-p", "tcp", "-d", "133", "--private-ip", "127.101.100.1", "--private-port", "62001")
+        outgoing_svcs_test(True, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.27.1", "-p", "tcp", "-d", "133", "--private-ip", "127.101.100.3", "--private-port", "62000")
+        #delete with valid private IP, private port combination
+        outgoing_svcs_test(False, "delete", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.27.1", "-p", "tcp", "-d", "133", "--private-ip", "127.101.100.1", "--private-port", "62000")
+        outgoing_svcs_test(True, "info", "-n", "test-vrf", "-f", "ipv4", "-dip", "1.1.27.1", "-p", "tcp", "-d", "133", "--private-ip", "127.101.100.1", "--private-port", "62000")
 
     except RuntimeError as ex:
         print 'UT failed: %s' % ex

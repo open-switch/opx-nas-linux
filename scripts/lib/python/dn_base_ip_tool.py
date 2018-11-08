@@ -20,6 +20,10 @@ import os
 import cps
 import cps_object
 import event_log as ev
+from threading import Timer
+from threading import Lock
+import socket
+import binascii
 
 iplink_cmd = '/sbin/ip'
 VXLAN_PORT = '4789'
@@ -327,6 +331,20 @@ def create_loopback_if(name, mtu=None, mac=None):
     return False
 
 
+def create_macvlan_if(name, parent_if, mac):
+    res = []
+    cmd = [iplink_cmd,
+           'link', 'add',
+           'link', parent_if, name,
+           'address', mac,
+           'type', 'macvlan'
+           ]
+
+    if run_command(cmd, res) == 0:
+        return True
+    return False
+
+
 def delete_if(name):
     res = []
     if run_command([iplink_cmd, 'link', 'delete', 'dev', name], res) == 0:
@@ -421,6 +439,17 @@ def ipv6_accept_dad_config(if_name, accept_dad, vrf_name='default'):
         return True
     return False
 
+def is_intf_exist_in_vrf(vrf_name, ifname):
+    res = []
+    if vrf_name == 'default':
+        if run_command([iplink_cmd, 'link', 'show', 'dev', ifname], res) == 0:
+            return True
+    else:
+        if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'link',\
+                       'show', 'dev', ifname], res) == 0:
+            return True
+    return False
+
 def flush_ip_neigh(af, dev, addr=None, vrf_name='default'):
     res = []
     neigh_af = '-4'
@@ -429,15 +458,11 @@ def flush_ip_neigh(af, dev, addr=None, vrf_name='default'):
 
     if vrf_name == 'default':
         if addr is not None and dev is not None:
-            # When an address is set, it has to be on the particular interface.
-            if len(dev) != 1:
-                return False
-            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'to', str(addr), 'dev', dev[0]], res) == 0:
+            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'to', str(addr), 'dev', dev], res) == 0:
                 return True
         elif dev is not None:
-            for ifname in dev:
-                if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'dev', ifname], res) != 0:
-                    return False
+            if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'dev', dev], res) != 0:
+                return False
             return True
         elif addr is not None:
             if run_command([iplink_cmd, neigh_af, 'neigh', 'flush', 'to', str(addr)], res) == 0:
@@ -450,17 +475,13 @@ def flush_ip_neigh(af, dev, addr=None, vrf_name='default'):
 
     # Flush the neighbors present in the non-default VRF
     if addr is not None and dev is not None:
-        # When an address is set, it has to be on the particular interface.
-        if len(dev) != 1:
-            return False
         if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
-                   'neigh', 'flush', 'to', str(addr), 'dev', dev[0]], res) == 0:
+                   'neigh', 'flush', 'to', str(addr), 'dev', dev], res) == 0:
             return True
     elif dev is not None:
-        for ifname in dev:
-            if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
-                   'neigh', 'flush', 'dev', ifname], res) != 0:
-                return False
+        if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
+                   'neigh', 'flush', 'dev', dev], res) != 0:
+            return False
         return True
     elif addr is not None:
         if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', neigh_af,\
@@ -474,15 +495,24 @@ def flush_ip_neigh(af, dev, addr=None, vrf_name='default'):
 
 def proxy_arp_config(if_name, proxy_arp_val, vrf_name='default'):
     res = []
+    arp_ignore_val = 1
+    if proxy_arp_val:
+        arp_ignore_val = 0
     if vrf_name == 'default':
-        if run_command(['sysctl', '-w', 'net.ipv4.conf.'+if_name+'.proxy_arp='+str(proxy_arp_val)], res) == 0:
-            return True
-        return False
+        if run_command(['sysctl', '-w', 'net.ipv4.conf.'+if_name+'.proxy_arp='+str(proxy_arp_val)], res) != 0:
+            return False
+
+        if run_command(['sysctl', '-w', 'net.ipv4.conf.'+if_name+'.arp_ignore='+str(arp_ignore_val)], res) != 0:
+            return False
+        return True
 
     if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'sysctl', '-w',\
-                   'net.ipv4.conf.'+if_name+'.proxy_arp='+str(proxy_arp_val)], res) == 0:
-        return True
-    return False
+                   'net.ipv4.conf.'+if_name+'.proxy_arp='+str(proxy_arp_val)], res) != 0:
+        return False
+    if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'sysctl', '-w',\
+                   'net.ipv4.conf.'+if_name+'.arp_ignore='+str(arp_ignore_val)], res) != 0:
+        return False
+    return True
 
 _linux_intf_key = cps.key_from_name('observed', 'base-if-linux/if/interfaces/interface')
 def handle_interface_event_for_lla_cfg():
@@ -497,7 +527,7 @@ def handle_interface_event_for_lla_cfg():
 
         if not 'operation' in intf_evt.keys():
             continue
-        if (intf_evt['operation'] != 'create'):
+        if ((intf_evt['operation'] != 'create') and (intf_evt['operation'] != 'set')):
             continue
 
         vrf_name = None
@@ -527,4 +557,79 @@ def handle_interface_event_for_lla_cfg():
         except:
             pass
 
+_intf_addr_dad_failed_list = {}
+_dad_timer = 0
+_addr_mutex = None
+_dad_failure_handle_intvl = 60 # Every 60 seconds, an attempt will be made to clear the DAD failure.
+
+# Upon timer expiry, delete addr and then add to check if the duplicate address is still detected.
+def handle_dad_failure_timer():
+  temp_del_key = None
+  global _addr_mutex
+  _addr_mutex.acquire()
+  for key in _intf_addr_dad_failed_list.keys():
+      if temp_del_key is not None:
+          _intf_addr_dad_failed_list.pop(temp_del_key, None)
+      # Check if the delete addr is success, if could be possible that user could have deleted address,
+      # so, add the address again.
+      if del_ip_addr(key.split("*")[3], key.split("*")[2], key.split("*")[1]):
+          add_ip_addr(key.split("*")[3], key.split("*")[2], 'ipv6', key.split("*")[1])
+      temp_del_key = key
+
+  if temp_del_key is not None:
+      _intf_addr_dad_failed_list.pop(temp_del_key, None)
+  _addr_mutex.release()
+
+# Handle the IPv6 address event with dad failed
+_linux_intf_addr_key = cps.key_from_name('observed', 'base-ip/ipv6')
+def handle_addr_event():
+    _intf_addr_evt_handle = cps.event_connect()
+    cps.event_register(_intf_addr_evt_handle, _linux_intf_addr_key)
+    global _addr_mutex
+    global _dad_timer
+    _addr_mutex = Lock()
+
+    while True:
+        intf_evt = cps.event_wait(_intf_addr_evt_handle)
+        obj = cps_object.CPSObject(obj=intf_evt)
+        if obj is None:
+            continue
+
+        if not 'operation' in intf_evt.keys():
+            continue
+        op = intf_evt['operation']
+
+        vrf_name = None
+        intf_name = None
+        intf_addr = None
+        intf_prefix_len = 0
+        dad_failed = 0
+
+        try:
+            dad_failed = obj.get_attr_data('base-ip/ipv6/dad-failed')
+            # if DAD is not failed for the IPv6 address, ignore this event.
+            if dad_failed == 0:
+                continue
+            vrf_name = obj.get_attr_data('base-ip/ipv6/vrf-name')
+            intf_name = obj.get_attr_data('base-ip/ipv6/name')
+            intf_addr = obj.get_attr_data('base-ip/ipv6/address/ip')
+            intf_addr = binascii.unhexlify(intf_addr)
+            intf_addr = socket.inet_ntop(socket.AF_INET6, intf_addr)
+            intf_prefix_len = obj.get_attr_data('base-ip/ipv6/address/prefix-length')
+        except ValueError as e:
+            continue
+
+        key = '*'+str(vrf_name)+'*'+str(intf_name)+'*'+str(intf_addr)+'/'+str(intf_prefix_len)+'*'
+        _addr_mutex.acquire()
+        val = _intf_addr_dad_failed_list.get(key, None)
+        if op == 'create' or op == 'set':
+            if val is None:
+                _intf_addr_dad_failed_list[key] = 1
+                if len(_intf_addr_dad_failed_list) == 1:
+                    _dad_timer = Timer(_dad_failure_handle_intvl, handle_dad_failure_timer)
+                    _dad_timer.start()
+        elif op == 'delete':
+            if val is not None:
+                _intf_addr_dad_failed_list.pop(key, None)
+        _addr_mutex.release()
 

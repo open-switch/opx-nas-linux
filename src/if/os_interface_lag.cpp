@@ -27,7 +27,6 @@
 
 #include "nas_nlmsg.h"
 
-#include "nas_os_vlan_utils.h"
 #include "nas_os_int_utils.h"
 
 #include "event_log.h"
@@ -72,6 +71,20 @@ static void os_interface_lag_reset_mac(hal_ifindex_t ifix)
 
 bool INTERFACE::os_interface_lag_attrs_handler(if_details *details, cps_api_object_t obj)
 {
+    if(details->_type == BASE_CMN_INTERFACE_TYPE_LAG) {
+        // Netlink event for bond interface
+
+        EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Bond interface index is %d ",
+                details->_ifindex);
+        if (details->_attrs[IFLA_MASTER]!=nullptr) {
+            // this is for bond addition/deletion to the bridge
+            EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Bond %s adddition/deletion to the bridge", details->if_name);
+            return true;
+        }
+        return true;
+    } // bond interface
+
+    // Else check if netlink event is for slave addition or deletion to the bond
     if_bond *bond_hdlr = os_get_bond_db_hdlr();
     hal_ifindex_t master_idx = (details->_attrs[IFLA_MASTER]!=NULL)?
                                 *(int *)nla_data(details->_attrs[IFLA_MASTER]):0;
@@ -91,6 +104,7 @@ bool INTERFACE::os_interface_lag_attrs_handler(if_details *details, cps_api_obje
 
             if(!os_interface_lag_add_member_name(details->_ifindex, obj)) return false;
             details->_type = BASE_CMN_INTERFACE_TYPE_LAG;
+            details->_op = cps_api_oper_CREATE;
 
          } else if ((details->_flags & IFF_SLAVE)!=0) {
              if(bond_hdlr && (master_idx = bond_hdlr->bond_master_get(details->_ifindex))) {
@@ -122,16 +136,5 @@ bool INTERFACE::os_interface_lag_attrs_handler(if_details *details, cps_api_obje
              details->_op = cps_api_oper_DELETE;
          }
     }
-
-    if(details->_info_kind!=nullptr && !strncmp(details->_info_kind, "bond", 4)) {
-        EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Bond interface index is %d ",
-                details->_ifindex);
-
-        if (details->_attrs[IFLA_MASTER]==nullptr) {
-            details->_type = BASE_CMN_INTERFACE_TYPE_LAG;
-        }
-
-    } // bond interface
-
     return true;
 }

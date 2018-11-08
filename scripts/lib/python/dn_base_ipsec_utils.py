@@ -167,7 +167,7 @@ sad_algo_map = {
                           },
                     'enc': {
                                 'cbc(des3)': {
-                                                'sad_path': [ config_sad_key_prefix+'/esp/encryption/encryption-algorithm/des3-cbc/des3-cbc/key-str'],
+                                                'sad_path': [ config_sad_key_prefix+'/esp/encryption/encryption-algorithm/des3-cbc/des3-cbd/key-str'],
                                                 'key_len' : {'str': 24, 'hex_str': 48},
                                                 'cmd'     : 'cbc(des3_ede)'
                                             },
@@ -198,9 +198,18 @@ sad_algo_map = {
 def config_sad(change):
     """ Configure Security Association DB from CPS Object  """
     res = []
-    cmd = [iplink_cmd, 'xfrm', 'state', cps_to_xfrm_op[change['operation']]]
-
     data = cps_convert_attr_data(change)
+    vrf_key = config_sad_options_key_prefix+'/vrf-name'
+    try:
+        if vrf_key in data:
+            vrf_name = data[vrf_key]
+            cmd = [iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'xfrm', 'state',
+                cps_to_xfrm_op[change['operation']]]
+        else:
+            cmd = [iplink_cmd, 'xfrm', 'state', cps_to_xfrm_op[change['operation']]]
+    except Exception as e:
+        log_msg = "Exception: "+ str(e)
+        log_err(log_msg)
 
     _state_cmd_list = [_id_obj_map, _sad_options_obj_map]
     for obj_map in _state_cmd_list:
@@ -275,14 +284,22 @@ _spd_tmpl_list_obj_map = {'mode': {
 def config_spd(change):
     """ Configure Security Policy DB from CPS Object  """
     res = []
-    cmd = [iplink_cmd, 'xfrm', 'policy', cps_to_xfrm_op[change['operation']]]
-
     data = cps_convert_attr_data(change)
+    vrf_key = config_spd_key_prefix+'/vrf-name'
+    try:
+        if vrf_key in data:
+            vrf_name = data[vrf_key]
+            cmd = [iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'xfrm', 'policy',
+               cps_to_xfrm_op[change['operation']]]
+        else:
+            cmd = [iplink_cmd, 'xfrm', 'policy', cps_to_xfrm_op[change['operation']]]
+    except Exception as e:
+        log_msg = "Exception: "+ str(e)
+        log_err(log_msg)
 
     _policy_cmd_list = [_selector_obj_map, _spd_cmd_obj_map, _spd_options_obj_map]
     for obj_map in _policy_cmd_list:
         cmd = _cmd_from_map(cmd, obj_map, 'spd_path', data)
-
 
     # Add Template List to the ip xfrm command
     for tmpl in _id_obj_map:
@@ -336,7 +353,7 @@ def add_attr_type():
 
 
     cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/des-cbc/des-cbc/key-str", "string")
-    cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/des3-cbc/des3-cbc/key-str", "string")
+    cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/des3-cbc/des3-cbd/key-str", "string")
     cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/aes-128-cbc/aes-128-cbc/key-str", "string")
     cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/aes-192-cbc/aes-192-cbc/key-str", "string")
     cps_utils.add_attr_type("eipsec/ipsec/sad/sad-entries/esp/encryption/encryption-algorithm/aes-256-cbc/aes-256-cbc/key-str", "string")
@@ -357,5 +374,4 @@ def obj_reg():
         if i.find('eipsec') == -1:
             continue
         cps.obj_register(ipsec_handle, _ipsec_keys[i], reg)
-
 
