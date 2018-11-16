@@ -1041,15 +1041,18 @@ class McastSnoopCacheMgr(threading.Thread):
                 self.lock.acquire()
                 self.apply_static_mrouter_configs()
                 self.update_cache()
+                do_polling = False
                 self.lock.release()
             try:
                 start_time = time.time()
-                br_name, max_grps, try_count = self.hashmax_cfg_q.get(True, polling_timeout)
-                wait_time = time.time() - start_time
+                br_name, max_grps, try_count = self.hashmax_cfg_q.get(
+                                                   True,
+                                                   polling_timeout)
+                # Remember the end time for validity checking
+                end_time = time.time()
+                wait_time = end_time - start_time
                 polling_timeout -= wait_time
-                if polling_timeout > 0:
-                    do_polling = False
-                else:
+                if (end_time < start_time) or (polling_timeout <= 0):
                     polling_timeout = MCAST_SNOOP_POLLING_INTERVAL
                     do_polling = True
             except Queue.Empty:

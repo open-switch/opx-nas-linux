@@ -110,7 +110,7 @@ bool static os_interface_vlan_bridge_handler(hal_ifindex_t mas_idx, hal_ifindex_
     if(br_hdlr == nullptr) return true;
 
     if(br_hdlr->bridge_mbr_present(mas_idx, mem_idx)) {
-        EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Duplicate netlink add master %d ifx %d",
+        EV_LOGGING(NAS_OS,INFO, "NET-MAIN", "Duplicate netlink add master %d ifx %d",
                 mas_idx, mem_idx);
         return false;
     }
@@ -181,7 +181,7 @@ bool INTERFACE::os_interface_bridge_attrs_handler(if_details *details, cps_api_o
     if ((!strncmp(details->_info_kind, "tun", 3) ) ||
            (details->_type == BASE_CMN_INTERFACE_TYPE_LAG)) {
         // IF interface is bond or tun type then consider it untagged member addition to the bridge
-            EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Add untagged Member  %d intf name %s", details->_ifindex, details->if_name.c_str());
+            EV_LOGGING(NAS_OS,INFO, "NET-MAIN", "Add untagged Member  %d intf name %s", details->_ifindex, details->if_name.c_str());
             if(!os_interface_vlan_bridge_handler(master_idx, details->_ifindex, details->if_name, false))
                 return true;
 
@@ -221,7 +221,7 @@ bool INTERFACE::os_interface_bridge_attrs_handler(if_details *details, cps_api_o
         cps_api_object_attr_add(obj, DELL_IF_IF_INTERFACES_INTERFACE_TAGGED_PORTS,
                 details->if_name.c_str(),strlen(details->if_name.c_str())+1);
     } // vxlan interface add/delete to bridge
-    EV_LOG(INFO, NAS_OS, 3, "NET-MAIN", "In IFLA_INFO_KIND for %s index %d name:%s",
+    EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "In IFLA_INFO_KIND for %s index %d name:%s",
             details->_info_kind, details->_ifindex, details->if_name.c_str());
     return true;
 }

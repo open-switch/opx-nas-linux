@@ -31,6 +31,7 @@
 
 #include "event_log.h"
 #include "std_mac_utils.h"
+#include "nas_os_if_conversion_utils.h"
 
 #include <linux/if_link.h>
 #include <linux/if.h>
@@ -74,7 +75,7 @@ bool INTERFACE::os_interface_lag_attrs_handler(if_details *details, cps_api_obje
     if(details->_type == BASE_CMN_INTERFACE_TYPE_LAG) {
         // Netlink event for bond interface
 
-        EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Bond interface index is %d ",
+        EV_LOGGING(NAS_OS,INFO, "NET-MAIN", "Bond interface index is %d ",
                 details->_ifindex);
         if (details->_attrs[IFLA_MASTER]!=nullptr) {
             // this is for bond addition/deletion to the bridge
@@ -91,10 +92,12 @@ bool INTERFACE::os_interface_lag_attrs_handler(if_details *details, cps_api_obje
 
     if (details->_info_kind!=nullptr && !strncmp(details->_info_kind, "tun", 3)) {
          if(details->_attrs[IFLA_MASTER]!=NULL  && ((details->_flags & IFF_SLAVE)!=0)) {
-            EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Received tun %d and state 0x%x",
+             EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Received tun %d and state 0x%x",
                         details->_ifindex,details->_flags);
-            if(bond_hdlr && bond_hdlr->bond_mbr_present(master_idx, details->_ifindex)){
-                EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Bond mbr present in master %d, slave %d",
+             EV_LOGGING(NAS_OS,INFO, "NET-MAIN", "Lag member add: mbr %d lag %d",
+                        details->_ifindex,master_idx);
+             if(bond_hdlr && bond_hdlr->bond_mbr_present(master_idx, details->_ifindex)){
+                 EV_LOGGING(NAS_OS,INFO, "NET-MAIN", "Bond mbr present in master %d, slave %d",
                             master_idx, details->_ifindex);
                 return true;
             }
@@ -123,8 +126,8 @@ bool INTERFACE::os_interface_lag_attrs_handler(if_details *details, cps_api_obje
                  return true;
              }
 
-             EV_LOG(INFO, NAS_OS,3, "NET-MAIN", "Lag member delete: tun %d and state 0x%x",
-                         details->_ifindex,details->_flags);
+             EV_LOGGING(NAS_OS,INFO, "NET-MAIN", "Lag member delete: mbr %d lag %d and state 0x%x",
+                         details->_ifindex,master_idx, details->_flags);
 
              if(!os_interface_lag_add_member_name(details->_ifindex, obj)) return false;
 
@@ -135,6 +138,27 @@ bool INTERFACE::os_interface_lag_attrs_handler(if_details *details, cps_api_obje
              details->_type = BASE_CMN_INTERFACE_TYPE_LAG;
              details->_op = cps_api_oper_DELETE;
          }
+    }
+    if ((details->_type == BASE_CMN_INTERFACE_TYPE_LAG) && (details->_attrs[IFLA_MASTER] != NULL)) {
+        /*
+         * If member addition/deletion in the LAG
+         */
+        int ifix = *(int *)nla_data(details->_attrs[IFLA_MASTER]);
+        std::string if_name = nas_os_if_name_get(ifix);
+        if (if_name.empty()) {
+            EV_LOGGING(NAS_OS,ERR,"NET-MAIN"," Interface not present, index %d ", ifix);
+            return false;
+        }
+        EV_LOGGING(NAS_OS,INFO,"NET-MAIN"," Remove attrs in case of member add/del to master %s",
+                   if_name.c_str());
+        // Delete the previously filled attributes in case of Vlan/Lag member add/del
+        cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_MTU);
+        cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_PHYS_ADDRESS);
+        cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_NAME);
+        cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_ENABLED);
+        cps_api_object_attr_delete(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
+        cps_api_object_attr_add(obj, IF_INTERFACES_INTERFACE_NAME, if_name.c_str(), (strlen(if_name.c_str())+1));
+        cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,ifix);
     }
     return true;
 }

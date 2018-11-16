@@ -287,7 +287,7 @@ t_std_error nas_os_create_bridge(cps_api_object_t obj, hal_ifindex_t *br_index)
         EV_LOG(ERR, NAS_OS, ev_log_s_CRITICAL, "NAS-OS", "Error finding the ifindex of bridge");
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
-
+    nas_os_set_bridge_default_mac_ageing(*br_index);
     return STD_ERR_OK;
 }
 

@@ -48,8 +48,8 @@ extern "C" {
 /* Netlink socket buffer size for interface events - 30MB */
 #define NL_INTF_SOCKET_BUFFER_LEN (30*1024*1024)
 
-/* Netlink socket buffer size for neighbor events - 60MB */
-#define NL_NEIGH_SOCKET_BUFFER_LEN (60*1024*1024)
+/* Netlink socket buffer size for neighbor events - 150MB */
+#define NL_NEIGH_SOCKET_BUFFER_LEN (150*1024*1024)
 
 /* Netlink socket buffer size for route events - 250MB */
 #define NL_ROUTE_SOCKET_BUFFER_LEN (250*1024*1024)

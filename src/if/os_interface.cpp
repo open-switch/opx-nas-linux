@@ -290,6 +290,7 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
     }
     cps_api_operation_types_t _if_op = details._op;
     cps_api_object_attr_add_u32(obj,BASE_IF_LINUX_IF_INTERFACES_INTERFACE_IF_FLAGS, details._flags);
+    cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,ifmsg->ifi_index);
 
     cps_api_object_attr_add_u32(obj,IF_INTERFACES_INTERFACE_ENABLED,
         (ifmsg->ifi_flags & IFF_UP) ? true :false);
@@ -404,8 +405,8 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
             }
         }
 
-        if((details._type == BASE_CMN_INTERFACE_TYPE_L2_PORT) ||
-           ((details._type == BASE_CMN_INTERFACE_TYPE_LAG) && (details._attrs[IFLA_MASTER]!=NULL))) {
+        if ((details._type == BASE_CMN_INTERFACE_TYPE_L2_PORT) ||
+            ((details._type == BASE_CMN_INTERFACE_TYPE_LAG) && (details._attrs[IFLA_MASTER] != NULL))) {
             /*
              * If member addition/deletion in the LAG or bridge
              */
@@ -417,14 +418,16 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
             }
             EV_LOGGING(NAS_OS,INFO,"NET-MAIN"," ifidx %d Remove attrs in case of member add/del to master %s",
                        ifmsg->ifi_index, if_name.c_str());
-            // Delete the previously filled attributes in case of Vlan/Lag member add/del
-            cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_MTU);
-            cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_PHYS_ADDRESS);
-            cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_NAME);
-            cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_ENABLED);
-            cps_api_object_attr_delete(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
-            cps_api_object_attr_add(obj, IF_INTERFACES_INTERFACE_NAME, if_name.c_str(), (strlen(if_name.c_str())+1));
-            cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,ifix);
+            if (details._type == BASE_CMN_INTERFACE_TYPE_L2_PORT) {
+                // Delete the previously filled attributes in case of Vlan/Lag member add/del
+                cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_MTU);
+                cps_api_object_attr_delete(obj, DELL_IF_IF_INTERFACES_INTERFACE_PHYS_ADDRESS);
+                cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_NAME);
+                cps_api_object_attr_delete(obj, IF_INTERFACES_INTERFACE_ENABLED);
+                cps_api_object_attr_delete(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
+                cps_api_object_attr_add(obj, IF_INTERFACES_INTERFACE_NAME, if_name.c_str(), (strlen(if_name.c_str())+1));
+                cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,ifix);
+            }
         } else if (!track_change) {
             /*
              * If track change is false, check for interface type - Return false ONLY in the individual update case
@@ -466,7 +469,6 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
     cps_api_object_attr_add_u32(obj, VRF_MGMT_NI_IF_INTERFACES_INTERFACE_VRF_ID, vrf_id);
     EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "VRF:%s(%d) Publishing index %d type %d",
                vrf_name, vrf_id, details._ifindex, details._type);
-    cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,ifmsg->ifi_index);
 
     cps_api_key_from_attr_with_qual(cps_api_object_key(obj),BASE_IF_LINUX_IF_INTERFACES_INTERFACE_OBJ,
             cps_api_qualifier_OBSERVED);
