@@ -44,7 +44,7 @@ bool INTERFACE::os_interface_vlan_attrs_handler(if_details *details, cps_api_obj
             memset(vlan,0,sizeof(vlan));
             nla_parse_nested(vlan,IFLA_VLAN_MAX,details->_linkinfo[IFLA_INFO_DATA]);
             if (vlan[IFLA_VLAN_ID]) {
-                EV_LOG(INFO, NAS_OS, 3, "NET-MAIN", "Received VLAN %d", details->_ifindex);
+                EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Received VLAN %d", details->_ifindex);
                 cps_api_object_attr_add_u32(obj,BASE_IF_VLAN_IF_INTERFACES_INTERFACE_ID,
                         *(uint16_t*)nla_data(vlan[IFLA_VLAN_ID]));
             }

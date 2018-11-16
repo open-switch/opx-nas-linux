@@ -235,11 +235,15 @@ static void nas_os_mac_main(void){
 }
 
 t_std_error nas_os_mac_add_pending_mac_if_event(hal_ifindex_t ifindex){
-    std_rw_lock_read_guard l(&dynamic_mac_lock);
-    auto it = _port_to_dynamic_mac_list.find(ifindex);
-    if(it != _port_to_dynamic_mac_list.end()){
-        nas_os_mac_write_pending_mac_if(&ifindex);
+    {
+        std_rw_lock_read_guard l(&dynamic_mac_lock);
+        auto it = _port_to_dynamic_mac_list.find(ifindex);
+        if(it == _port_to_dynamic_mac_list.end()){
+            return STD_ERR_OK;
+        }
     }
+
+    nas_os_mac_write_pending_mac_if(&ifindex);
     return STD_ERR_OK;
 }
 

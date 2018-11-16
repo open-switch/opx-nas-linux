@@ -25,6 +25,14 @@ from threading import Lock
 import socket
 import binascii
 
+try:
+    # VM/Simulator: import function that removes special VM platform name space
+    from platform_netns import remove_netns as _remove_netns
+except:
+    # Actual HW: do nothing
+    def _remove_netns(nslist):
+        return nslist
+
 iplink_cmd = '/sbin/ip'
 VXLAN_PORT = '4789'
 
@@ -82,7 +90,6 @@ def run_command(cmd, response, log_fail = True):
             log_err('* ' + msg)
 
     return p.returncode
-
 
 def _get_ip_addr(vrf_name, dev=None):
     output = []
@@ -222,6 +229,7 @@ def get_if_details(vrf_name=None, dev=None):
         res = []
         if run_command(cmd, res) != 0:
             return resp
+        res = _remove_netns(res)
         if len(res) == 0:
             get_if_details_per_vrf(resp, 'default', dev)
         else:

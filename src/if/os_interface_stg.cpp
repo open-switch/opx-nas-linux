@@ -65,7 +65,7 @@ bool os_bridge_stp_enabled (if_details *details)
         stp_state = stoi(s);
     }
 
-    EV_LOG(INFO, NAS_OS, ev_log_s_MINOR, "NAS-OS", "STP %s, path %s state %d",
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS", "STP %s, path %s state %d",
             details->if_name.c_str(), path.c_str(), stp_state);
 
     return ((stp_state)? true:false);
