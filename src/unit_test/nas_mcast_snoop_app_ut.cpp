@@ -388,7 +388,7 @@ static bool _set_snoop_status(int vlan, bool status, cps_api_operation_types_t o
      cout<<"Commit Failed for status"<<endl;
      return false;
    }
-   sleep(1);
+   sleep(2);
 
    if(received_status != status) {
      cout<<"Failed status"<<endl;

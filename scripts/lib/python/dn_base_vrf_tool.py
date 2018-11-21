@@ -257,8 +257,7 @@ def process_vrf_top_chain_rule(is_add, vrf_name):
         cmd_prefix = []
     else:
         cmd_prefix = [iplink_cmd, 'netns', 'exec', vrf_name]
-        if vrf_name == 'management':
-            rej_chain_list.append('FORWARD')
+        rej_chain_list.append('FORWARD')
     for iptable in ['iptables', 'ip6tables']:
         cmd = cmd_prefix + [iptable, '-t', 'raw', ipt_action, 'PREROUTING', '!', '-i', 'lo', '-j', vrf_chain_name]
         res = []
