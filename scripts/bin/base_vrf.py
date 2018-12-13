@@ -935,7 +935,7 @@ def get_vrf_intf_cb_int(methods, params):
         return False
 
     ret_val, veth_intf = get_vrf_intf_to_dst_vrf(src_vrf_name, dst_vrf_name)
-    if ret_val == False:
+    if ret_val is False:
         return False
 
     cps_obj = cps_object.CPSObject(module='vrf-mgmt/get-vrf-internal-binding', qual='target',
