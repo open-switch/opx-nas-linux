@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -134,6 +134,8 @@ bool INTERFACE::os_interface_vxlan_attrs_handler(if_details *details, cps_api_ob
 
 #define NL_MSG_BUFF 4096
 
+static const uint32_t default_vxlan_mac_ageing = 5400;
+
 t_std_error nas_os_create_vxlan_interface(cps_api_object_t obj){
     char buff[NL_MSG_BUFF];
     memset(buff,0,sizeof(nlmsghdr)+sizeof(ifinfomsg));
@@ -147,6 +149,7 @@ t_std_error nas_os_create_vxlan_interface(cps_api_object_t obj){
     cps_api_object_attr_t vni_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_VNI);
     cps_api_object_attr_t ip_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_SOURCE_IP_ADDR);
     cps_api_object_attr_t ip_family_attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_SOURCE_IP_ADDR_FAMILY);
+    cps_api_object_attr_t admin_attr = cps_api_object_attr_get(obj,IF_INTERFACES_INTERFACE_ENABLED);
 
     if(!name_attr || !vni_attr || !ip_attr || !ip_family_attr) {
         EV_LOGGING(NAS_OS, ERR, "NAS-OS-VXLAN","Missing VXLAN interface name/vni/ip for creating vxlan");
@@ -162,8 +165,13 @@ t_std_error nas_os_create_vxlan_interface(cps_api_object_t obj){
 
     EV_LOGGING(NAS_OS, INFO, "NAS-OS-VXLAN","Create VxLAN interface %s in OS",vxlan_name);
 
+    unsigned int flags = IFF_BROADCAST | IFF_MULTICAST;
+    if (admin_attr != nullptr && (bool)cps_api_object_attr_data_uint(admin_attr)) {
+        flags |= IFF_UP;
+    }
+
     nas_os_pack_nl_hdr(nlh, RTM_NEWLINK, (NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL));
-    nas_os_pack_if_hdr(ifmsg, AF_PACKET, (IFF_BROADCAST | IFF_MULTICAST), if_index);
+    nas_os_pack_if_hdr(ifmsg, AF_PACKET, flags , if_index);
 
     nlmsg_add_attr(nlh,sizeof(buff),IFLA_IFNAME, vxlan_name, (strlen(vxlan_name)+1));
     struct nlattr *attr_nh = nlmsg_nested_start(nlh, sizeof(buff));
@@ -184,8 +192,9 @@ t_std_error nas_os_create_vxlan_interface(cps_api_object_t obj){
         memcpy(&ip.u.ipv6,cps_api_object_attr_data_bin(ip_attr),sizeof(ip.u.ipv6));
         nlmsg_add_attr(nlh,sizeof(buff),IFLA_VXLAN_LOCAL6,&ip.u.ipv6, sizeof(ip.u.ipv6));
     }
-    static const uint32_t dst_port = 4789;
-    nlmsg_add_attr(nlh,sizeof(buff),IFLA_VXLAN_PORT,&dst_port, sizeof(&dst_port));
+    nlmsg_add_attr(nlh,sizeof(buff),IFLA_VXLAN_AGEING, &default_vxlan_mac_ageing, sizeof(uint32_t));
+    static const uint16_t dst_port = ntohs(4789);
+    nlmsg_add_attr(nlh,sizeof(buff),IFLA_VXLAN_PORT,&dst_port, sizeof(dst_port));
     nlmsg_nested_end(nlh,attr_nh_data);
     nlmsg_nested_end(nlh,attr_nh);
 
@@ -194,6 +203,12 @@ t_std_error nas_os_create_vxlan_interface(cps_api_object_t obj){
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
 
+    /*
+     * Disable ipv6 on VXLAN interface.
+     */
+    if (nas_os_interface_ipv6_config_handle(vxlan_name, false) == false) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS-VXLAN", "Failed: To disable ipv6 on sub interface (%s)", vxlan_name);
+    }
     hal_ifindex_t vxlan_index=0;
 
     if((vxlan_index = cps_api_interface_name_to_if_index(vxlan_name)) == 0) {

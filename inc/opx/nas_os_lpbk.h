@@ -14,25 +14,40 @@
  * permissions and limitations under the License.
  */
 
-/*!
- * \file  os_interface_mgmt.cpp 
+/*
+ * filename: nas_os_lpbk.h
  */
+#ifndef NAS_OS_LPBK_H_
+#define NAS_OS_LPBK_H_
 
-#include "private/nas_os_if_priv.h"
-#include "dell-base-common.h"
 #include "cps_api_object.h"
+#include "std_error_codes.h"
 
-#include <string.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-#define MGMT_INTF_NAME      "eth0"
+/**
+ * @brief : Deletes a loopback interface
+ *
+ * @obj : CPS API object for delete operation
+ *
+ * @return : Returns cps_api_ret_code_OK on success, or error code
+ */
+t_std_error nas_os_lpbk_delete(cps_api_object_t obj);
 
-bool INTERFACE::os_interface_mgmt_attrs_handler(if_details *details, cps_api_object_t obj)
-{
+/**
+ * @brief : Creates a loopback interface
+ *
+ * @obj : CPS API object for create operation
+ *
+ * @return : Returns cps_api_ret_code_OK on success, or error code
+ */
+t_std_error nas_os_lpbk_create(cps_api_object_t obj);
 
-    if ((details->if_name.c_str() != nullptr)
-            && (strcmp(details->if_name.c_str(), MGMT_INTF_NAME) == 0)) {
-        details->_type = BASE_CMN_INTERFACE_TYPE_MANAGEMENT;
-    }
 
-    return true;
+#ifdef __cplusplus
 }
+#endif
+
+#endif /* NAS_OS_LPBK_H_ */

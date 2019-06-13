@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -358,13 +358,19 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
         ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_IFINDEX;
         unsigned int *x = (unsigned int *) nla_data(attrs[RTA_OIF]);
 
-        if (nas_rt_is_reserved_intf_idx(*x, true))
-            return false;
+        if (vrf_id == NAS_DEFAULT_VRF_ID) {
+            if (nas_rt_is_reserved_intf_idx(*x, true))
+                return false;
+        }
 
         cps_api_object_e_add(obj,ids,ids_len,cps_api_object_ATTR_T_U32,
                 nla_data(attrs[RTA_OIF]),sizeof(uint32_t));
 
         cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_ENTRY_NH_LIST_IFINDEX,*x);
+    }
+    if (rtmsg->rtm_flags == RTNH_F_ONLINK) {
+        cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_ENTRY_NH_LIST_FLAGS,
+                                    BASE_ROUTE_NH_FLAGS_ONLINK);
     }
     if (attrs[RTA_MULTIPATH]) {
         //array of next hops
@@ -388,6 +394,18 @@ bool nl_to_route_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
             if (!rc) {
                 EV_LOGGING(NETLINK,ERR,"ROUTE-EVENT-MEM","Not enough memory to fill the route mulitpath info.!");
                 return false;
+            }
+
+            if (rtnh->rtnh_flags == RTNH_F_ONLINK) {
+                ids[2] = BASE_ROUTE_OBJ_ENTRY_NH_LIST_FLAGS;
+                _int = rtnh->rtnh_flags;
+                rc = cps_api_object_e_add(obj,ids,ids_len,cps_api_object_ATTR_T_U32,
+                                          &_int,sizeof(uint32_t));
+                if (!rc) {
+                    EV_LOGGING(NETLINK,ERR,"ROUTE-EVENT-MEM","Not enough memory to fill the route "
+                               "mulitpath NH flags info");
+                    return false;
+                }
             }
 
             struct nlattr *nhattr[__RTA_MAX];

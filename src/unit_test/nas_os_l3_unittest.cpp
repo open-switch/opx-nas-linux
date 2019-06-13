@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -304,11 +304,15 @@ static cps_api_return_code_t nas_ut_validate_nas_rt_cfg (const char *ip_addr, ui
     return rc;
 }
 
-static cps_api_return_code_t nas_rt_lnx_ip_addr_cfg (bool is_add, const char *ip_addr, uint32_t prefix_len, const char *dev)
+static cps_api_return_code_t nas_rt_lnx_ip_addr_cfg (bool is_add,
+                                                     const char *ip_addr,
+                                                     uint32_t prefix_len,
+                                                     const char *dev)
 {
     char cmd_str[300];
-    snprintf (cmd_str, 300, "ip address %s %s/%d  dev %s", (is_add ? "add":"del"), ip_addr, prefix_len, dev);
-    if (system(cmd_str));
+    snprintf (cmd_str, 300, "ip address %s %s/%d  dev %s",
+              (is_add ? "add":"del"), ip_addr, prefix_len, dev);
+    system(cmd_str);
     return cps_api_ret_code_OK;
 }
 
@@ -317,7 +321,7 @@ static cps_api_return_code_t nas_rt_lnx_intf_admin_cfg (bool is_up, const char *
     char cmd_str[300];
 
     snprintf (cmd_str, 300, "ip link set dev %s %s", dev, (is_up)?"up":"down");
-    if(system(cmd_str));
+    (void)system(cmd_str);
     /* wait for few seconds after making admin up */
     if (is_up)
         sleep (5);
@@ -330,28 +334,28 @@ static cps_api_return_code_t nas_rt_lnx_vlan_intf_cfg (bool is_add, const char* 
     if (is_add)
     {
         snprintf (cmd_str, 300, "ip link set dev %s up", vlan_mem_port);
-        if(system(cmd_str));
+        (void)system(cmd_str);
         snprintf (cmd_str, 300, "brctl addbr %s", vlan_intf);
-        if(system(cmd_str));
+        (void)system(cmd_str);
         snprintf (cmd_str, 300, "ip link add link %s name %s.%d type vlan id %d", vlan_mem_port, vlan_mem_port, vlan_id, vlan_id);
-        if(system(cmd_str));
+        (void)system(cmd_str);
         snprintf (cmd_str, 300, "brctl addif %s %s.%d", vlan_intf, vlan_mem_port, vlan_id);
-        if(system(cmd_str));
+        (void)system(cmd_str);
         snprintf (cmd_str, 300, "ip link set dev %s.%d up", vlan_mem_port, vlan_id);
-        if(system(cmd_str));
+        (void)system(cmd_str);
     }
     else
     {
         snprintf (cmd_str, 300, "ip link set dev %s.%d down", vlan_mem_port, vlan_id);
-        if(system(cmd_str));
+        (void)system(cmd_str);
         snprintf (cmd_str, 300, "brctl delif %s %s.%d", vlan_intf, vlan_mem_port, vlan_id);
-        if(system(cmd_str));
+        (void)system(cmd_str);
         snprintf (cmd_str, 300, "ip link set dev %s down", vlan_mem_port);
-        if(system(cmd_str));
+        (void)system(cmd_str);
         snprintf (cmd_str, 300, "ip link del dev %s.%d ", vlan_mem_port, vlan_id);
-        if(system(cmd_str));
+        (void)system(cmd_str);
         snprintf (cmd_str, 300, "brctl delbr %s", vlan_intf);
-        if(system(cmd_str));
+        (void)system(cmd_str);
     }
     return cps_api_ret_code_OK;
 }
@@ -498,8 +502,8 @@ TEST(std_route_test, del_neighbor) {
 TEST(std_route_test, add_ip_and_check_self_ip_pub) {
     char cmd_str[200];
 
-    if(system("opx-logging enable NETLINK info"));
-    if(system("kill -USR1 `pidof base_nas`"));
+    (void)system("os10-logging enable NETLINK info");
+    (void)system("kill -USR1 `pidof base_nas`");
 
     memset(cmd_str, 0, sizeof(cmd_str));
     system("ip addr add 8.1.1.2/24 dev e101-008-0");
@@ -539,8 +543,8 @@ TEST(std_route_test, add_ip_and_check_self_ip_pub) {
     ASSERT_TRUE (ret == 0);
     */
 
-    if(system("opx-logging disable NETLINK info"));
-    if(system("kill -USR1 `pidof base_nas`"));
+    (void)system("os10-logging disable NETLINK info");
+    (void)system("kill -USR1 `pidof base_nas`");
 }
 
 
@@ -1130,12 +1134,12 @@ TEST(std_nas_route_test, nas_os_verify_lla) {
         ret = system("ip -6 route show | grep -c fe80 > /tmp/result");
         FILE * result = fopen("/tmp/result","r");
         int val = 0;
-        fscanf(result, "%d", &val);
+        (void) fscanf(result, "%d", &val);
         fclose(result);
 
         printf("\r\n LLA count:%d\r\n", val);
-        ASSERT_TRUE(val >=150);
         fclose(fp);
+        ASSERT_TRUE(val >=150);
 
         fp = fopen("/tmp/test_pre_req","w");
         fprintf(fp, "configure terminal\n");
@@ -1192,13 +1196,13 @@ TEST(std_nas_route_test, nas_os_verify_proxy_arp) {
     nas_ut_proxy_arp_cfg("default", "br1", true);
     result = fopen("/proc/sys/net/ipv4/conf/br1/proxy_arp","r");
     ASSERT_TRUE(result != NULL);
-    fscanf(result, "%d", &val);
+    (void) fscanf(result, "%d", &val);
     fclose(result);
     ASSERT_TRUE(val == 1);
     nas_ut_proxy_arp_cfg("default", "br1", false);
     result = fopen("/proc/sys/net/ipv4/conf/br1/proxy_arp","r");
     ASSERT_TRUE(result != NULL);
-    fscanf(result, "%d", &val);
+    (void) fscanf(result, "%d", &val);
     fclose(result);
     ASSERT_TRUE(val == 0);
 }

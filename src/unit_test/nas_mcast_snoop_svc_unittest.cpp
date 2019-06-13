@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <gtest/gtest.h>
 
+#include "std_utils.h"
 #include "cps_class_map.h"
 #include "cps_api_operation.h"
 #include "cps_api_object_key.h"
@@ -104,12 +105,12 @@ static bool mc_event_handler(cps_api_object_t evt_obj, void *param)
         cps_api_attr_id_t attr_id = cps_api_object_attr_id(it.attr);
         if (attr_id == mrouter_id) {
             if (event_type == 1) {
-                strncpy(received_igmp_mrouter_ifname, (const char *)cps_api_object_attr_data_bin(it.attr),
+                safestrncpy(received_igmp_mrouter_ifname, (const char *)cps_api_object_attr_data_bin(it.attr),
                         sizeof(received_igmp_mrouter_ifname));
                 std::cout<<"Handling mrouter event VLAN: "<<received_vlan<<
                          " mrouter interface: "<<received_igmp_mrouter_ifname<<std::endl;
             } else if (event_type == 2) {
-                strncpy(received_mld_mrouter_ifname, (const char *)cps_api_object_attr_data_bin(it.attr),
+                safestrncpy(received_mld_mrouter_ifname, (const char *)cps_api_object_attr_data_bin(it.attr),
                         sizeof(received_mld_mrouter_ifname));
                 std::cout<<"Handling mrouter event VLAN: "<<received_vlan<<
                          " mrouter interface: "<<received_mld_mrouter_ifname<<std::endl;

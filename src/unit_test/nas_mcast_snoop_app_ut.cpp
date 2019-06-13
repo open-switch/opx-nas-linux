@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -27,6 +27,7 @@
 #include "cps_api_object_key.h"
 #include "cps_api_events.h"
 #include "ietf-igmp-mld-snooping.h"
+#include "bridge-model.h"
 #include "std_utils.h"
 #include <iostream>
 #include <string>
@@ -121,7 +122,7 @@ static bool _create_vlans (int start_vlan, int num_vlans)
     char cmd [CMD_BUF_LEN];
     for (int vlan = start_vlan;vlan <start_vlan +num_vlans;vlan++) {
        memset(cmd,'\0',sizeof(cmd));
-       sprintf(cmd, "cps_config_vlan.py  --add --id %d  --vlantype 1 -t --port %s", vlan, mem_ports.c_str());
+       snprintf(cmd, CMD_BUF_LEN-1, "cps_config_vlan.py  --add --id %d  --vlantype 1 -t --port %s", vlan, mem_ports.c_str());
        if (system(cmd) == -1) {
           cout<< "Failed to create VLAN " <<vlan<<endl;
           return false;
@@ -140,7 +141,41 @@ static bool _delete_vlans (int start_vlan, int num_vlans)
     }
     return true;
 }
-static bool _validate_snoop_status_in_os(int start_vlan, int num_vlans)
+static bool _create_1dBridge (int start_vlan, int num_vlans)
+{
+   char name [CMD_BUF_LEN];
+   for (int vlan = start_vlan;vlan <start_vlan +num_vlans;vlan++) {
+      memset(name,'\0',sizeof(name));
+      sprintf(name, "vn%d", vlan);
+      cps_api_object_t commit_obj = cps_api_object_create();
+      cps_api_key_from_attr_with_qual(cps_api_object_key(commit_obj),BRIDGE_DOMAIN_BRIDGE_OBJ, cps_api_qualifier_TARGET);      cps_api_object_attr_add(commit_obj,BRIDGE_DOMAIN_BRIDGE_NAME,name, sizeof(name));
+
+      if(cps_commit(commit_obj, cps_api_oper_CREATE) == false) {
+        cout<<"Commit Failed for status"<<endl;
+        return false;
+      }
+   }
+
+    return true;
+}
+static bool _delete_1dBridge (int start_vlan, int num_vlans)
+{
+   char name [CMD_BUF_LEN];
+   for (int vlan = start_vlan;vlan <start_vlan +num_vlans;vlan++) {
+      memset(name,'\0',sizeof(name));
+      sprintf(name, "vn%d", vlan);
+      cps_api_object_t commit_obj = cps_api_object_create();
+      cps_api_key_from_attr_with_qual(cps_api_object_key(commit_obj),BRIDGE_DOMAIN_BRIDGE_OBJ, cps_api_qualifier_TARGET);
+      cps_api_object_attr_add(commit_obj,BRIDGE_DOMAIN_BRIDGE_NAME,name, sizeof(name));
+
+      if(cps_commit(commit_obj, cps_api_oper_DELETE) == false) {
+        cout<<"Commit Failed for status"<<endl;
+        return false;
+      }
+   }
+   return true;
+}
+static bool _validate_snoop_status_in_os(bool is_1dBridge, int start_vlan, int num_vlans)
 {
     char file_path[CMD_BUF_LEN];
     int fail_count = 0;
@@ -148,7 +183,11 @@ static bool _validate_snoop_status_in_os(int start_vlan, int num_vlans)
 
     for (int vlan = start_vlan;vlan < start_vlan + num_vlans;vlan++) {
        memset(file_path,'\0',sizeof(file_path));
-       sprintf(file_path, "/sys/devices/virtual/net/br%d/bridge/multicast_snooping",vlan);
+       if (is_1dBridge){
+          sprintf(file_path, "/sys/devices/virtual/net/vn%d/bridge/multicast_snooping",vlan);
+       }else {
+          sprintf(file_path, "/sys/devices/virtual/net/br%d/bridge/multicast_snooping",vlan);
+       }
        fp = fopen(file_path, "r");
        if (fp == NULL) {
            cout<< "File not found " <<file_path<<endl;
@@ -168,6 +207,7 @@ static bool _validate_snoop_status_in_os(int start_vlan, int num_vlans)
     if (fail_count > 0)
        return false;
 
+    cout<< "Succesfully validated snooping disabled status in kernel " <<endl;
     return true;
 }
 
@@ -504,12 +544,13 @@ TEST(std_mcast_snoop_app_test, mcast_snoop_default_status_in_os) {
     }
     sleep(1);
 
-    if (_create_vlans(start_vlan, num_vlans) == 0)
-       ASSERT_TRUE(0);
+    if (_create_vlans(start_vlan, num_vlans) == 0) {
+        ASSERT_TRUE(0);
+    }
 
     sleep(1);
 
-    if(_validate_snoop_status_in_os(start_vlan, num_vlans) == 0) {
+    if(_validate_snoop_status_in_os(0, start_vlan, num_vlans) == 0) {
        ASSERT_TRUE(0);
     }
 }
@@ -602,16 +643,41 @@ TEST(std_mcast_snoop_app_test, mcast_snoop_cleanup) {
 
     ASSERT_TRUE(pass);
 }
+/* Dot1d Bridge test */
+TEST(std_mcast_snoop_app_test, mcast_snoop_default_1d_status_in_os) {
+    /*  Create few 1d bridge and check in linux snooping gets disabled */
+
+    int start_vlan, num_vlans;
+
+    start_vlan = 100;
+    num_vlans = 5;
+
+    sleep(1);
+
+    if (_create_1dBridge(start_vlan, num_vlans) == 0) {
+       ASSERT_TRUE(0);
+    }
+
+    sleep(1);
+
+    if(_validate_snoop_status_in_os(1, start_vlan, num_vlans) == 0) {
+       ASSERT_TRUE(0);
+    }
+
+    if (_delete_1dBridge(start_vlan, num_vlans) == 0) {
+       ASSERT_TRUE(0);
+    }
+}
 
 /*IGMP EBTABLES,IPTABLES rules */
 const string eb_broute_igmp {"-p IPv4 --logical-in br200 --ip-proto igmp -j mark --mark-set 0x64 --mark-target ACCEPT"};
 const string eb_nat_igmp {"-p IPv4 --ip-proto igmp --mark 0x1 -j ACCEPT"};
 const string ip_raw_mark_igmp {"-A PREROUTING -p igmp -m mark --mark 0x64 -j IGMPSNOOP"};
-const string ip_raw_igmp_snoop1 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x1200\" -j DROP"};
-const string ip_raw_igmp_snoop2 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x1600\" -j DROP"};
-const string ip_raw_igmp_snoop3 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x1700\" -j DROP"};
-const string ip_raw_igmp_snoop4 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x2200\" -j DROP"};
-const string ip_raw_igmp_snoop5 {"-A IGMPSNOOP ! -d 224.0.0.1/32 -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x1100\" -j DROP"};
+const string ip_raw_igmp_snoop1 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x1200\" -j ACCEPT"};
+const string ip_raw_igmp_snoop2 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x1600\" -j ACCEPT"};
+const string ip_raw_igmp_snoop3 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x1700\" -j ACCEPT"};
+const string ip_raw_igmp_snoop4 {"-A IGMPSNOOP -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x2200\" -j ACCEPT"};
+const string ip_raw_igmp_snoop5 {"-A IGMPSNOOP ! -d 224.0.0.1/32 -p igmp -m u32 --u32 \"0x0>>0x16&0x3c@0x0>>0x10&0xff00=0x1100\" -j ACCEPT"};
 const string ip_raw_igmp_remove_mark {"-A IGMPSNOOP -j MARK --set-xmark 0x0/0xffffffff"};
 
 /*MLD EBTABLES,IPTABLES rules */
@@ -623,10 +689,10 @@ const string eb_nat_mld_done {"-p IPv6 --ip6-proto ipv6-icmp --ip6-icmp-type 130
 
 const string eb_broute_mld {"-p IPv6 --logical-in br200 --ip6-proto ipv6-icmp -j mark --mark-set 0x64 --mark-target ACCEPT"};
 const string ip6_raw_mark_mld {"-A PREROUTING -p ipv6-icmp -m mark --mark 0x64 -j MLDSNOOP"};
-const string ip6_raw_mld_snoop1 {"-A MLDSNOOP -p ipv6-icmp -m icmp6 --icmpv6-type 131 -j DROP"};
-const string ip6_raw_mld_snoop2 {"-A MLDSNOOP -p ipv6-icmp -m icmp6 --icmpv6-type 132 -j DROP"};
-const string ip6_raw_mld_snoop3 {"-A MLDSNOOP -p ipv6-icmp -m icmp6 --icmpv6-type 143 -j DROP"};
-const string ip6_raw_mld_snoop4 {"-A MLDSNOOP ! -d ff02::1/128 -p ipv6-icmp -m icmp6 --icmpv6-type 130 -j DROP"};
+const string ip6_raw_mld_snoop1 {"-A MLDSNOOP -p ipv6-icmp -m icmp6 --icmpv6-type 131 -j ACCEPT"};
+const string ip6_raw_mld_snoop2 {"-A MLDSNOOP -p ipv6-icmp -m icmp6 --icmpv6-type 132 -j ACCEPT"};
+const string ip6_raw_mld_snoop3 {"-A MLDSNOOP -p ipv6-icmp -m icmp6 --icmpv6-type 143 -j ACCEPT"};
+const string ip6_raw_mld_snoop4 {"-A MLDSNOOP ! -d ff02::1/128 -p ipv6-icmp -m icmp6 --icmpv6-type 130 -j ACCEPT"};
 const string ip6_raw_mld_remove_mark {"-A MLDSNOOP -p ipv6-icmp -j MARK --set-xmark 0x0/0xffffffff"};
 
 

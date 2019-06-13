@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -23,6 +23,7 @@
 #include "nas_os_vlan_utils.h"
 #include "std_mac_utils.h"
 #include "nas_os_if_priv.h"
+#include "nas_os_int_utils.h"
 #include "ds_api_linux_interface.h"
 #include "nas_os_if_conversion_utils.h"
 #include "std_thread_tools.h"
@@ -163,7 +164,7 @@ t_std_error nas_os_handle_mac_port_chg(const char *vlan_name, const char *mac_st
     req->ndm_state =  NUD_REACHABLE;
 
     if(is_static){
-        req->ndm_state |= NUD_NOARP;
+        req->ndm_state |= NUD_NOARP; /* a device with no destination cache*/
     }
 
     req->ndm_flags = NTF_MASTER;
@@ -248,17 +249,92 @@ t_std_error nas_os_mac_add_pending_mac_if_event(hal_ifindex_t ifindex){
 }
 
 
+static bool nas_os_is_zero_mac(const hal_mac_addr_t *mac_addr) {
+   hal_mac_addr_t zero_mac = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+   if(memcmp(mac_addr, zero_mac, sizeof(hal_mac_addr_t)) == 0) {
+        return true;
+    }
+    return false;
+}
+
+
+
+/* Special macs are 00:00:00:00:00:00 and non-unicast.
+ * REPLACE and self  don't work on special mac for remote endpt
+ * So use append instead of replace for all specail MAC in general
+ */
+
+static bool nas_os_special_mac (const hal_mac_addr_t *mac_addr) {
+   if (nas_os_is_zero_mac(mac_addr) || (!std_mac_isunicast(mac_addr))) {
+        return true;
+   }
+   return false;
+}
+
 t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
 
     cps_api_object_attr_t ifindex_attr = cps_api_object_attr_get(obj,BASE_MAC_TABLE_IFINDEX);
     cps_api_object_attr_t mac_attr = cps_api_object_attr_get(obj,BASE_MAC_TABLE_MAC_ADDRESS);
     cps_api_object_attr_t static_attr = cps_api_object_attr_get(obj,BASE_MAC_TABLE_STATIC);
+    cps_api_object_attr_t age_out_disable_attr = cps_api_object_attr_get(obj,BASE_MAC_FORWARDING_TABLE_AGE_OUT_DISABLE);
     cps_api_object_attr_t vlan_attr = cps_api_object_attr_get(obj,BASE_MAC_TABLE_VLAN);
     cps_api_object_attr_t ifname_attr = cps_api_object_attr_get(obj,BASE_MAC_TABLE_IFNAME);
     cps_api_operation_types_t op = cps_api_object_type_operation(cps_api_object_key(obj));
 
-    if(ifindex_attr == NULL ||  mac_attr == NULL || vlan_attr == NULL || ifname_attr == NULL){
-        EV_LOG(ERR,NAS_OS,0,"NAS-OS-MAC","Ifindex/MAC/VLAN Missing for creating/updating MAC"
+    if(ifindex_attr == NULL ||  mac_attr == NULL){
+        EV_LOGGING(NAS_OS,ERR,"NAS-OS-MAC","Ifindex/MAC Missing for creating/updating MAC"
+            "Entry in the kernel bridge");
+        return STD_ERR(L2MAC,PARAM,0);
+    }
+
+    uint32_t af_index = AF_INET;
+    cps_api_object_it_t it;
+    cps_api_object_attr_t ip_addr_attr = NULL;
+    cps_api_attr_id_t rem_endpoint = BASE_MAC_FORWARDING_TABLE_ENDPOINT_IP;
+    bool remote_mac = false, self_mac = false;
+    hal_ifindex_t ifindex = cps_api_object_attr_data_u32(ifindex_attr);
+    BASE_CMN_INTERFACE_TYPE_t if_type = BASE_CMN_INTERFACE_TYPE_L3_PORT;
+
+    bool age_out_disable = false;
+    if(age_out_disable_attr){
+        age_out_disable = cps_api_object_attr_data_uint(age_out_disable_attr);
+    }
+    if (os_intf_type_get(ifindex, &if_type) != STD_ERR_OK) {
+        /* This can fail for just created vtep/vxlan interface */
+        EV_LOGGING(NAS_OS,INFO,"NAS-OS-MAC","Failed to get interface type for %d", ifindex);
+    }
+    if (if_type == BASE_CMN_INTERFACE_TYPE_VXLAN) {
+        remote_mac = true;
+    } else if (if_type == BASE_CMN_INTERFACE_TYPE_BRIDGE) {
+        self_mac = true;
+    }
+
+    if(cps_api_object_it(obj,&rem_endpoint,1,&it)) {
+
+        cps_api_attr_id_t ids[3] = {BASE_MAC_FORWARDING_TABLE_ENDPOINT_IP,0,
+                                          BASE_MAC_FORWARDING_TABLE_ENDPOINT_IP_ADDR_FAMILY };
+
+        const size_t ids_len = sizeof(ids)/sizeof(ids[0]);
+
+        cps_api_object_attr_t ip_family_attr = cps_api_object_e_get(obj,ids,ids_len);
+
+        ids[2] = BASE_MAC_FORWARDING_TABLE_ENDPOINT_IP_ADDR;
+        ip_addr_attr = cps_api_object_e_get(obj,ids,ids_len);
+
+        af_index = cps_api_object_attr_data_u32(ip_family_attr);
+        if ((op == cps_api_oper_CREATE) && (ip_addr_attr == NULL)) {
+            EV_LOGGING(NAS_OS,ERR,"NAS-OS-MAC","IP address is missing for remote MAC create");
+            return STD_ERR(L2MAC,PARAM,0);
+        } else if ((op == cps_api_oper_CREATE) && (ip_addr_attr != NULL)) {
+            /* If vxlan was just created and not yet updated in cache, os_intf_type_get fails
+             * If we are programming endpoint ip it has to be on vtep/vxlan interface.
+             *  So set remote_mac to true
+             */
+            remote_mac = true;
+        }
+    }
+    if ((self_mac == false) && (remote_mac == false) && (vlan_attr == NULL)) {
+        EV_LOGGING(NAS_OS,ERR,"NAS-OS-MAC","vlan attr is  Missing for creating/updating MAC"
             "Entry in the kernel bridge");
         return STD_ERR(L2MAC,PARAM,0);
     }
@@ -270,41 +346,30 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
     struct ndmsg *req = (struct ndmsg *) nlmsg_reserve(nlh,sizeof(buff),sizeof(struct ndmsg));
 
     bool is_static = false;
-    if(static_attr){
-        is_static = cps_api_object_attr_data_u32(static_attr);
+    /* If it's a self static MAC, dont add static flag
+     * since static needs different settings like NUD_NOARP..*/
+    if (self_mac == false) {
+        if(static_attr){
+            is_static = cps_api_object_attr_data_u32(static_attr);
+        }
     }
+
     nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
     std::string s;
-    if(op == cps_api_oper_CREATE){
-        nlh->nlmsg_flags |=   NLM_F_CREATE | (is_static ? NLM_F_APPEND : NLM_F_EXCL) ;
-        nlh->nlmsg_type = RTM_NEWNEIGH ;
-        s = "create";
-    }else if (op == cps_api_oper_SET){
-        nlh->nlmsg_flags |=   NLM_F_CREATE | NLM_F_APPEND ;
-        nlh->nlmsg_type = RTM_NEWNEIGH ;
-        s = "set";
-    }else if(op == cps_api_oper_DELETE){
-        nlh->nlmsg_type = RTM_DELNEIGH ;
-        s = "delete";
-
-    }else{
-        EV_LOG(ERR,NAS_OS,0,"NAS-L2-MAC","Invalid/No operation passed when configuring MAC "
-                "entry in the kernel");
-        return STD_ERR(L2MAC,PARAM,0);
-    }
+    hal_mac_addr_t *mac_addr = (hal_mac_addr_t*)cps_api_object_attr_data_bin(mac_attr);
 
     req->ndm_family = PF_BRIDGE;
     req->ndm_state =  NUD_REACHABLE;
 
-    if(is_static){
+    if(is_static || age_out_disable){
         req->ndm_state |= NUD_NOARP;
     }
-    req->ndm_flags = NTF_MASTER;
 
-    hal_vlan_id_t vid = cps_api_object_attr_data_u16(vlan_attr);
-    hal_ifindex_t ifindex = cps_api_object_attr_data_u32(ifindex_attr);
+    hal_vlan_id_t vid =  0;
 
-    if(ifname_attr){
+    if(ifname_attr && vlan_attr){
+        // vlan subinterface case
+        vid = cps_api_object_attr_data_u16(vlan_attr);
         char * intf_name = (char *)cps_api_object_attr_data_bin(ifname_attr);
         char vlan_intf_name[HAL_IF_NAME_SZ+1];
         nas_os_get_vlan_if_name(intf_name,cps_api_object_attr_len(ifname_attr),vid,vlan_intf_name);
@@ -312,16 +377,63 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
     }
 
     req->ndm_ifindex = ifindex;
-
     nlmsg_add_attr(nlh,sizeof(buff),NDA_LLADDR,(void *)cps_api_object_attr_data_bin(mac_attr),sizeof(hal_mac_addr_t));
-    hal_mac_addr_t *mac_addr = (hal_mac_addr_t*)cps_api_object_attr_data_bin(mac_attr);
     char mac_buff[MAC_STRING_LEN];
-    char vlan_name[HAL_IF_NAME_SZ+1];
-    snprintf(vlan_name, HAL_IF_NAME_SZ, "br%d", vid);
     std_mac_to_string(mac_addr,mac_buff,sizeof(mac_buff));
-    std::string key = std::string(vlan_name)+"."+std::string(mac_buff);
-    EV_LOGGING(NAS_OS,INFO,"NAS-L2-MAC","Op:%s MAC:%s VLAN:%s Key:%s mbr:%d",
-                    ((op == cps_api_oper_DELETE) ? "Del" : "Add/Set"), mac_buff, vlan_name, key.c_str(), ifindex);
+    std::string key = std::to_string(ifindex)+"."+std::string(mac_buff);
+
+    bool self_flg_set =false;
+    if (self_mac) {
+        /* This self flag setting automatically assigns the master itself
+         * for trapping the pkts from bridge to network layer for routing. */
+        req->ndm_flags = NTF_SELF;
+        req->ndm_state = NUD_PERMANENT;
+        self_flg_set =true;
+        EV_LOGGING(NAS_OS,INFO,"NAS-L2-MAC","(SELF + PERMA): Op:%s MAC:%s  Key:%s mbr:%d",
+                        ((op == cps_api_oper_DELETE) ? "Del" : "Add/Set"), mac_buff, key.c_str(), ifindex);
+    } else if (remote_mac) {
+        uint32_t addr_len = (af_index == AF_INET)?HAL_INET4_LEN:HAL_INET6_LEN;
+        if (ip_addr_attr) {
+            nlmsg_add_attr(nlh,sizeof(buff),NDA_DST,cps_api_object_attr_data_bin(ip_addr_attr),addr_len);
+            EV_LOGGING(NAS_OS,INFO,"NAS-L2-MAC"," remote IP is 0x%x  state 0x%x flags 0x%x",
+                *(uint32_t *)cps_api_object_attr_data_bin(ip_addr_attr), req->ndm_state, req->ndm_flags);
+        }
+        /* 00 MAC can never have a master in any situation: i.e adding to bridge , adding to a bridge member or for remote ip */
+        if (!nas_os_is_zero_mac(mac_addr)) {
+            req->ndm_flags = NTF_SELF|NTF_MASTER;
+        } else {
+            req->ndm_flags = NTF_SELF;
+        }
+        self_flg_set =true;
+    } else {
+        req->ndm_flags = NTF_MASTER;
+        /* replace will work for master flag always for unicast and non-unicast */
+
+        char vlan_name[HAL_IF_NAME_SZ+1];
+        snprintf(vlan_name, HAL_IF_NAME_SZ, "br%d", vid);
+        // TODO just use interface index itself as part of the key
+        key = std::string(vlan_name)+"."+std::string(mac_buff);
+        EV_LOGGING(NAS_OS,INFO,"NAS-L2-MAC","(ONLY_MASTER) Op:%s MAC:%s VLAN:%s Key:%s mbr:%d",
+                        ((op == cps_api_oper_DELETE) ? "Del" : "Add/Set"), mac_buff, vlan_name, key.c_str(), ifindex);
+    }
+
+    if (op == cps_api_oper_CREATE || op == cps_api_oper_SET){
+        if (nas_os_special_mac(mac_addr) && self_flg_set) {
+           nlh->nlmsg_flags |=   NLM_F_CREATE |NLM_F_APPEND;
+        } else {
+           nlh->nlmsg_flags |=   NLM_F_CREATE |  NLM_F_REPLACE;
+        }
+        nlh->nlmsg_type = RTM_NEWNEIGH ;
+        s = "set or create";
+    }else if(op == cps_api_oper_DELETE){
+        nlh->nlmsg_type = RTM_DELNEIGH ;
+        s = "delete";
+    }else{
+        EV_LOGGING(NAS_OS,ERR,"NAS-L2-MAC","Invalid %d operation passed when configuring MAC %s on ifindex %d in OS",
+                         op, mac_buff, ifindex);
+        return STD_ERR(L2MAC,PARAM,0);
+    }
+
     if (is_static) {
         /*
          * In case of static mac, when mac is programmed in the kernel expectation is that mac
@@ -342,15 +454,19 @@ t_std_error nas_os_mac_update_entry(cps_api_object_t obj){
         }
     }
 
+    EV_LOGGING(NAS_OS,INFO,"NAS-L2-MAC","%sd mac address entry %s for Interface %d with"
+            "cps operation %d flags 0x%x state 0x%x NLM flag 0x%x type:%d in Kernel",s.c_str(),
+            std_mac_to_string(mac_addr,mac_buff,sizeof(mac_buff)),
+            req->ndm_ifindex,op, req->ndm_flags, req->ndm_state, nlh->nlmsg_flags, nlh->nlmsg_type);
     t_std_error rc;
     rc = nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_NEI,nlh, buff, sizeof(buff));
     int err_code = STD_ERR_EXT_PRIV (rc);
     if(err_code != 0){
-        EV_LOGGING(NAS_OS,DEBUG,"NAS-L2-MAC","Failed to %s mac address entry %s for Interface %d "
+        EV_LOGGING(NAS_OS,DEBUG,"NAS-L2-MAC","Failed to %s mac address entry %s for Interface %d flags %d state %d Error code %d "
                 "with cps operation %d in Kernel",s.c_str(),std_mac_to_string(mac_addr,mac_buff,sizeof(mac_buff)),
-                req->ndm_ifindex,op);
+                ifindex, req->ndm_flags, req->ndm_state, err_code, op);
 
-        if(!is_static){
+        if(!is_static && !age_out_disable && !self_mac){
             /*
              * When mac programmed to kernel is dynamic, kernel will reject the mac programming
              * if stp state of the interface the mac being programmed to is not learning or forwarding.

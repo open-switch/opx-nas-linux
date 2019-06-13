@@ -1,4 +1,4 @@
-# Copyright (c) 2018 Dell Inc.
+# Copyright (c) 2019 Dell Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -102,9 +102,21 @@ def _get_ip_addr(vrf_name, dev=None):
         cmd.append('dev')
         cmd.append(dev)
 
-    if run_command(cmd, output) != 0:
+    if run_command(cmd, output, False) != 0:
         return result
     return output
+
+def _get_ip_addr_details(vrf_name, dev=None):
+     output = []
+     result = []
+     cmd = [iplink_cmd, 'netns', 'exec', vrf_name, 'ip','-d', 'addr', 'show']
+     if dev is not None:
+        cmd.append('dev')
+        cmd.append(dev)
+
+     if run_command(cmd, output,False) != 0:
+        return result
+     return output
 
 
 def _find_field(pattern, key, line):
@@ -196,7 +208,7 @@ class InterfaceObject:
 
         self._create_type()
         self.mac = None
-
+        self.type = 0 # will install ip table rule if type is 1
         # first line after header - contains IP - therefore group all lines
         # based on this spacing
         self.ips = lines[1:]
@@ -207,6 +219,10 @@ class InterfaceObject:
         for i in self.ips:
             if i[0].find('link/ether') != -1:
                 self.mac = self.process_ether_line(i)
+                continue
+            
+            if i[0].find('macvlan') != -1:
+                self.type = 1  # will install ip table rule if type is 1
                 continue
 
             _af, _addr, _prefix = self.process_ip_line(i)
@@ -241,8 +257,7 @@ def get_if_details(vrf_name=None, dev=None):
 
     return resp
 
-
-def add_ip_addr(addr_and_prefix, dev, af, vrf_name='default'):
+def add_ip_addr(addr_and_prefix, dev, af, vrf_name='default', log_fail = True):
     bcast_addr = None
     if af == "ipv4":
         try:
@@ -272,7 +287,7 @@ def add_ip_addr(addr_and_prefix, dev, af, vrf_name='default'):
         else:
             cmd = cmds['bcast_flag']['vrf_name']
 
-    if run_command(cmd, res) == 0:
+    if run_command(cmd, res, log_fail) == 0:
         return True
 
     return False
@@ -339,23 +354,30 @@ def create_loopback_if(name, mtu=None, mac=None):
     return False
 
 
-def create_macvlan_if(name, parent_if, mac):
+def create_macvlan_if(name, parent_if, mac, vrf='default'):
     res = []
-    cmd = [iplink_cmd,
-           'link', 'add',
-           'link', parent_if, name,
-           'address', mac,
-           'type', 'macvlan'
-           ]
+    cmd = None
+    if vrf == 'default':
+        cmd = [iplink_cmd, 'link', 'add', 'link', parent_if, name,
+               'address', mac, 'type', 'macvlan']
+    else:
+        cmd = [iplink_cmd, 'netns', 'exec', vrf, 'ip', 'link', 'add',
+               'link', parent_if, name, 'address', mac, 'type', 'macvlan']
 
     if run_command(cmd, res) == 0:
         return True
     return False
 
 
-def delete_if(name):
+def delete_if(name, vrf='default'):
     res = []
-    if run_command([iplink_cmd, 'link', 'delete', 'dev', name], res) == 0:
+    cmd = None
+    if vrf == 'default':
+        cmd = [iplink_cmd, 'link', 'delete', 'dev', name]
+    else:
+        cmd = [iplink_cmd, 'netns', 'exec', vrf, 'ip', 'link', 'delete', 'dev', name]
+
+    if run_command(cmd,res) == 0:
         return True
     return False
 
@@ -390,21 +412,33 @@ def set_if_mtu(name, mtu):
     return False
 
 
-def set_if_mac(name, mac):
+def set_if_mac(name, mac, vrf='default'):
     res = []
-    if run_command([iplink_cmd, 'link', 'set', 'dev', name, 'address', mac], res) == 0:
-        return True
+    if vrf == 'default':
+        if run_command([iplink_cmd, 'link', 'set', 'dev', name, 'address', mac], res) == 0:
+            return True
+    else:
+        if run_command([iplink_cmd, 'netns', 'exec', vrf, 'ip', 'link', 'set', 'dev',
+                       name, 'address', mac], res) == 0:
+            return True
+
     return False
 
 
-def set_if_state(name, state):
+def set_if_state(name, state, vrf='default'):
     res = []
     if int(state) == 1:
         state = 'up'
     else:
         state = 'down'
-    if run_command([iplink_cmd, 'link', 'set', 'dev', name, state], res) == 0:
-        return True
+    if vrf == 'default':
+        if run_command([iplink_cmd, 'link', 'set', 'dev', name, state], res) == 0:
+            return True
+    else:
+        if run_command([iplink_cmd, 'netns', 'exec', vrf, 'ip', 'link', 'set', 'dev',
+                       name, state], res) == 0:
+            return True
+
     return False
 
 def ip_forwarding_config(ip_type, if_name, fwd, vrf_name='default'):
@@ -447,14 +481,21 @@ def ipv6_accept_dad_config(if_name, accept_dad, vrf_name='default'):
         return True
     return False
 
+def ipv4_arp_accept_config(if_name, arp_accept, vrf_name='default'):
+    res = []
+    if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'sysctl', '-w',\
+                   'net.ipv4.conf.'+if_name+'.arp_accept='+arp_accept], res) == 0:
+        return True
+    return False
+
 def is_intf_exist_in_vrf(vrf_name, ifname):
     res = []
     if vrf_name == 'default':
-        if run_command([iplink_cmd, 'link', 'show', 'dev', ifname], res) == 0:
+        if run_command([iplink_cmd, 'link', 'show', 'dev', ifname], res, False) == 0:
             return True
     else:
         if run_command([iplink_cmd, 'netns', 'exec', vrf_name, 'ip', 'link',\
-                       'show', 'dev', ifname], res) == 0:
+                       'show', 'dev', ifname], res, False) == 0:
             return True
     return False
 
@@ -561,7 +602,7 @@ def handle_interface_event_for_lla_cfg():
         lla_addr_with_prefix_len = lla_addr + '/64'
         # Configuring the LLA on the L2 intf will lead to error, pass the exception
         try:
-            add_ip_addr(lla_addr_with_prefix_len, intf_name,"ipv6",vrf_name)
+            add_ip_addr(lla_addr_with_prefix_len, intf_name,"ipv6",vrf_name, False)
         except:
             pass
 

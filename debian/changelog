@@ -1,3 +1,32 @@
+opx-nas-linux (5.28.0) unstable; urgency=medium
+
+  * Update: publish FDB event with master index for remote MAC entry
+  * Update: disabling ipv6 config on sub interface in OS.
+  * Update: code changes to set admin status of all sub interfaces before handling the parent 
+            interface admin state, when parent interface needs to be shutdown.
+  * Update: avoid checking vlan Id in case of remote mac
+  * Bugfix: nas journal logs cleanup
+  * Feature: dhcp v4 and v6 snooping
+  * Feature: APIs to support loopback control in nas-linux
+  * Update: avoid the reserved IP address logs and fixed the module for journal log
+  * Bugfix: fixed the error logs for reserved IP address filter
+  * Update: management-vrf : install the ip/ip6 table rule based on source ip
+  * Update: If_type check is not required when the mgmt intf is getting associated with mgmt VRF
+  * Update: do not log an error when the LLA is configured from address handling thread.
+  * Update: added handling for icmpv6 protocol type
+  * Update: added the default VRF-id check for the interface util functions that are meant only for default VRF.
+  * Update: using id_generator_t to get the next unused vrf id. 
+  * Update: update only the non-zero parent interface in the lower layer intf attribute while publishing the nbr event.
+  * Update: ignore route netlink events from OS if the route configurations are expected with CPS object from App
+  * Update: APIs to support loopback control in nas-linux
+  * Update: disable snooping in kernel for 1d bridges(Similar to 1Q bridges).
+  * Update: clearing per-vlan SAI stats
+  * Update: base mcast default journal logs
+  * Bugfix: management vrf - eth0 accepts junk packets if the destIP is not eth0's IP
+  * Update: copyright year
+
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Wed, 06 Jun 2019 19:25:43 -0800
+
 opx-nas-linux (5.25.0+opx3) unstable; urgency=medium
 
   * Update: README copyright placement
@@ -196,7 +225,7 @@ opx-nas-linux (4.8.0) unstable; urgency=medium
   * Update: Added support for handling management vlan
   * Update: Handling IPv6 neighbor flush on IPv6 address delete
 
- -- Dell EMC <ops-dev@lists.openswitch.net>  Wed, 21 June 2017 20:56:43 -0700
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Wed, 21 Jun 2017 20:56:43 -0700
 
 opx-nas-linux (1.0.1) unstable; urgency=medium
 

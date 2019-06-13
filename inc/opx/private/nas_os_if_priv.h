@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -139,6 +139,8 @@ public:
     void if_info_delete(hal_ifindex_t ifx, std::string &name);
     bool if_info_get(hal_ifindex_t ifx, if_info_t& if_info);
     bool if_info_get_admin(hal_ifindex_t ifx, bool& admin);
+    hal_ifindex_t if_info_get_master(hal_ifindex_t ifx);
+
     bool get_ifindex_from_name(std::string &if_name, hal_ifindex_t &if_index);
     void for_each_mbr(std::function <void (int ix, if_info_t& if_info)> fn);
 };

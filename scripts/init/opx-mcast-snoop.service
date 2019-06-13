@@ -1,0 +1,13 @@
+[Unit]
+Description=Multicast Snooping Configuration Service
+After=opx-cps.service
+Wants=opx-cps.service
+OnFailure=service_onfailure@%n.service
+
+[Service]
+Type=notify
+EnvironmentFile=/etc/opx/opx-environment
+ExecStart=/usr/bin/python -u /usr/bin/base_mcast_snoop.py
+
+[Install]
+WantedBy=multi-user.target

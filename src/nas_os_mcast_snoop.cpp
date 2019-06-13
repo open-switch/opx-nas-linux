@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -69,18 +69,17 @@ static bool _populate_mdb_entry_object(struct br_mdb_entry *br_entry, int msg_ty
     std::string _addr_proto;
     char *grp_addr = nullptr;
     size_t grp_addr_len = 0;
+    char ip6_grp_addr[INET6_ADDRSTRLEN];
     if (ntohs(br_entry->addr.proto) == ETH_P_IP) {
         struct in_addr ip_addr;
         ip_addr.s_addr = br_entry->addr.u.ip4;
 
         grp_addr = inet_ntoa(ip_addr);
-        grp_addr_len = strlen(grp_addr);
+        grp_addr_len = strlen(grp_addr)+1;
         _addr_proto = "ipv4";
     }
     else if (ntohs(br_entry->addr.proto) == ETH_P_IPV6) {
-        char ip6_grp_addr[INET6_ADDRSTRLEN];
         inet_ntop(AF_INET6, &(br_entry->addr.u.ip6), ip6_grp_addr, INET6_ADDRSTRLEN);
-
         grp_addr = ip6_grp_addr;
         grp_addr_len = INET6_ADDRSTRLEN;
         _addr_proto = "ipv6";
@@ -108,7 +107,7 @@ static bool _populate_mdb_entry_object(struct br_mdb_entry *br_entry, int msg_ty
 
     ids[2] = (*_cps_keymap)[_addr_proto]["grp_addr"];
 
-    cps_api_object_e_add(obj, ids, ids_len, cps_api_object_ATTR_T_BIN, grp_addr, grp_addr_len+1);
+    cps_api_object_e_add(obj, ids, ids_len, cps_api_object_ATTR_T_BIN, grp_addr, grp_addr_len);
     EV_LOGGING(NETLINK_MCAST_SNOOP,DEBUG,"NAS-LINUX-MCAST-SNOOP", "Group address %s ", grp_addr);
 
     // INFO log with all information

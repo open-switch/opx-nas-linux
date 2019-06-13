@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -45,6 +45,9 @@
 #include <net/if.h>
 #include <unordered_map>
 #include <unordered_set>
+#include <iostream>
+#include <fstream>
+#include <sstream>
 #include <mutex>
 #include <map>
 
@@ -52,12 +55,11 @@
 static std::mutex _intf_mutex;
 static auto & _intf_to_tagged_intf_map = *(new std::unordered_map<hal_ifindex_t,std::unordered_set<hal_ifindex_t>>);
 static auto & _intf_str_to_tagged_ifindex_map = *(new std::map<std::string,hal_ifindex_t>);
-const static int MAX_CPS_MSG_BUFF=4096;
 
 /*
  * Default mac aging time 30 minutes in jiffy
  */
-static const unsigned long default_bridge_mac_ageing = 180000;
+static const unsigned long default_bridge_mac_ageing = 540000;
 
 extern "C"{
 
@@ -67,7 +69,7 @@ bool nas_os_set_bridge_default_mac_ageing(hal_ifindex_t br_index)
 
     char intf_name[HAL_IF_NAME_SZ+1];
     if(cps_api_interface_if_index_to_name(br_index,intf_name,sizeof(intf_name))==NULL){
-        EV_LOGGING(NAS_OS,ERR,"NAS-LINUX-INTERFACE","Invalid Interface Index %d ",br_index);
+        EV_LOGGING(NAS_OS,INFO,"NAS-LINUX-INTERFACE","Invalid Interface Index %d ",br_index);
         return false;
     }
     std::string age_str =  SYSFS_CLASS_NET + std::string(intf_name) + "/bridge/ageing_time";
@@ -487,10 +489,41 @@ static t_std_error nas_os_add_tag_port_to_os(int vlan_id, const char *vlan_name,
 
     if(nl_do_set_request(NL_DEFAULT_VRF_NAME, nas_nl_sock_T_INT,nlh,buff,sizeof(buff)) != STD_ERR_OK ||
         (*vlan_index = cps_api_interface_name_to_if_index(vlan_name)) == 0) {
-        EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "Failed to add tagged intf %s in kernel", vlan_name);
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failed to add tagged intf %s in kernel", vlan_name);
         return (STD_ERR(NAS_OS,FAIL, 0));
     }
     return STD_ERR_OK;
+}
+
+/*
+ * This function disable the IPv6 on subinterfaces
+ */
+
+bool nas_os_interface_ipv6_config_handle (const char *intf_name, bool enable)
+{
+
+    std::stringstream str_stream;
+    str_stream << "/proc/sys/net/ipv6/conf/" << intf_name << "/disable_ipv6";
+    std::string path = str_stream.str();
+    std::ofstream ipv6_conf (path.c_str());
+    if(!ipv6_conf.good()) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failed to set ipv6 config for interface (%s)",
+                (intf_name != NULL) ? intf_name : "Null:empty");
+        return false;
+    }
+
+    if (enable) {
+        /* Enable the IPv6 on VLAN member port */
+        ipv6_conf << "0";
+    } else {
+        /* Disable the IPv6 on VLAN member port */
+        ipv6_conf << "1";
+    }
+
+    EV_LOGGING(NAS_OS,INFO,"NAS-UPD-IPV6", "IPv6 file string:%s active:%d",
+            path.c_str(), enable);
+    ipv6_conf.close();
+    return true;
 }
 
 
@@ -536,6 +569,13 @@ t_std_error nas_os_create_subinterface(cps_api_object_t obj) {
 
     cps_api_object_attr_delete(obj,DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
     cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,vlan_index);
+
+    /*
+     * Disable ipv6 on sub interface.
+     */
+    if (nas_os_interface_ipv6_config_handle(sub_intf, false) == false) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failed: To disable ipv6 on sub interface (%s)", sub_intf);
+    }
     return STD_ERR_OK;
     //Add the interface to bridge comes separately
 }
@@ -955,7 +995,7 @@ bool nas_os_tag_port_exist(cps_api_object_t obj){
     port_index = (int)cps_api_object_attr_data_u32(vlan_t_port_attr);
 
     if(cps_api_interface_if_index_to_name(port_index,if_name,sizeof(if_name))==NULL){
-        EV_LOG(ERR,NAS_OS,0,"NAS-LINUX-INTERFACE","Invalid Interface Index %d ",port_index);
+        EV_LOG(INFO,NAS_OS,0,"NAS-LINUX-INTERFACE","Invalid Interface Index %d ",port_index);
         return false;
     }
     nas_os_get_vlan_if_name(if_name, sizeof(if_name), vlan_id, vlan_name);

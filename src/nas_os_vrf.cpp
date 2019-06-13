@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -32,6 +32,7 @@
 #include "nas_os_l3_utils.h"
 #include "netlink_tools.h"
 #include "std_utils.h"
+#include "nas_base_utils.h"
 #include "ds_api_linux_interface.h"
 #include "private/nas_os_if_priv.h"
 #include "hal_if_mapping.h"
@@ -273,10 +274,22 @@ t_std_error nas_os_program_vrf_intf(cps_api_object_t obj, const char *ni_name, c
         cps_api_object_delete(cps_obj);
         return rc;
     }
+    cps_api_object_attr_t type_attr = cps_api_object_attr_get(obj, IF_INTERFACES_INTERFACE_TYPE);
+    if (type_attr == nullptr) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS-VRF","Failed to find the interface type ");
+        cps_api_object_delete(cps_obj);
+        return rc;
+    }
+
+    char *if_ietf_type = (char *)cps_api_object_attr_data_bin(type_attr);
+
     cps_api_object_attr_add(cps_obj, IF_INTERFACES_INTERFACE_NAME, (const char*)if_name,
                             strlen(if_name)+1);
     cps_api_object_attr_add(cps_obj, NI_IF_INTERFACES_INTERFACE_BIND_NI_NAME, (const char*)ni_name,
                             strlen(ni_name)+1);
+    cps_api_object_attr_add(cps_obj, IF_INTERFACES_INTERFACE_TYPE, (const char*)if_ietf_type,
+                            strlen(if_ietf_type)+1);
+
     if (nas_os_cps_commit(NAS_VRF_OP_DATA_VRF_INTF_UPDATE, obj, cps_obj, op) != STD_ERR_OK) {
         return rc;
     }
@@ -285,7 +298,13 @@ t_std_error nas_os_program_vrf_intf(cps_api_object_t obj, const char *ni_name, c
     return STD_ERR_OK;
 }
 
-static bool nas_os_get_vrf_id(const char *vrf_name, uint32_t *p_vrf_id) {
+bool nas_os_get_vrf_id(const char *vrf_name, uint32_t *p_vrf_id) {
+
+    if (strncmp(vrf_name, NAS_DEFAULT_VRF_NAME, NAS_VRF_NAME_SZ) == 0) {
+        *p_vrf_id = NAS_DEFAULT_VRF_ID;
+        return true;
+    }
+
     std_rw_lock_read_guard l(&vrf_lock);
     auto it = vrf_map.find(vrf_name);
     if (it != vrf_map.end()) {
@@ -295,6 +314,7 @@ static bool nas_os_get_vrf_id(const char *vrf_name, uint32_t *p_vrf_id) {
     return false;
 }
 
+nas::id_generator_t vrf_id_gen {NAS_MAX_DATA_VRF_ID};
 static t_std_error nas_os_update_vrf_id(bool is_add, const char *vrf_name, uint32_t *p_vrf_id) {
     std_rw_lock_write_guard l(&vrf_lock);
     std::string vrf_name_str(vrf_name);
@@ -309,6 +329,7 @@ static t_std_error nas_os_update_vrf_id(bool is_add, const char *vrf_name, uint3
                 vrf_id_map.erase(id_it);
             }
             vrf_map.erase(it);
+            vrf_id_gen.release_id(it->second);
         } else {
             EV_LOGGING(NAS_OS, ERR, "NAS-OS-VRF", "VRF %s not present!", vrf_name);
         }
@@ -323,22 +344,9 @@ static t_std_error nas_os_update_vrf_id(bool is_add, const char *vrf_name, uint3
     if (strncmp(vrf_name, NAS_MGMT_VRF_NAME, NAS_VRF_NAME_SZ) == 0) {
         vrf_id = NAS_MGMT_VRF_ID;
     } else {
-        bool is_vrf_id_present = false;
-        /* @@TODO Optimize this by using NAS id generator to support 1K VRFs effectively -
-         * Exclude default VRF, while getting the VRF-id for DATA VRF */
-        for (vrf_id = (NAS_DEFAULT_VRF_ID  + 1); vrf_id <= NAS_MAX_DATA_VRF_ID; vrf_id++) {
-            is_vrf_id_present = false;
-            for (auto itr = vrf_map.begin(); itr != vrf_map.end(); ++itr) {
-                if (vrf_id == itr->second) {
-                    is_vrf_id_present = true;
-                    break;
-                }
-            }
-            if (is_vrf_id_present == false) {
-                break;
-            }
-        }
-        if (vrf_id > NAS_MAX_DATA_VRF_ID) {
+        try {
+            vrf_id = (uint32_t) vrf_id_gen.alloc_id();
+        } catch (nas::base_exception& e) {
             EV_LOGGING(NAS_OS, ERR, "NAS-OS-VRF", "Max VRFs:%d reached!", NAS_MAX_DATA_VRF_ID);
             return (STD_ERR(NAS_OS,FAIL, 0));
         }

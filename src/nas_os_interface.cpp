@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -26,7 +26,6 @@
 #include "cps_api_operation.h"
 #include "cps_api_object_key.h"
 #include "cps_class_map.h"
-#include "std_assert.h"
 #include "dell-interface.h"
 #include "dell-base-if.h"
 #include "dell-base-if-linux.h"
@@ -34,6 +33,8 @@
 #include "nas_os_if_priv.h"
 #include "nas_os_int_utils.h"
 #include "hal_if_mapping.h"
+#include "nas_os_if_conversion_utils.h"
+#include "nas_os_l3_utils.h"
 
 #include "nas_nlmsg_object_utils.h"
 #include "ds_api_linux_interface.h"
@@ -50,6 +51,7 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <string.h>
+#include <unordered_set>
 #include <stdio.h>
 #include <unistd.h>
 #include <map>
@@ -160,7 +162,7 @@ static void _set_mac(cps_api_object_t obj, struct nlmsghdr *nlh, struct ifinfoms
     int addr_len = strlen(static_cast<char *>(addr));
     if (std_string_to_mac(&mac_addr, static_cast<const char *>(addr), addr_len)) {
         char mac_str[40] = {0};
-        EV_LOGGING(NAS_OS, NOTICE, "NAS-OS", "Setting mac address %s, actual string %s, len %d",
+        EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "Setting mac address %s, actual string %s, len %d",
                 std_mac_to_string(&mac_addr,mac_str,sizeof(mac_str)), static_cast<char *>(addr), addr_len);
         nlmsg_add_attr(nlh,len,IFLA_ADDRESS, mac_addr , cps_api_object_attr_len(attr));
     }
@@ -170,7 +172,7 @@ static void _set_mtu(cps_api_object_t obj, struct nlmsghdr *nlh, struct ifinfoms
     cps_api_object_attr_t attr = cps_api_object_attr_get(obj, DELL_IF_IF_INTERFACES_INTERFACE_MTU);
     if (attr==NULL) return;
     int mtu = (int)cps_api_object_attr_data_uint(attr) - NAS_LINK_MTU_HDR_SIZE;
-    EV_LOGGING(NAS_OS, NOTICE, "NAS-OS", "set mtu to %d ", mtu);
+    EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "set mtu to %d ", mtu);
     nlmsg_add_attr(nlh,len,IFLA_MTU, &mtu , sizeof(mtu));
 }
 
@@ -188,6 +190,66 @@ static void _set_ifalias(cps_api_object_t obj, struct nlmsghdr *nlh, struct ifin
     nlmsg_add_attr(nlh,len,IFLA_IFALIAS, name , strlen(name)+1);
 }
 
+/*
+ * set_subintf_admin function is defined to handle admin state of all the sub-interfaces
+ * of an interface.
+ */
+static void _set_subintf_admin (const char *vrf_name, hal_ifindex_t if_index, bool state)
+{
+    char buff[NL_MSG_INTF_BUFF_LEN];
+    std::unordered_set<hal_ifindex_t> _intf_list;
+    uint32_t vrf_id = 0;
+
+    /*
+     * get vrf_id for a specified vrf.
+     */
+    if (nas_os_get_vrf_id(vrf_name, &vrf_id) == false) {
+        EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Unable to get vrf-id for (%s), if_index: %u, state: %s",
+                vrf_name, if_index, (state)? "true" : "false");
+        return;
+    }
+
+    /*
+     * Get sub inetrfaces list for the specified inetrface.
+     */
+    if (get_tagged_intf_list(if_index, _intf_list)){
+        for (auto it : _intf_list){
+            interface_ctrl_t intf_ctrl;
+            memset(&intf_ctrl, 0, sizeof(interface_ctrl_t));
+            intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
+            intf_ctrl.if_index = it;
+            intf_ctrl.vrf_id = vrf_id;
+
+            if ((dn_hal_get_interface_info(&intf_ctrl)) != STD_ERR_OK) {
+                EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Unable to get sub interface name from ifindex \
+                        vrf: %s, if_index: %u", vrf_name, it);
+                continue;
+            }
+            memset(buff, 0, sizeof(buff));
+            struct nlmsghdr *nlh = (struct nlmsghdr *) nlmsg_reserve((struct nlmsghdr *)buff,
+                    sizeof(buff), sizeof(struct nlmsghdr));
+            struct ifinfomsg *ifmsg = (struct ifinfomsg *) nlmsg_reserve(nlh,sizeof(buff),
+                    sizeof(struct ifinfomsg));
+
+            nas_os_pack_nl_hdr(nlh, RTM_SETLINK, NLM_F_REQUEST);
+            nas_os_pack_if_hdr(ifmsg, AF_UNSPEC, 0, it);
+
+            unsigned flags = 0;
+            if(nas_os_util_int_flags_get(vrf_name, intf_ctrl.if_name, &flags) == STD_ERR_OK) {
+                if (state) {
+                    ifmsg->ifi_flags = flags | IFF_UP;
+                } else {
+                    ifmsg->ifi_flags = flags & ~IFF_UP;
+                }
+                if(nl_do_set_request(vrf_name, nas_nl_sock_T_INT, nlh, buff,sizeof(buff)) != STD_ERR_OK) {
+                    EV_LOGGING(NAS_OS, ERR, "NAS-OS", "Failure updating interface(vrf: %s, Intf: %s,\
+                        if_idx: %u) in kernel", vrf_name, intf_ctrl.if_name, it);
+                }
+            }
+        }
+    }
+}
+
 static void _set_admin(cps_api_object_t obj, struct nlmsghdr *nlh, struct ifinfomsg * inf,size_t len) {
     cps_api_object_attr_t attr = cps_api_object_attr_get(obj,IF_INTERFACES_INTERFACE_ENABLED);
     if (attr==NULL) return;
@@ -198,7 +260,7 @@ static void _set_admin(cps_api_object_t obj, struct nlmsghdr *nlh, struct ifinfo
     } else  {
         inf->ifi_flags &= ~IFF_UP;
     }
-    EV_LOGGING(NAS_OS, NOTICE, "NAS-OS", "set admin state to %s ", ((admin_enabled) ? "true" : "false"));
+    EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "set admin state to %s ", ((admin_enabled) ? "true" : "false"));
 }
 
 static t_std_error _set_intf_attribute (const char *vrf_name, hal_ifindex_t if_index,
@@ -225,7 +287,7 @@ static t_std_error _set_intf_attribute (const char *vrf_name, hal_ifindex_t if_i
         ifmsg->ifi_flags = flags;
     }
 
-    EV_LOGGING(NAS_OS, NOTICE, "NAS-OS", "set attribute for  %s ", if_name);
+    EV_LOGGING(NAS_OS, DEBUG, "NAS-OS", "set attribute for  %s ", if_name);
     static const std::map<cps_api_attr_id_t,void (*)( cps_api_object_t ,struct nlmsghdr *,
             struct ifinfomsg *,size_t)> _funcs = {
             {DELL_IF_IF_INTERFACES_INTERFACE_MTU, _set_mtu},
@@ -234,6 +296,25 @@ static t_std_error _set_intf_attribute (const char *vrf_name, hal_ifindex_t if_i
             {NAS_OS_IF_ALIAS, _set_ifalias },
             {DELL_IF_IF_INTERFACES_INTERFACE_PHYS_ADDRESS, _set_mac},
     };
+
+    if (id == IF_INTERFACES_INTERFACE_ENABLED) {
+        cps_api_object_attr_t attr = cps_api_object_attr_get(obj,IF_INTERFACES_INTERFACE_ENABLED);
+        if (attr != NULL) {
+            bool admin_enabled = (bool) cps_api_object_attr_data_uint(attr);
+            /*
+             * Disabling parent interface taking more time in kernel when it is a tagged
+             * member of multiple vlans, due to this other threads are getting starved
+             * no packets was getting lifted from NPU to kernel. Disabling sub interfaces
+             * before parant interface improved the overall interface disable time.
+             * This done only on admin down case, for admin up kernel doesnt allow admin up
+             * on sub interfaces when parent is in admin down state. Kernel will take care
+             * of bringing up sub interfaces when admin up is done on parent inetrface.
+             */
+            if (admin_enabled == false) {
+                _set_subintf_admin(vrf_name, if_index, admin_enabled);
+            }
+        }
+    }
 
     auto it =_funcs.find(id);
     if (it==_funcs.end()) return STD_ERR_OK;

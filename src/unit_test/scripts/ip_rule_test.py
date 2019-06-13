@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2018 Dell Inc.
+# Copyright (c) 2019 Dell Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -160,7 +160,6 @@ def test_rule_obj():
     print 'IPv4 rule created:'
     print str(rule1)
     print str(rule2)
-    assert rule1 == rule1
     assert not rule1 == rule2
     assert rule1.match(src_ip = socket.inet_pton(af, '1.1.1.0'), src_prefix_len = 24)
     assert not rule2.match(src_ip = socket.inet_pton(af, '1.1.1.0'), src_prefix_len = 24)
@@ -170,7 +169,7 @@ def test_rule_obj():
                                 cfg.VrfSvcsRuleAction.RULE_ACTION_DNAT, af,
                                 src_ip = socket.inet_pton(af, '1::1'), src_prefix_len = 128,
                                 dst_ip = socket.inet_pton(af, '2::1'),
-                                protocol = cfg.VrfSvcsRuleProto.RULE_PROTO_ICMP)
+                                protocol = cfg.VrfSvcsRuleProto.RULE_PROTO_ICMPV6)
     rule2 = cfg.VrfIncomingSvcsRule(cfg.VrfSvcsRuleType.RULE_TYPE_IP, 'test_vrf',
                                 cfg.VrfSvcsRuleAction.RULE_ACTION_DNAT, af,
                                 src_ip = socket.inet_pton(af, '1::2'), src_prefix_len = 128,
@@ -179,7 +178,6 @@ def test_rule_obj():
     print 'IPv6 rule created:'
     print str(rule1)
     print str(rule2)
-    assert rule1 == rule1
     assert not rule1 == rule2
     assert rule1.match(src_ip = socket.inet_pton(af, '1::1'))
     assert not rule2.match(src_ip = socket.inet_pton(af, '1::1'))

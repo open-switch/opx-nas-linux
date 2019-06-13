@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -37,13 +37,16 @@ extern "C" {
  * @obj : CPS API object which contains bridge_name to create
  *
  * @br_index : Returns the bridge index on response during create
+ * # TO Be Replaced by nas_os_create_bridge API
  */
 t_std_error nas_os_add_vlan(cps_api_object_t obj, hal_ifindex_t *br_index);
 
+t_std_error nas_os_create_bridge(cps_api_object_t obj, hal_ifindex_t *br_index);
 /**
  * @brief : Del Vlan : This removes the bridge interface from kernel
  *
  * @obj : CPS API object which contains bridge_name and kernel ifindex
+ * # TO Be Replaced by nas_os_delete_bridge API
  */
 
 t_std_error nas_os_del_vlan(cps_api_object_t obj);
@@ -155,6 +158,18 @@ t_std_error nas_os_vlan_set_member_port_mtu(cps_api_object_t obj);
  * @return STD_ERR_OK if successful otherwise different error code
  */
 t_std_error nas_os_change_master(hal_ifindex_t slave_ifindex,hal_vlan_id_t vlan_id ,hal_ifindex_t master_ifindex);
+
+/*
+ * @brief : Update enable or disable ipv6 on the  interface in the  OS
+ *
+ * @intf_name - interface  name
+ *
+ * @enable  : set to true to enable and false to disable.
+ *
+ * @return: true if successful
+ */
+
+bool nas_os_interface_ipv6_config_handle (const char *intf_name, bool enable);
 
 #ifdef __cplusplus
 }

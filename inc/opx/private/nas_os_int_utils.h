@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -78,6 +78,8 @@ t_std_error nas_os_util_int_mtu_get(const char *name, unsigned int *mtu);
 
 t_std_error nas_os_util_int_get_if(cps_api_object_t obj, hal_ifindex_t ifix);
 
+t_std_error os_intf_type_get(hal_ifindex_t ifix, BASE_CMN_INTERFACE_TYPE_t *if_type);
+
 t_std_error nas_os_util_int_flags_get(const char *vrf_name, const char *name, unsigned *flags);
 
 t_std_error nas_os_util_int_get_if_details(const char *name, cps_api_object_t obj);
@@ -90,6 +92,9 @@ t_std_error os_intf_mac_addr_get(hal_ifindex_t ifix, hal_mac_addr_t mac);
 
 t_std_error nas_os_util_int_if_index_get(const char *vrf_name, const char *if_name, int *if_index);
 
+
+t_std_error os_intf_master_get(hal_ifindex_t ifix, hal_ifindex_t *master_idx);
+
 t_std_error nas_os_util_int_if_name_get(const char *vrf_name, int if_index, char *if_name);
 
 t_std_error nas_os_util_int_oper_status_get (const char *vrf_name, const char *name,
@@ -99,6 +104,7 @@ t_std_error nas_os_util_int_ethtool_cmd_data_get (const char *vrf_name, const ch
 
 t_std_error nas_os_util_int_ethtool_cmd_data_set (const char *vrf_name, const char *name, ethtool_cmd_data_t *eth_cmd);
 t_std_error nas_os_util_int_stats_get (const char *vrf_name, const char *name, os_int_stats_t *stats);
+bool nas_os_interface_ipv6_config_handle (const char *intf_name, bool enable);
 #ifdef __cplusplus
 }
 #endif

@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# Copyright (c) 2018 Dell Inc.
+# Copyright (c) 2019 Dell Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -34,14 +34,8 @@ iplink_cmd = '/sbin/ip'
 _keys = {
     'base-ip/ipv4': cps.key_from_name('target', 'base-ip/ipv4'),
     'base-ip/ipv6': cps.key_from_name('target', 'base-ip/ipv6'),
-    'base-ip/ipv4/address':
-    cps.key_from_name('target', 'base-ip/ipv4/address'),
-    'base-ip/ipv6/address':
-    cps.key_from_name('target', 'base-ip/ipv6/address'),
     cps.key_from_name('target', 'base-ip/ipv4'): 'base-ip/ipv4',
     cps.key_from_name('target', 'base-ip/ipv6'): 'base-ip/ipv6',
-    cps.key_from_name('target', 'base-ip/ipv4/address'): 'base-ip/ipv4/address',
-    cps.key_from_name('target', 'base-ip/ipv6/address'): 'base-ip/ipv6/address',
 }
 
 _ip_unreach_key = cps.key_from_name('target', 'os-icmp-cfg/ip-unreachables-config')
@@ -87,6 +81,9 @@ def _get_proc_ipv6_autoconf_entry(dev):
 
 def _get_proc_ipv6_accept_dad_entry(dev):
     return ['proc', 'sys', 'net', 'ipv6', 'conf', dev, 'accept_dad']
+
+def _get_proc_ipv4_arp_accept_entry(dev):
+    return ['proc', 'sys', 'net', 'ipv4', 'conf', dev, 'arp_accept']
 
 def _get_proc_variable(path):
     try:
@@ -200,10 +197,12 @@ def _get_ip_objs(filt, resp):
 
     vrf_name = None
     try:
-       vrf_name = filt.get_attr_data('base-ip/' + af + '/vrf-name')
+        vrf_name = filt.get_attr_data('base-ip/' + af + '/vrf-name')
     except:
-       # VRF-name is optional attribute.
-       pass
+        # VRF-name is optional attribute.
+        pass
+    if (vrf_name is None) and (name is not None):
+        vrf_name = 'default'
 
     lst = dn_base_ip_tool.get_if_details(vrf_name, name)
 
@@ -254,39 +253,6 @@ def _get_ip_objs(filt, resp):
     return True
 
 
-def _get_ip_addr_obj(filt, resp):
-    af = _get_af_from_obj(filt)
-    name = _get_key_from_obj(filt)
-
-    vrf_name = None
-    try:
-       vrf_name = filt.get_attr_data('base-ip/' + af + '/vrf-name')
-    except:
-       # VRF-name is optional attribute.
-       pass
-
-    lst = dn_base_ip_tool.get_if_details(vrf_name, name)
-
-    for _if in lst:
-
-        for ip in _if.ip:
-            if not _ip_line_type_valid(af, ip):
-                continue
-
-            o = create_obj_from_line(
-                'base-ip/' + af + '/address',
-                _if.ifix,
-                _if.ifname, _if.vrf_name)
-            if not filt.key_compare(
-                {'base-ip/' + af + '/name': o.get_attr_data('base-ip/' + af + '/name'),
-                                   'base-ip/' + af + '/ifindex': o.get_attr_data('base-ip/' + af + '/ifindex')}):
-                continue
-
-            process_ip_line(af, o.get()['data'], ip)
-            resp.append(o.get())
-
-    return True
-
 
 def get_cb(methods, params):
     obj = cps_object.CPSObject(obj=params['filter'])
@@ -294,23 +260,7 @@ def get_cb(methods, params):
 
     if obj.get_key() == _keys['base-ip/ipv4'] or obj.get_key() == _keys['base-ip/ipv6']:
         return _get_ip_objs(obj, resp)
-
-    if obj.get_key() == _keys['base-ip/ipv4/address'] or obj.get_key() == _keys['base-ip/ipv6/address']:
-        return _get_ip_addr_obj(obj, resp)
-
     return False
-
-
-def _create_ip_and_prefix_from_obj(obj, iptype):
-    addr = obj.get_attr_data('base-ip/' + iptype + '/address/ip')
-    prefix = obj.get_attr_data('base-ip/' + iptype + '/address/prefix-length')
-    addr = binascii.unhexlify(addr)
-    af = socket.AF_INET
-    if iptype == 'ipv6':
-        af = socket.AF_INET6
-    addr = socket.inet_ntop(af, addr)
-    addr = addr + '/' + str(prefix)
-    return addr
 
 
 def trans_cb(methods, params):
@@ -385,6 +335,25 @@ def trans_cb(methods, params):
                         return False
                 except:
                     pass
+            elif af == 'ipv4':
+                try:
+                    arp_accept = obj.get_attr_data('base-ip/' + af + '/arp-accept')
+                    if arp_accept == 1:
+                        arp_accept = 0
+                    else:
+                        arp_accept = 1
+
+                    if vrf_name == 'default':
+                        ret_val = _set_proc_variable(_get_proc_ipv4_arp_accept_entry(name), str(arp_accept))
+                    else:
+                        ret_val = dn_base_ip_tool.ipv4_arp_accept_config(name, str(arp_accept), vrf_name)
+                    log_msg = 'CPS set for VRF:' + vrf_name + 'intf-name:' + name + ' ipv4 arp accept status:'\
+                              + str(arp_accept) + 'ret_val:' + str(ret_val)
+                    log_info(log_msg)
+                    if ret_val == -1:
+                        return False
+                except:
+                    pass
 
             try:
                 fwd = obj.get_attr_data('base-ip/' + af + '/forwarding')
@@ -401,19 +370,6 @@ def trans_cb(methods, params):
                 pass
             return True
 
-        if params['operation'] == 'create' and obj.get_key() == _keys['base-ip/' + af + '/address']:
-            addr = _create_ip_and_prefix_from_obj(obj, af)
-            log_info("Attempting to add address:%s intf:%s vrf:%s"% (addr, name, vrf_name))
-            if dn_base_ip_tool.add_ip_addr(addr, name, af, vrf_name):
-                return True
-            log_err("Attempting to add address:%s intf:%s vrf:%s failed"% (addr, name, vrf_name))
-
-        if params['operation'] == 'delete' and obj.get_key() == _keys['base-ip/' + af + '/address']:
-            addr = _create_ip_and_prefix_from_obj(obj, af)
-            log_info("Attempting to del address:%s intf:%s vrf:%s"% (addr, name, vrf_name))
-            if dn_base_ip_tool.del_ip_addr(addr, name, vrf_name):
-                return True
-            log_err("Attempting to del address:%s intf:%s vrf:%s failed"% (addr, name, vrf_name))
     except Exception as e:
         log_err("Faild to commit operation exception:%s params:%s"% (e, params))
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2018 Dell Inc.
+# Copyright (c) 2019 Dell Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -25,7 +25,7 @@ import dn_base_ip_tool
 import event_log as ev
 from shutil import rmtree
 import nas_mac_addr_utils as ma
-
+import threading
 # For IP services/Routing based on leaked route to work across VRFs,
 # the veth pair is required between two VRFs (source and destination VRFs).
 # For example, if the veth needs to be created between management (nsid- 1024)
@@ -47,7 +47,9 @@ import nas_mac_addr_utils as ma
 # _vrf_src_ip_map -> This stores [VRF, AF, IP] to apply on the veth interface
 #                    in order for the traffic originated from leaked VRF and exit via parent VRF
 #                    to use that as the source-IP in the packet.
-
+# _vrf_ip_service_ip_addr -> This stores [VRF, AF, IP]. this is used to install the iptable rules in prerouting chain. 
+#
+#
 _default_vrf_name = 'default'
 _mgmt_vrf_name = 'management'
 iplink_cmd = '/sbin/ip'
@@ -69,7 +71,7 @@ rej_rule_mark_value = 255
 veth_internal_ip_prefix = '127.0.0.0'
 veth_internal_ip_pref_len = 8
 veth_internal_ip6_prefix = 'fda5:74c8:b79e:4::'
-veth_internal_ip6_pref_len = veth_intf_ip6_pref_len
+veth_internal_ip6_pref_len = 64
 
 _outgoing_ip_svcs_map = {}
 # Use the private port range for internal NAT translations to handle the remote requests (e.g. SSH)
@@ -84,6 +86,10 @@ _start_vrf_sub_net_val = 100
 _end_vrf_sub_net_val = 200
 vrf_chain_name = 'VRF'
 _DEFAULT_VRF_ID = 0
+_vrf_ip_service_ip_addr = {}
+
+_vrf_ipsvcs_mutex = None
+link_local_ip6_prefix = 'fe80:'
 
 def log_err(msg):
     ev.logging("BASE_VRF",ev.ERR,"VRF-CONFIG","","",0,msg)
@@ -410,7 +416,7 @@ def process_vrf_config(is_add, vrf_name, vrf_id):
 
     return True
 
-def process_vrf_intf_config(is_add, if_name, vrf_name):
+def process_vrf_intf_config(is_add, if_name, vrf_name, if_type):
     res = []
     if_index = 0
     v_mac_str = None
@@ -462,7 +468,20 @@ def process_vrf_intf_config(is_add, if_name, vrf_name):
         v_mac_str = str(res[1].split(' ')[5])
         return (True,if_name,if_index,v_mac_str)
 
-    v_mac_str = ma.get_offset_mac_addr(ma.get_base_mac_addr(), 0)
+    # Mgmt interface will always use base-MAC, since we move eth0 itself from default to mgmt VRF,
+    # there is no MAC change.
+    # All non-default VRF interfaces get one allocated MAC address for VRF.
+    # Virtual-Network interface is assigned separate MAC than other
+    # L3 interfaces.
+    if vrf_name == _mgmt_vrf_name:
+        v_mac_str = ma.get_offset_mac_addr(ma.get_base_mac_addr(), 0)
+    elif if_type == 'base-if:virtualNetwork':
+        v_mac_base,_ = ma.if_get_mac_addr('virtual-network')
+        v_mac_str =  ma.get_offset_mac_addr(v_mac_base,1)
+        # Assign virtual-network MAC address
+    else:
+        v_mac_str,_ = ma.get_appl_mac_addr('vrf', 'routing')
+    log_info('VRF MAC address %s' % (str(v_mac_str)))
     if vrf_name == _mgmt_vrf_name:
         # @@TODO Migrate this to MAC-VLAN approach - L3 intf with management VRF binding
         cmd = [iplink_cmd, 'link', 'set', 'dev', if_name, 'netns', vrf_name]
@@ -583,6 +602,72 @@ def _veth_ip_get(src_vrf_name, dst_vrf_name='default', is_peer_ip=False):
     nexthop_ip6 = veth_intf_ip6_prefix + str(sub_net_val) + veth_ip6_suffix
     return (True, nexthop_ip, nexthop_ip6)
 
+""" This api will install the ip/ipv6 table rule for all the ip/ipv6 address configured in vrf 
+    This api will be called when ip service is enabled on that vrf 
+"""
+def ip_svcs_iptable_rule_setup(src_vrf_name,isAdd):
+      response = []
+      res = dn_base_ip_tool._get_ip_addr_details(src_vrf_name)
+      res = dn_base_ip_tool._group_lines_based_on_position(0,res)
+      log_info('ip_svcs_iptable_rule_setup src_vrf_name = %s isAdd = %d'% (src_vrf_name,isAdd))
+      global _vrf_ipsvcs_mutex
+      _vrf_ipsvcs_mutex.acquire()
+      for i in res:
+        af = 'ipv4'
+        line = dn_base_ip_tool.InterfaceObject(i, src_vrf_name)
+        if line.type == 1:
+          for ip_addr in line.ip:
+            if ip_addr[0] == 'inet6':
+              af = 'ipv6'
+              if veth_intf_ip6_prefix in ip_addr[1]:
+                log_info('internal ipv6 address skip this')
+                continue
+              if link_local_ip6_prefix in ip_addr[1]:
+                log_info('ignore link local event')
+                continue
+
+            src_ip_key = '*'+src_vrf_name+'*'+str(af)+'*'+ip_addr[1]+'*'
+            val = _vrf_ip_service_ip_addr.get(src_ip_key, None)
+            if isAdd == False and val is None:
+              log_err('Getting delete ip address but ip address is not there')
+              continue
+            if isAdd and val is not None:
+              log_info('Getting add ip address but iptable rule is already added for that ip')
+              continue
+
+            if (isAdd):
+              _vrf_ip_service_ip_addr[src_ip_key] = 1
+              ipt_action = '-A'
+            else:
+              _vrf_ip_service_ip_addr.pop(src_ip_key, None)
+              ipt_action = '-D'
+            if af == 'ipv6':
+              log_info('VRF:%s dev:%s addr:%s family:%s isAdd %d' % (src_vrf_name, line.ifname,ip_addr[1],af,isAdd))
+              cmd = [iplink_cmd, 'netns', 'exec', src_vrf_name, 'ip6tables', '-t', 'nat', ipt_action, 'PREROUTING',\
+                     '-d',ip_addr[1],'-j', 'VRF']
+
+            else:
+              log_info('VRF:%s dev:%s addr:%s family:%s isAdd %d ' % (src_vrf_name, line.ifname,ip_addr[1],af,isAdd))
+              cmd = [iplink_cmd, 'netns', 'exec', src_vrf_name, 'iptables', '-t', 'nat', ipt_action , 'PREROUTING',\
+                     '-d',ip_addr[1],'-j', 'VRF']
+
+            if run_command(cmd, response) != 0:
+              log_info('run_command returns an error')
+              _vrf_ipsvcs_mutex.release()
+              return False
+
+      if isAdd:
+         ipt_action = '-A'
+      else:
+         ipt_action = '-D'
+       # this rule will handle link local address scenario. it will be deleted when vrf is deleted. 
+      cmd = [iplink_cmd, 'netns', 'exec', src_vrf_name, 'ip6tables', '-t', 'nat', ipt_action , 'PREROUTING',\
+              '-d','fe80::/10','-j', 'VRF']
+      if run_command(cmd,response) != 0:
+        log_info('run_command returns an error')
+      _vrf_ipsvcs_mutex.release()
+      return True
+
 """ Setup the veth interface for IP services and leaked VRF to work across VRFs.
 """
 def ip_svcs_subnet_setup(is_add, src_vrf_name, dst_vrf_name='default'):
@@ -594,6 +679,14 @@ def ip_svcs_subnet_setup(is_add, src_vrf_name, dst_vrf_name='default'):
     vrf_id = _vrf_name_to_id.get(src_vrf_name, None)
     if vrf_id is None:
         return (False, sub_net_val)
+
+# Install source specific iptable rule when ip service is enabled for non default vrf
+    if src_vrf_name != 'default' and dst_vrf_name == 'default':
+       ip_svcs_iptable_rule_setup(src_vrf_name,is_add) # this api will acquire the lock.
+    
+    if dst_vrf_name != 'default' and src_vrf_name == 'default':
+       ip_svcs_iptable_rule_setup(dst_vrf_name,is_add) # this api will acquire the lock.
+
 
     log_info('ip svcs subnet setup is_add:%d src-vrf:%s dst-vrf-name:%s' % (is_add, src_vrf_name, dst_vrf_name))
     _src_port_range = str(_start_private_port)+'-'+str(_end_private_port)
@@ -705,7 +798,7 @@ def ip_svcs_subnet_setup(is_add, src_vrf_name, dst_vrf_name='default'):
         if vrf_id is None:
             continue
         intf_name = 'vdst-nsid'+str(vrf_id)
-        dn_base_ip_tool.add_ip_addr(key.split("*")[3], intf_name, key.split("*")[1], key.split("*")[2])
+        dn_base_ip_tool.add_ip_addr(key.split("*")[3], intf_name, key.split("*")[2], key.split("*")[1])
 
     if src_vrf_name != 'default' and dst_vrf_name != 'default':
         return (True, sub_net_val)
@@ -719,10 +812,6 @@ def ip_svcs_subnet_setup(is_add, src_vrf_name, dst_vrf_name='default'):
         if iptable == 'ip6tables':
             _src_ip = '['+src_private_ip6+']'
             _dst_ip = dst_private_ip6
-        cmd = [iplink_cmd, 'netns', 'exec', src_vrf_name, iptable, '-t', 'nat', '-A', 'PREROUTING',\
-              '-j', 'VRF']
-        if run_command(cmd, res) != 0:
-            return False
 
         for proto in ip_proto:
             cmd = [iplink_cmd, 'netns', 'exec', src_vrf_name, iptable, '-t', 'nat', '-A', 'POSTROUTING',\
@@ -896,4 +985,170 @@ def process_leaked_rt_config(op, af, dst_vrf_name, prefix, prefix_len, nexthop_i
         if run_command(cmd, res) != 0:
             return False
         return True
+
+def vrf_ip_svcs_mutex_init():
+    global _vrf_ipsvcs_mutex
+    _vrf_ipsvcs_mutex = threading.Lock()
+
+# API for progam ipv4 source address in ip6tables
+
+def ipv4_rule_programming(obj,isAdd):
+    res = []
+    response = []
+    try:
+      vrf_name = obj.get_attr_data('base-ip/ipv4/vrf-name')
+      intf_name = obj.get_attr_data('base-ip/ipv4/name')
+      intf_addr = obj.get_attr_data('base-ip/ipv4/address/ip')
+      intf_addr = binascii.unhexlify(intf_addr)
+      intf_addr = socket.inet_ntop(socket.AF_INET, intf_addr)
+      af = 'ipv4'
+      ip_svcs_subnet = get_veth_ip_subnet(vrf_name)
+      if ip_svcs_subnet is None:
+        log_info('IP service is not enabled in VRF %s' % vrf_name)
+        return True
+      if vrf_name != 'management':  # for management vrf macvlan type is not set
+        res = dn_base_ip_tool._get_ip_addr_details(vrf_name,intf_name)
+        res = dn_base_ip_tool._group_lines_based_on_position(0,res)
+        for i in res:
+          line = dn_base_ip_tool.InterfaceObject(i, vrf_name)
+          log_info('line = %s '% line.type)
+          if line.type != 1:
+            return True
+      src_ip_key = '*'+vrf_name+'*'+str(af)+'*'+intf_addr+'*'
+      val = _vrf_ip_service_ip_addr.get(src_ip_key, None)
+      if isAdd == False and val is None:
+        log_err('getting delete ip address but ip service is not enabled')
+        return True
+      if isAdd and val is not None:
+        log_info('Getting add ip address but iptable rule is already added for that ip')
+        return True
+
+      if (isAdd):
+        _vrf_ip_service_ip_addr[src_ip_key] = 1
+        ipt_action = '-A'
+      else:
+        _vrf_ip_service_ip_addr.pop(src_ip_key, None)
+        ipt_action = '-D'
+      log_info('VRF:%s dev:%s addr:%s family:%s isAdd %d ' % (vrf_name, intf_name,intf_addr,af,isAdd))
+      cmd = [iplink_cmd, 'netns', 'exec', vrf_name, 'iptables', '-t', 'nat', ipt_action , 'PREROUTING',\
+             '-d',intf_addr,'-j', 'VRF']
+
+      if run_command(cmd, response) == 0:
+        return True
+      return False
+    except ValueError as e:
+      return True
+
+# API for progam ipv6 source address in ip6tables
+def ipv6_rule_programming(obj,isAdd):
+    res = []
+    response = []
+    try:
+      vrf_name = obj.get_attr_data('base-ip/ipv6/vrf-name')
+      intf_name = obj.get_attr_data('base-ip/ipv6/name')
+      intf_addr = obj.get_attr_data('base-ip/ipv6/address/ip')
+      intf_addr = binascii.unhexlify(intf_addr)
+      intf_addr = socket.inet_ntop(socket.AF_INET6, intf_addr)
+      af = 'ipv6'
+    
+      ip_svcs_subnet = get_veth_ip_subnet(vrf_name)
+      if ip_svcs_subnet is None:
+        log_info('IP Service is not enabled in VRF %s' % vrf_name)
+        return True
+
+      if vrf_name != 'management':  # for management vrf macvlan type is not set
+        res = dn_base_ip_tool._get_ip_addr_details(vrf_name,intf_name)
+        res = dn_base_ip_tool._group_lines_based_on_position(0,res)
+        for i in res:
+          line = dn_base_ip_tool.InterfaceObject(i, vrf_name)
+          log_info('line = %s '% line.type)
+          if line.type != 1:
+            return True  
+      if veth_intf_ip6_prefix in intf_addr:
+        log_info('ipv6_rule_programming : internal ipv6 address skip this')
+        return True
+
+      if link_local_ip6_prefix in intf_addr:
+        log_info('ignore link local event') # install fe80::/10 in subnet_setup
+        return True
+
+      src_ip_key = '*'+vrf_name+'*'+str(af)+'*'+intf_addr+'*'
+      val = _vrf_ip_service_ip_addr.get(src_ip_key, None)
+      if isAdd == False and val is None:
+        log_err('Getting delete ipv6 address but ipv6 address is not there')
+        return True
+      if isAdd and val is not None:
+        log_info('Getting add ip address but iptable rule is already added for that ip')
+        return True
+      if (isAdd):
+        _vrf_ip_service_ip_addr[src_ip_key] = 1
+        ipt_action = '-A'
+      else:
+        _vrf_ip_service_ip_addr.pop(src_ip_key, None)
+        ipt_action = '-D'
+       
+      log_info('VRF:%s dev:%s addr:%s family:%s isAdd %d' % (vrf_name, intf_name,intf_addr,af,isAdd))
+      cmd = [iplink_cmd, 'netns', 'exec', vrf_name, 'ip6tables', '-t', 'nat', ipt_action, 'PREROUTING',\
+            '-d',intf_addr,'-j', 'VRF']
+
+      if run_command(cmd, response) == 0:
+        return True
+      return False
+    except ValueError as e:
+      return True
+
+# This thread will listen for ip/ipv6 address event and install source specific iptable rule for non default vrf
+_linux_ip_addr_key = cps.key_from_name('observed', 'base-ip/ipv4')
+_linux_ipv6_addr_key = cps.key_from_name('observed', 'base-ip/ipv6')
+def handle_ip_address_event():
+
+    _ip_addr_evt_handle = cps.event_connect()
+    cps.event_register(_ip_addr_evt_handle, _linux_ip_addr_key)
+    cps.event_register(_ip_addr_evt_handle, _linux_ipv6_addr_key)
+    global _vrf_ipsvcs_mutex
+    while True:
+      ip_evt = cps.event_wait(_ip_addr_evt_handle)
+      obj = cps_object.CPSObject(obj=ip_evt)
+      if obj is None:
+        continue
+
+      if not 'operation' in ip_evt.keys():
+        continue
+
+      if _linux_ip_addr_key == obj.get_key():
+        af = 'ipv4'
+      else:
+        af = 'ipv6'
+
+      op = ip_evt['operation']  
+      if op == 'create' or op == 'set':
+        isAdd = 1
+      else:
+        isAdd = 0
+
+      if af == 'ipv6':
+        try:
+          vrf_name = obj.get_attr_data('base-ip/ipv6/vrf-name')
+        except ValueError as e:
+          vrf_name = 'default'
+
+        if vrf_name != 'default':
+          _vrf_ipsvcs_mutex.acquire()
+          ipv6_rule_programming(obj,isAdd) # this api needs to be protected by lock
+          _vrf_ipsvcs_mutex.release()
+        else:
+          log_info('Default vrf ip address event. Ignore this')
+      else:
+        try:
+          vrf_name = obj.get_attr_data('base-ip/ipv4/vrf-name')
+        except ValueError as e:
+          vrf_name = 'default'
+
+        if vrf_name != 'default':
+          _vrf_ipsvcs_mutex.acquire()
+          ipv4_rule_programming(obj,isAdd) # this api needs to be protected by lock
+          _vrf_ipsvcs_mutex.release()
+        else:
+          log_info('Default vrf ip address event. Ignore this')
+
 

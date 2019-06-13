@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -45,8 +45,8 @@ extern "C" {
  * that we don't expect and would have undesirable consequences
  */
 
-/* Netlink socket buffer size for interface events - 30MB */
-#define NL_INTF_SOCKET_BUFFER_LEN (30*1024*1024)
+/* Netlink socket buffer size for interface events - 60MB */
+#define NL_INTF_SOCKET_BUFFER_LEN (60*1024*1024)
 
 /* Netlink socket buffer size for neighbor events - 150MB */
 #define NL_NEIGH_SOCKET_BUFFER_LEN (150*1024*1024)

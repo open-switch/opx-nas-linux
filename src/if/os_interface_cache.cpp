@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -127,6 +127,19 @@ BASE_CMN_INTERFACE_TYPE_t INTERFACE::if_info_get_type(hal_ifindex_t ifx)
     return (it->second.if_type);
 }
 
+hal_ifindex_t INTERFACE::if_info_get_master(hal_ifindex_t ifx)
+{
+    std_rw_lock_read_guard lg(&rw_lock);
+
+    auto it = if_map_.find(ifx);
+
+    if(it == if_map_.end()) {
+        EV_LOGGING(NAS_OS, DEBUG, "NAS-OS-CACHE", "interface not present in the map %d", ifx);
+        return BASE_CMN_INTERFACE_TYPE_NULL;
+    }
+
+    return (it->second.master_idx);
+}
 bool INTERFACE::if_info_get_admin(hal_ifindex_t ifx, bool& admin)
 {
     std_rw_lock_read_guard lg(&rw_lock);
@@ -192,7 +205,7 @@ bool INTERFACE::get_ifindex_from_name(std::string &if_name, hal_ifindex_t &if_in
 
     auto it = name_ifindex_map_.find(if_name);
     if (it == name_ifindex_map_.end()) {
-        EV_LOGGING(NAS_OS, ERR, "NAS-OS-CACHE","couldn't find ifindex in name cache %d", if_index);
+        EV_LOGGING(NAS_OS, INFO, "NAS-OS-CACHE","couldn't find ifindex in name cache %d", if_index);
         return false;
     } else {
         if_index = it->second;

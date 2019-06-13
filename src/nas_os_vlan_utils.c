@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -43,11 +43,11 @@ void nas_os_get_vlan_if_name(char *if_name, int len, hal_vlan_id_t vlan_id, char
 bool nas_os_physical_to_vlan_ifindex(hal_ifindex_t intf_index, hal_vlan_id_t vlan_id,
                                             bool to_vlan,hal_ifindex_t * index){
     char intf_name[HAL_IF_NAME_SZ+1];
-    char vlan_intf_name[HAL_IF_NAME_SZ+1];
+    char vlan_intf_name[HAL_IF_NAME_SZ*2+1];
     char *converted_intf_name = NULL;
 
     if(cps_api_interface_if_index_to_name(intf_index,intf_name,sizeof(intf_name))==NULL){
-        EV_LOG(ERR,NAS_OS,0,"NAS-LINUX-INTERFACE","Invalid Interface Index %d ",intf_index);
+        EV_LOG(INFO,NAS_OS,0,"NAS-LINUX-INTERFACE","Invalid Interface Index %d ",intf_index);
         return false;
     }
 
