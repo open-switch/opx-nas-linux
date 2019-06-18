@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -101,14 +101,16 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     if ((vrf_id != NAS_DEFAULT_VRF_ID) && (ndmsg->ndm_family == AF_BRIDGE)) {
         return false;
     }
-
-    char intf_name[HAL_IF_NAME_SZ+1];
-    if(cps_api_interface_if_index_to_name(ndmsg->ndm_ifindex, intf_name,
-                                          sizeof(intf_name))!=NULL) {
-        if (nas_rt_is_reserved_intf(intf_name))
-            return false;
+    if (vrf_id == NAS_DEFAULT_VRF_ID) {
+        /* Enable this code for non-default when the internal intf cache supports filter for
+         * reserved interfaces. */
+        char intf_name[HAL_IF_NAME_SZ+1];
+        if(cps_api_interface_if_index_to_name(ndmsg->ndm_ifindex, intf_name,
+                                              sizeof(intf_name))!=NULL) {
+            if (nas_rt_is_reserved_intf(intf_name))
+                return false;
+        }
     }
-
     attrlen = hdr->nlmsg_len - NLMSG_LENGTH(sizeof(*ndmsg));
 
     /* RTM_GETNEIGH - message is received with NUD_INCOMPLETE to blockhole
@@ -118,7 +120,9 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     if ((rt_msg_type == RTM_NEWNEIGH) || (rt_msg_type == RTM_GETNEIGH)) {
         op = cps_api_oper_CREATE;
     } else if(rt_msg_type == RTM_DELNEIGH) {
-        if ((ndmsg->ndm_family == AF_INET) || (ndmsg->ndm_family == AF_INET6)) {
+        /* Enable the below code for non-default VRF when the nas-linux intf cache is updated for VRF. */
+        if ((vrf_id == NAS_DEFAULT_VRF_ID) && ((ndmsg->ndm_family == AF_INET) ||
+                                               (ndmsg->ndm_family == AF_INET6))) {
             /* If the interface is admin down/not present, simply ignore message here,
              * NAS-l3 will handle the admin down and cleanup all the Nbr entries internally */
             rc = os_intf_admin_state_get(ndmsg->ndm_ifindex, &admin_status);
@@ -156,7 +160,7 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
     rtatp = ((struct rtattr*)(((char*)(ndmsg)) + NLMSG_ALIGN(sizeof(struct ndmsg))));
 
     hal_mac_addr_t *mac_addr=NULL;
-    int ifix;
+    int ifix = 0;
     char mac_buff[MAC_STRING_LEN];
     for (; RTA_OK(rtatp, attrlen); rtatp = RTA_NEXT (rtatp, attrlen)) {
 
@@ -198,14 +202,34 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
                        if_name, ifix, mbr_name, mbr_ifindex, ndmsg->ndm_ifindex);
         }
     }
+    if((ndmsg->ndm_family == AF_BRIDGE) && (ndmsg->ndm_flags == NTF_SELF)) {
+        /*  Remote MAC Address learnt event on the vtep interface comes with NTF_SELF
+         *  It does not contain the bridge information. So the bridge information is
+         *  extracted from the local cache and used as the bridge before publishing the event.
+         *  */
+        is_bridge = true;
+
+        hal_ifindex_t bridge_idx =0;
+        t_std_error rc = os_intf_master_get(ndmsg->ndm_ifindex, &bridge_idx);
+        if ((rc != STD_ERR_OK) || (bridge_idx == 0)) {
+            EV_LOGGING(NETLINK, ERR,"NH-EVENT"," mac learn on %d, ignored: master Uknown", ndmsg->ndm_ifindex);
+            return false;
+        } else {
+            cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_NBR_IFINDEX,bridge_idx);
+            ifix = bridge_idx;
+            cps_api_interface_if_index_to_name(ifix,if_name,  sizeof(if_name));
+        }
+        if(nas_os_mac_get_learning(ndmsg->ndm_ifindex))
+            cps_api_object_attr_add_u32(obj,OS_RE_BASE_ROUTE_OBJ_NBR_MBR_IFINDEX, ndmsg->ndm_ifindex);
+        EV_LOGGING(NETLINK, INFO,"NH-EVENT","Remote MAC address event on VTEP %d, VN %d(%s)",
+                   ndmsg->ndm_ifindex, bridge_idx, if_name);
+    }
     /* Incase of the bridge FDB(L2 FDB Nbr), the VLAN and port information have been added into
      * the CPS object above and for non-bridge case(IP nbr), add the L3 out intf below. */
     if (is_bridge == false) {
         cps_api_object_attr_add_u32(obj,BASE_ROUTE_OBJ_NBR_IFINDEX,ndmsg->ndm_ifindex);
-        uint32_t lower_layer_intf = 0;
-        if (vrf_id == NAS_DEFAULT_VRF_ID) {
-            lower_layer_intf = ndmsg->ndm_ifindex;
-        } else {
+        uint32_t lower_layer_intf = ndmsg->ndm_ifindex;
+        if (vrf_id != NAS_DEFAULT_VRF_ID) {
             interface_ctrl_t intf_ctrl;
             memset(&intf_ctrl, 0, sizeof(interface_ctrl_t));
             intf_ctrl.q_type = HAL_INTF_INFO_FROM_IF;
@@ -217,7 +241,7 @@ bool nl_to_neigh_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t ob
                            vrf_id, ndmsg->ndm_ifindex);
                 return false;
             }
-            if(intf_ctrl.int_type == nas_int_type_MACVLAN) {
+            if ((intf_ctrl.int_type == nas_int_type_MACVLAN) && (intf_ctrl.l3_intf_info.if_index)) {
                 lower_layer_intf = intf_ctrl.l3_intf_info.if_index;
             }
         }

@@ -1,6 +1,6 @@
 #!/usr/bin/python
 #
-# Copyright (c) 2018 Dell Inc.
+# Copyright (c) 2019 Dell Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -77,6 +77,8 @@ def parse_protocol(key, val):
         return 2
     elif val.lower() == 'icmp':
         return 3
+    elif val.lower() == 'icmpv6':
+        return 5
     else:
         return 4
 
@@ -161,7 +163,7 @@ parser.add_argument('-d', '--dst-ip', help = 'Destination IP address and mask')
 parser.add_argument('-f', '--addr-family', choices = ['ipv4', 'ipv6'], help = 'Address family')
 parser.add_argument('-i', '--seq-num', type = int, help = 'Sequence number')
 parser.add_argument('-a', '--action', choices = ['allow', 'deny'], help = 'Action')
-parser.add_argument('-p', '--protocol', choices = ['tcp', 'udp', 'icmp', 'all'], help = 'Protocol')
+parser.add_argument('-p', '--protocol', choices = ['tcp', 'udp', 'icmp', 'icmpv6', 'all'], help = 'Protocol')
 parser.add_argument('-dp', '--dst-port', type = int, help = 'L4 destination port')
 parser.add_argument('--multiport', help = 'L4 destination port range')
 parser.add_argument('-iif', '--in_intf', help = 'incoming interface')
@@ -367,6 +369,14 @@ def run_test_incoming_svcs():
         incoming_svcs_test(True,  "info", "-s", "10.11.8.12/32", "-f", "ipv4", "-p", "icmp", "-d", "10.11.70.22/32", "-iif", "eth0", "-a", "allow")
         incoming_svcs_test(True,  "info", "-n", "management", "-s", "10.11.8.12/32", "-f", "ipv4", "-p", "icmp", "-d", "10.11.70.22/32", "-iif", "eth0", "-a", "allow")
 
+        incoming_svcs_test(False,  "create", "-s", "1::/64", "-f", "ipv6", "-p", "icmpv6", "-d", "2::/64", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False,  "create", "-n", "management", "-s", "1::/64", "-f", "ipv6", "-p", "icmpv6", "-d", "2::/64", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False,  "info", "-s", "1::/64", "-f", "ipv6", "-p", "icmpv6", "-d", "2::/64", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False,  "info", "-n", "management", "-s", "1::/64", "-f", "ipv6", "-p", "icmpv6", "-d", "2::/64", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False,  "delete", "-s", "1::/64", "-f", "ipv6", "-p", "icmpv6", "-d", "2::/64", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(False,  "delete", "-n", "management", "-s", "1::/64", "-f", "ipv6", "-p", "icmpv6", "-d", "2::/64", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(True,  "info", "-s", "1::/64", "-f", "ipv6", "-p", "icmpv6", "-d", "2::/64", "-iif", "eth0", "-a", "allow")
+        incoming_svcs_test(True,  "info", "-n", "management", "-s", "1::/64", "-f", "ipv6", "-p", "icmpv6", "-d", "2::/64", "-iif", "eth0", "-a", "allow")
 
     except RuntimeError as ex:
         print 'UT failed: %s' % ex

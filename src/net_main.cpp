@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -27,6 +27,8 @@
 #include "nas_os_if_priv.h"
 #include "os_if_utils.h"
 #include "nas_os_mcast_snoop.h"
+#include "nas_os_mcast_snoop.h"
+#include "nas_os_l3_utils.h"
 
 #include "event_log.h"
 #include "ds_api_linux_route.h"
@@ -50,6 +52,7 @@
 #include "nas_nlmsg_object_utils.h"
 #include "netlink_stats.h"
 #include "nas_os_vlan_utils.h"
+#include "nas_switch.h"
 
 #include <limits.h>
 #include <unistd.h>
@@ -230,7 +233,7 @@ static bool get_netlink_data(int sock, int rt_msg_type, struct nlmsghdr *hdr, vo
      */
     if (rt_msg_type <= RTM_GETADDR) {
         nas_nl_stats_update_tot_msg (sock, rt_msg_type);
-        if (nl_get_ip_info(rt_msg_type,hdr,obj,data, vrf_id)) {
+        if (nl_get_ip_info(rt_msg_type,hdr,obj,data, vrf_id, cps_api_qualifier_OBSERVED)) {
             nas_nl_stats_update_pub_msg (sock, rt_msg_type);
             if (net_publish_event(obj) != cps_api_ret_code_OK) {
                 nas_nl_stats_update_pub_msg_failed (sock, rt_msg_type);
@@ -577,6 +580,10 @@ t_std_error cps_api_net_notify_init(void) {
         return STD_ERR(INTERFACE,FAIL,0);
     }
 
+    if (os_ip_addr_object_reg(handle)!=STD_ERR_OK) {
+        return STD_ERR(INTERFACE,FAIL,0);
+    }
+
     return rc;
 }
 
@@ -635,6 +642,14 @@ t_std_error os_create_netlink_sock(const char *vrf_name, uint32_t vrf_id) {
     std::lock_guard<std::mutex> lock(_nl_sock_mutex);
 
     for ( ; ix < (size_t)nas_nl_sock_T_MAX; ++ix ) {
+        if ((ix == nas_nl_sock_T_ROUTE) && (nas_switch_get_os_event_flag() == false)) {
+            EV_LOGGING(NETLINK,INFO,"NL_SOCK","Skip Initializing route socket for VRF:%s ",vrf_name);
+            continue;
+        }
+        if ((ix == nas_nl_sock_T_MCAST_SNOOP) && (nas_switch_get_os_event_flag() == false)) {
+            EV_LOGGING(NETLINK,INFO,"NL_SOCK","Skip Initializing snoop mcast socket for VRF:%s" ,vrf_name);
+            continue;
+        }
         int sock = nas_nl_sock_create(vrf_name, (nas_nl_sock_TYPES)(ix),true);
         if(sock == -1) {
             EV_LOGGING(NETLINK,ERR,"NL_SOCK","Failed to initialize sockets for VRF:%s "

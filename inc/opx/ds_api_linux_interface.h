@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -45,7 +45,7 @@ t_std_error ds_api_linux_interface_init(cps_api_operation_handle_t handle);
  */
 
 bool nl_get_if_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context);
-bool nl_get_ip_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context, uint32_t vrf_id);
+bool nl_get_ip_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context, uint32_t vrf_id,  cps_api_qualifier_t qual);
 bool nl_get_ip_netconf_info(int rt_msg_type, struct nlmsghdr *hdr, cps_api_object_t obj, void *context, uint32_t vrf_id);
 
 bool nl_interface_get_request(int sock, int req_id, char *vrf_name, uint32_t vrf_id);

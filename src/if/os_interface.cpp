@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -126,6 +126,17 @@ t_std_error os_intf_type_get(hal_ifindex_t ifix, BASE_CMN_INTERFACE_TYPE_t *if_t
     }
     return STD_ERR(INTERFACE,FAIL,0);
 }
+t_std_error os_intf_master_get(hal_ifindex_t ifix, hal_ifindex_t *master_idx) {
+
+    if (master_idx == NULL)  return STD_ERR(INTERFACE,FAIL,0);
+    INTERFACE *fill = os_get_if_db_hdlr();
+    if (!fill) return STD_ERR(INTERFACE,FAIL,0);
+
+    *master_idx = fill->if_info_get_master(ifix);
+    EV_LOGGING(NAS_OS, INFO, "NAS-OS-CACHE", "Master is  %d for ifindex %d", *master_idx, ifix );
+    return STD_ERR_OK;
+}
+
 static auto info_kind_to_intf_type  = new std::unordered_map<std::string,BASE_CMN_INTERFACE_TYPE_t>
 {
     {"tun", BASE_CMN_INTERFACE_TYPE_L3_PORT},
@@ -207,7 +218,7 @@ bool nas_os_if_index_get(std::string &if_name , hal_ifindex_t &index) {
     char buff[BUFF_LEN];
     if_details details;
     memset(buff,0,sizeof(buff));
-    memset(&details,0,sizeof(details));
+    memset(static_cast<void *>(&details),0,sizeof(details));
 
 
     struct ifinfomsg ifmsg;
@@ -277,10 +288,12 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
     details._flags = ifmsg->ifi_flags;
     details._type = BASE_CMN_INTERFACE_TYPE_L3_PORT;
     details._ifindex = ifmsg->ifi_index;
+    details.master_idx = 0;
+    details.parent_idx = 0;
 
     // Check if the interface already exists in the local database.
     // If present then mark it as SET operation otherwise CREATE operation.
-    if (details._op == cps_api_oper_CREATE) {
+    if ((vrf_id == NAS_DEFAULT_VRF_ID) && (details._op == cps_api_oper_CREATE)) {
         bool present = false;
         if (nas_os_check_intf_exists(details._ifindex, &present) != STD_ERR_OK) {
             EV_LOGGING(NAS_OS, ERR, "NET-MAIN", " Failed to get cached info");
@@ -350,13 +363,14 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
              * NAS for correlation  */
         EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "Rcvd master index %d",
                 *(int *)nla_data(details._attrs[IFLA_MASTER]));
-
+        ifinfo.master_idx = *(int *)nla_data(details._attrs[IFLA_MASTER]);
         cps_api_object_attr_add_u32(obj,BASE_IF_LINUX_IF_INTERFACES_INTERFACE_IF_MASTER,
                                    *(int *)nla_data(details._attrs[IFLA_MASTER]));
+
     }
     if (details._info_kind != nullptr) {
         if ( nas_os_info_kind_to_intf_type(details._info_kind, &details._type) != STD_ERR_OK) {
-            EV_LOGGING(NAS_OS, ERR, "NET-MAIN", "info kind not known %s",details._info_kind);
+            EV_LOGGING(NAS_OS, INFO, "NET-MAIN", "info kind not known %s",details._info_kind);
         }
     } else {
         // In case if info_kind not present in the netlink event then look into
@@ -381,12 +395,12 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
     bool evt_publish = true;
     /* Dont update the intf cache for non-default VRF since if-index can be same in multiple VRFs */
     if (vrf_id == NAS_DEFAULT_VRF_ID) {
+
         if (!fill) {
             track_change = OS_IF_CHANGE_ALL;
         } else {
             track_change = fill->if_info_update(ifmsg->ifi_index, ifinfo);
         }
-
         /*
          * Delete the interface from cache if interface type is not vlan or lag
          * If lag, check for lag member delete vs actual bond interface delete.
@@ -402,6 +416,10 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
             } else if(details._type == BASE_CMN_INTERFACE_TYPE_LAG &&
                       (!strncmp(details._info_kind, "bond", 4))) {
                 if(fill) fill->if_info_delete(ifmsg->ifi_index, details.if_name);
+            }
+            if(details._type == BASE_CMN_INTERFACE_TYPE_L2_PORT) {
+                ifinfo.master_idx = 0; // in case of L2 PORT member delete.
+                fill->if_info_update(ifmsg->ifi_index, ifinfo);
             }
         }
 
@@ -427,6 +445,7 @@ t_std_error os_interface_to_object (int rt_msg_type, struct nlmsghdr *hdr, cps_a
                 cps_api_object_attr_delete(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX);
                 cps_api_object_attr_add(obj, IF_INTERFACES_INTERFACE_NAME, if_name.c_str(), (strlen(if_name.c_str())+1));
                 cps_api_object_attr_add_u32(obj, DELL_BASE_IF_CMN_IF_INTERFACES_INTERFACE_IF_INDEX,ifix);
+                cps_api_object_attr_add_u32(obj, BASE_IF_LINUX_IF_INTERFACES_INTERFACE_MBR_IFINDEX, ifmsg->ifi_index);
             }
         } else if (!track_change) {
             /*

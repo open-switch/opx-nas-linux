@@ -1,4 +1,4 @@
-# Copyright (c) 2018 Dell Inc.
+# Copyright (c) 2019 Dell Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -62,6 +62,7 @@ class VrfSvcsRuleProto(IntEnum):
     RULE_PROTO_UDP = 2
     RULE_PROTO_ICMP = 3
     RULE_PROTO_ALL = 4
+    RULE_PROTO_ICMPV6 = 5
 
 class VrfSvcsRuleGroupPrio(IntEnum):
     HIGH_GRP_PRIO = 1
@@ -239,6 +240,7 @@ class VrfIncomingSvcsRule(object):
         proto_name_map = {VrfSvcsRuleProto.RULE_PROTO_TCP: 'tcp',
                           VrfSvcsRuleProto.RULE_PROTO_UDP: 'udp',
                           VrfSvcsRuleProto.RULE_PROTO_ICMP: 'icmp',
+                          VrfSvcsRuleProto.RULE_PROTO_ICMPV6: 'icmpv6',
                           VrfSvcsRuleProto.RULE_PROTO_ALL: 'ip'}
         if self.protocol in proto_name_map:
             return proto_name_map[self.protocol]
@@ -562,8 +564,12 @@ class IptablesHandler:
         flt_args += ['-j', rule.get_action_name(True).upper()]
         if rule.action == VrfSvcsRuleAction.RULE_ACTION_DNAT:
             if rule.rule_type == VrfSvcsRuleType.RULE_TYPE_OUT_IP:
-                flt_args += ['--to-destination',
+                if rule.af == socket.AF_INET:
+                    flt_args += ['--to-destination',
                              '%s:%s' % (socket.inet_ntop(rule.af, rule.dst_ip),str(rule.dst_port))]
+                else:
+                    flt_args += ['--to-destination',
+                             '[%s]:%s' % (socket.inet_ntop(rule.af, rule.dst_ip),str(rule.dst_port))]
             else:
                 flt_args += ['--to-destination', '%s' % (socket.inet_ntop(rule.af, rule.dst_ip))]
         elif rule.action == VrfSvcsRuleAction.RULE_ACTION_REJECT:
@@ -684,7 +690,8 @@ class IptablesHandler:
         protocol = None
         proto_type_map = {'tcp': VrfSvcsRuleProto.RULE_PROTO_TCP,
                           'udp': VrfSvcsRuleProto.RULE_PROTO_UDP,
-                          'icmp': VrfSvcsRuleProto.RULE_PROTO_ICMP}
+                          'icmp': VrfSvcsRuleProto.RULE_PROTO_ICMP,
+                          'icmpv6': VrfSvcsRuleProto.RULE_PROTO_ICMPV6}
         if tokens[cls.PROTO_TK_ID] in proto_type_map:
             protocol = proto_type_map[tokens[cls.PROTO_TK_ID]]
         if tokens[cls.IN_IF_TK_ID] == 'any':
@@ -1305,7 +1312,8 @@ class VrfOutgoingSvcsRule(object):
     def get_proto_name(self):
         proto_name_map = {VrfSvcsRuleProto.RULE_PROTO_TCP: 'tcp',
                           VrfSvcsRuleProto.RULE_PROTO_UDP: 'udp',
-                          VrfSvcsRuleProto.RULE_PROTO_ICMP: 'icmp'}
+                          VrfSvcsRuleProto.RULE_PROTO_ICMP: 'icmp',
+                          VrfSvcsRuleProto.RULE_PROTO_ICMPV6: 'icmpv6'}
         if self.protocol in proto_name_map:
             return proto_name_map[self.protocol]
         else:

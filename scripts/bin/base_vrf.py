@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# Copyright (c) 2018 Dell Inc.
+# Copyright (c) 2019 Dell Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -68,6 +68,8 @@ _af = {
 
 _vrf_default_rule = {}
 _vrf_mutex = 0
+_management_vrf_name = 'management'
+_default_vrf_name = 'default'
 
 def incoming_ip_svcs_attr(t):
     return 'vrf-firewall/ns-incoming-service/' + t
@@ -89,7 +91,7 @@ def create_default_lo_pkts_rule():
     loopback_ip_str = '127.0.0.1'
     loopback_intf = 'lo'
 
-    rule_id = process_vrf_svcs_rule_add(VrfSvcsRuleType.RULE_TYPE_IP, 'default',
+    rule_id = process_vrf_svcs_rule_add(VrfSvcsRuleType.RULE_TYPE_IP, _default_vrf_name,
                                         VrfSvcsRuleAction.RULE_ACTION_ALLOW, socket.AF_INET,
                                         src_ip = socket.inet_pton(socket.AF_INET, loopback_ip_str), src_prefix_len = 32,
                                         dst_ip = socket.inet_pton(socket.AF_INET, loopback_ip_str), dst_prefix_len = 32,
@@ -150,11 +152,14 @@ def set_vrf_cb_int(methods, params):
             # When we support regular VRF, add the handler accordingly.
             if dn_base_vrf_tool.process_vrf_config(True, vrf_name, vrf_id):
                 # Create default rules for VRF
-                _vrf_default_rule[vrf_name] = []
-                if not create_vrf_default_rules(vrf_name, _vrf_default_rule[vrf_name]):
-                    log_err('Failed to create default ACL rules for VRF %s to VRF ns' % vrf_name)
-                if not create_vrf_default_rules('default', _vrf_default_rule[vrf_name]):
-                    log_err('Failed to create default ACL rules for VRF %s to default ns' % vrf_name)
+                if vrf_name not in _vrf_default_rule:
+                    _vrf_default_rule[vrf_name] = []
+                    if not create_vrf_default_rules(vrf_name, _vrf_default_rule[vrf_name]):
+                        log_err('Failed to create default ACL rules for VRF %s to VRF ns' % vrf_name)
+                if _default_vrf_name not in _vrf_default_rule:
+                    _vrf_default_rule[_default_vrf_name] = []
+                    if not create_vrf_default_rules(_default_vrf_name, _vrf_default_rule[_default_vrf_name]):
+                        log_err('Failed to create default ACL rules for VRF %s to default ns' % vrf_name)
                 return True
             log_msg = 'VRF config create failed - VRF Name:' + vrf_name
             log_err(log_msg)
@@ -166,6 +171,12 @@ def set_vrf_cb_int(methods, params):
                     log_info('Delete default ACl rule %d' % rule_id)
                     process_vrf_svcs_rule_del_by_id(rule_id)
                 del _vrf_default_rule[vrf_name]
+            if len(_vrf_default_rule) == 1 and _default_vrf_name in _vrf_default_rule:
+                # All user created VRFs were deleted
+                for rule_id in _vrf_default_rule[_default_vrf_name]:
+                    log_info('Delete default ACl rule %d for default VRF' % rule_id)
+                    process_vrf_svcs_rule_del_by_id(rule_id)
+                del _vrf_default_rule[_default_vrf_name]
             if dn_base_vrf_tool.process_vrf_config(False, vrf_name, vrf_id):
                 return True
             log_msg = 'VRF config delete failed - VRF Name:' + vrf_name
@@ -190,10 +201,15 @@ def set_vrf_intf_cb_int(methods, params):
     vrf_name = None
 
     if_name = 'if/interfaces/interface/name'
+    if_type = 'if/interfaces/interface/type'
     vrf_name = 'ni/if/interfaces/interface/bind-ni-name'
     try:
         if_name = obj.get_attr_data(if_name)
         vrf_name = obj.get_attr_data(vrf_name)
+        # Dont mandate interface type for mgmt interface when it is getting moved to mgmt VRF,
+        # since we dont need to alloc. MAC for the same.
+        if vrf_name !=_management_vrf_name:
+            if_type = obj.get_attr_data(if_type)
     except ValueError as e:
         log_msg = 'Missing mandatory attribute ' + e.args[0]
         log_err(log_msg)
@@ -210,7 +226,7 @@ def set_vrf_intf_cb_int(methods, params):
 
             log_msg = 'VRF ' + vrf_name + ' intf ' + if_name + ' request ' + operation
             log_info(log_msg)
-            ret_val, v_if_name, v_if_index, v_mac_str = dn_base_vrf_tool.process_vrf_intf_config(op, if_name, vrf_name)
+            ret_val, v_if_name, v_if_index, v_mac_str = dn_base_vrf_tool.process_vrf_intf_config(op, if_name, vrf_name, if_type)
             if ret_val is True:
                 if op:
                     cps_obj = cps_object.CPSObject(module='vrf-mgmt/ni/if/interfaces/interface', qual='target',
@@ -389,7 +405,7 @@ def config_incoming_ip_svcs_int(methods, params):
         log_info('Handle incoming IP configuration, operation: %s' % operation)
         rule_type = VrfSvcsRuleType.RULE_TYPE_IP
         reqd_input = ['af', 'ni-name', 'protocol', 'dst-port']
-        if vrf_name == 'default':
+        if vrf_name == _default_vrf_name:
             reqd_input.append('action')
 
     def check_rule_input(missed_attr_list = None):
@@ -432,7 +448,7 @@ def config_incoming_ip_svcs_int(methods, params):
         return False
 
     if operation == 'create':
-        if rule_type == VrfSvcsRuleType.RULE_TYPE_IP and vrf_name != 'default':
+        if rule_type == VrfSvcsRuleType.RULE_TYPE_IP and vrf_name != _default_vrf_name:
             """
             If it is IP forwarding rule and the name space is not default, we set its action
             type as DNAT
@@ -486,7 +502,7 @@ def config_incoming_ip_svcs_int(methods, params):
             return False
     elif operation == 'delete':
         if rule_id is None:
-            if rule_type == VrfSvcsRuleType.RULE_TYPE_IP and vrf_name != 'default':
+            if rule_type == VrfSvcsRuleType.RULE_TYPE_IP and vrf_name != _default_vrf_name:
                 """
                 If it is IP forwarding rule and the name space is not default, we set its action
                 type as DNAT
@@ -816,7 +832,10 @@ def get_incoming_ip_svcs_int(methods, params):
     log_info('Input parameters:')
     for name, val in args.items():
         if val is not None:
-            log_info('  %-10s : %s' % (name, str(val)))
+            if name == 'src_ip' or name == 'dst_ip':
+                log_info('  %-10s : %s' % (name, binascii.hexlify(val)))
+            else:
+                log_info('  %-10s : %s' % (name, str(val)))
 
     return process_vrf_svcs_rule_get(resp, **args)
 
@@ -1074,6 +1093,7 @@ if __name__ == '__main__':
     handle = cps.obj_init()
 
     _vrf_mutex = threading.Lock()
+    dn_base_vrf_tool.vrf_ip_svcs_mutex_init()
 
     d = {}
     d['transaction'] = set_vrf_cb
@@ -1104,7 +1124,7 @@ if __name__ == '__main__':
     log_msg = 'CPS IP VRF registration done'
     log_info(log_msg)
 
-    process_vrf_top_chain_rule(True, 'default')
+    process_vrf_top_chain_rule(True, _default_vrf_name)
     # Create the rule to accept the loopback pkts by default i.e snmpwalk destined
     # to loopback IP (127.0.0.1) when pinning is on to accept mgmt pkts only from mgmt VRF.
     lo_pkts_ret_val, rule_id = create_default_lo_pkts_rule()
@@ -1113,6 +1133,11 @@ if __name__ == '__main__':
                                       name="VRF_Leaked_Rt_Cfg")
     leaked_rt_cfg_thread.setDaemon(True)
     leaked_rt_cfg_thread.start()
+
+    ip_address_config_thread = threading.Thread(target=dn_base_vrf_tool.handle_ip_address_event,\
+                                                name="Ip_address_Cfg_Thread")
+    ip_address_config_thread.setDaemon(True)
+    ip_address_config_thread.start()
 
     # Notify systemd: Daemon is ready
     systemd.daemon.notify("READY=1")
@@ -1128,4 +1153,4 @@ if __name__ == '__main__':
     # cleanup code here
     # No need to specifically call sys.exit(0).
     # That's the default behavior in Python.
-    process_vrf_top_chain_rule(False, 'default')
+    process_vrf_top_chain_rule(False, _default_vrf_name)

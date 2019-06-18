@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -55,6 +55,8 @@ bool nl_netconf_get_all_request(int sock, int family,int req_id);
  *
  */
 t_std_error nas_os_flush_ip_neigh(char *prefix, uint32_t prefix_len, bool is_intf_flush, char *dev);
+
+t_std_error ds_api_linux_ip_init(cps_api_operation_handle_t handle);
 #ifdef __cplusplus
 }
 #endif

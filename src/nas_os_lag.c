@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Dell Inc.
+ * Copyright (c) 2019 Dell Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -104,6 +104,13 @@ static t_std_error nas_add_del_dummy_to_lag(hal_ifindex_t if_index, bool add) {
             EV_LOGGING(NAS_OS, ERR, "NAS-OS-LAG",
                    "Error dummy interface %s creation failed in the Kernel", bond_dummy_name);
             return (STD_ERR(NAS_OS, FAIL, 0));
+        }
+
+        /*
+         * Disable ipv6 on LAG dummy interface.
+         */
+        if (nas_os_interface_ipv6_config_handle(bond_dummy_name, false) == false) {
+            EV_LOGGING(NAS_OS, ERR, "NAS-OS-LAG", "Failed: To disable ipv6 on sub interface (%s)", bond_dummy_name);
         }
     }
     hal_ifindex_t ifix = cps_api_interface_name_to_if_index(bond_dummy_name);

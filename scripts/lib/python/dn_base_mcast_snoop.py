@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# Copyright (c) 2018 Dell Inc.
+# Copyright (c) 2019 Dell Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -47,14 +47,15 @@ _snoop_obj_info = {
 
 #How is it achieved
 
-#In ebtables broute table BROTING chain a rule is added per snoop enabled VLAN and marked.
-#here with current ebtables package we have IGMP's type cannot determine. So the iptables
+#In ebtables broute table BROUTING chain a rule is added per snoop enabled VLAN and marked (0x64).
+#with current ebtables package we have, IGMP's type cannot be identified in BROUTING. So the iptables
 # are also used.
 #In iptables/ip6tables(for MLD) these marked packets are identified and sent to IGMPSNOOP/MLDSNOOP
 #chain(user created chain)
-#In IGMP/MLD SNOOP chain the rules are added to drop IGMP(V1,v2,v3 Reports and Levae, but not Queries)
-#and MLD(V1,V2 Report, Done but not Queries), so for the snoop enabled VLAN's kernel drops these packets.
-#and other IGMP and MLD packets mark will be removed and will be flooded by the kernel.
+#In IGMP/MLD SNOOP chain the rules are added to identify IGMP(V1,v2,v3 Reports and Levae, but not Queries)
+#and MLD(V1,V2 Report, Done but not Queries), so for the snoop enabled VLAN's these packets are identified
+#with the marking(0x64) done in BROUTE and droped in FORWARD chain. Other IGMP and MLD packets
+#mark will be removed and will be flooded/dropped by the kernel based on the rules in the next chain.
 
 #By default in the bridge flow iptables are not looked up. this is turned on by enabling bridge-nf-call-iptable
 #and bridge-nf-call-ip6tables.
@@ -78,11 +79,11 @@ MLD_CHAIN_NAME = ' MLDSNOOP '
 #Flood IGMP General Queries (standard dest ip will be 224.0.0.1), other queries will be
 #handled by Snooping applications and will not be flooded by kernel (dropped here).
 
-igmp_add_rules = [IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1200 -j DROP',
-IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1600 -j DROP',
-IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1700 -j DROP',
-IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x2200 -j DROP',
-IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1100 ! -d 224.0.0.1 -j DROP',
+igmp_add_rules = [IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1200 -j ACCEPT',
+IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1600 -j ACCEPT',
+IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1700 -j ACCEPT',
+IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x2200 -j ACCEPT',
+IGMP_CHAIN_NAME + '-p igmp -m u32 --u32 0>>22&0x3C@0>>16&0xFF00=0x1100 ! -d 224.0.0.1 -j ACCEPT',
 IGMP_CHAIN_NAME + '-j MARK --set-mark 0']
 
 #MLD:
@@ -90,16 +91,16 @@ IGMP_CHAIN_NAME + '-j MARK --set-mark 0']
 #Flood MLD General Queries (standard dest ip will be ff02::01), other queries will be
 #handled by Snooping applications and will not be flooded by kernel (dropped here).
 
-mld_add_rules= [MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 131 -j DROP',
-        MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 132 -j DROP',
-        MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 143 -j DROP',
-        MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 130 ! -d ff02::01 -j DROP',
+mld_add_rules= [MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 131 -j ACCEPT',
+        MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 132 -j ACCEPT',
+        MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 143 -j ACCEPT',
+        MLD_CHAIN_NAME + '-p icmpv6 -m icmp6 --icmpv6-type 130 ! -d ff02::01 -j ACCEPT',
         MLD_CHAIN_NAME + '-p icmpv6 -j MARK --set-mark 0']
 
 
-igmp_preroute_rule = ' PREROUTING -p igmp -m mark --mark 0x64 -j ' + IGMP_CHAIN_NAME
+igmp_preroute_rule = ' PREROUTING -m mark --mark 0x64 -j ' + IGMP_CHAIN_NAME
 
-mld_preroute_rule = ' PREROUTING -p icmpv6 -m mark --mark 0x64 -j ' + MLD_CHAIN_NAME
+mld_preroute_rule = ' PREROUTING -m mark --mark 0x64 -j ' + MLD_CHAIN_NAME
 
 bridge_nf_iptables = '/proc/sys/net/bridge/bridge-nf-call-iptables'
 bridge_nf_ip6tables = '/proc/sys/net/bridge/bridge-nf-call-ip6tables'
@@ -401,6 +402,7 @@ def snoop_get_cb(methods, params):
 
 
 _intf_vlan_key = cps.key_from_name('observed', 'base-if-vlan/if/interfaces/interface')
+_intf_bridge_key = cps.key_from_name('observed', 'bridge-domain/bridge')
 
 #On Bridge/VLAN creation by default snooping get enabled on bridge in Linux,
 #when snooping application is running and kernel snooping is not needed snooping
@@ -411,6 +413,7 @@ _intf_vlan_key = cps.key_from_name('observed', 'base-if-vlan/if/interfaces/inter
 def monitor_VLAN_interface_event():
     _vlan_handle = cps.event_connect()
     cps.event_register(_vlan_handle, _intf_vlan_key)
+    cps.event_register(_vlan_handle, _intf_bridge_key)
     mcast_utils.log_info('monitor_VLAN_interface_event started')
 
     while True:
@@ -419,12 +422,15 @@ def monitor_VLAN_interface_event():
       if obj is None:
         mcast_utils.log_err('VLAN_MONITOR: Object not present in the event')
         continue
-      if obj.get_key() != _intf_vlan_key:
+      if obj.get_key() != _intf_vlan_key and  obj.get_key() != _intf_bridge_key:
         mcast_utils.log_debug('VLAN_MONITOR: Wrong VLAN interface event, ignore')
         continue
 
       try:
-        vlan_name = obj.get_attr_data('if/interfaces/interface/name')
+        if obj.get_key() == _intf_vlan_key:
+          vlan_name = obj.get_attr_data('if/interfaces/interface/name')
+        else :
+          vlan_name = obj.get_attr_data('bridge-domain/bridge/name')
         # check if if_name is present
         if vlan_name is None:
           mcast_utils.log_err('VLAN_MONITOR: VLAN name not present in the event')

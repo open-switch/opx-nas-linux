@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2018 Dell Inc.
+# Copyright (c) 2019 Dell Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -14,7 +14,7 @@
 # permissions and limitations under the License.
 #
 
-from nas_incoming_svcs_ut import test_pre_req_cfg
+from nas_outgoing_svcs_ut import test_pre_req_cfg
 from nas_incoming_svcs_ut import run_test_incoming_svcs
 from nas_outgoing_svcs_ut import run_test_outgoing_svcs
 import time
