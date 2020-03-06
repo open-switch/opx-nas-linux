@@ -1,3 +1,9 @@
+opx-nas-linux (5.28.1) unstable; urgency=medium
+
+  * Bugfix: Added missing dependancy of python-ipaddress, python-enum34 for opx-nas-linux package
+
+ -- Dell EMC <ops-dev@lists.openswitch.net>  Fri, 06 Mar 2020 01:57:44 -0800
+
 opx-nas-linux (5.28.0) unstable; urgency=medium
 
   * Update: publish FDB event with master index for remote MAC entry
